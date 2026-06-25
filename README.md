@@ -81,6 +81,17 @@ Run tests:
 go test ./...
 ```
 
+Try the first Instagram import milestone:
+
+```bash
+go run ./cmd/vanish
+```
+
+From the home screen, press `d` to run a fake local demo import, or press `i`
+and type the path to a local Instagram data export ZIP. The TUI will show parsed
+counts for likes, comments, following, followers, and skipped unsupported JSON
+files.
+
 ## Safety
 
 Vanish should never upload credentials or store them in plain text.
