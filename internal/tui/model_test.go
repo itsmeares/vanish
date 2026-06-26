@@ -90,18 +90,79 @@ func TestEnterOnDemoStartsDemoImport(t *testing.T) {
 	}
 }
 
-func TestQAndCtrlCReturnQuitCommand(t *testing.T) {
-	for _, keyName := range []string{"q", "ctrl+c"} {
+func TestQuitKeysOpenConfirmationBeforeQuit(t *testing.T) {
+	for _, keyName := range []string{"ctrl+c", "ctrl+q"} {
 		m := NewModel()
 
-		_, cmd := m.Update(keyPress(keyName))
-		if cmd == nil {
-			t.Fatalf("expected %s to return a command", keyName)
+		updated, cmd := m.Update(keyPress(keyName))
+		if cmd != nil {
+			t.Fatalf("expected %s not to quit immediately", keyName)
 		}
 
-		if _, ok := cmd().(tea.QuitMsg); !ok {
-			t.Fatalf("expected %s command to return tea.QuitMsg", keyName)
+		next := requireModel(t, updated)
+		if next.current != screenQuitConfirm {
+			t.Fatalf("expected %s to open quit confirmation, got %v", keyName, next.current)
 		}
+		view := next.View().Content
+		for _, want := range []string{"Quit Vanish?", "Quit Vanish", "Cancel"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("expected quit confirmation to contain %q, got:\n%s", want, view)
+			}
+		}
+
+		next = updateModel(t, next, keyPress("up"))
+		updated, cmd = next.Update(keyPress("enter"))
+		if cmd == nil {
+			t.Fatalf("expected confirmed quit to return command")
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatalf("expected confirmed quit command to return tea.QuitMsg")
+		}
+	}
+}
+
+func TestQNoLongerQuits(t *testing.T) {
+	m := NewModel()
+
+	updated, cmd := m.Update(keyPress("q"))
+	if cmd != nil {
+		t.Fatalf("expected q not to return quit command")
+	}
+	next := requireModel(t, updated)
+	if next.current != screenHome {
+		t.Fatalf("expected q to leave screen unchanged, got %v", next.current)
+	}
+}
+
+func TestQuitConfirmationEscReturnsToPreviousScreen(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenItemsBrowser {
+		t.Fatalf("expected test setup to open items browser")
+	}
+
+	next = updateModel(t, next, keyPress("ctrl+c"))
+	if next.current != screenQuitConfirm {
+		t.Fatalf("expected quit confirmation, got %v", next.current)
+	}
+
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenItemsBrowser {
+		t.Fatalf("expected esc to return to previous screen, got %v", next.current)
+	}
+}
+
+func TestHomeQuitMenuOpensConfirmation(t *testing.T) {
+	m := NewModel()
+	m.homeCursor = homeQuit
+
+	updated, cmd := m.Update(keyPress("enter"))
+	if cmd != nil {
+		t.Fatalf("expected home quit menu not to quit immediately")
+	}
+	next := requireModel(t, updated)
+	if next.current != screenQuitConfirm {
+		t.Fatalf("expected home quit menu to open confirmation, got %v", next.current)
 	}
 }
 
@@ -257,8 +318,157 @@ func TestItemsBrowserShowsVisibleAndTotalCount(t *testing.T) {
 	next := updateModel(t, m, keyPress("enter"))
 	view := next.View().Content
 
-	if !strings.Contains(view, "2 / 2 parsed items visible") {
+	if !strings.Contains(view, "Visible: 2 / Total: 2 | Selected: 0") {
 		t.Fatalf("expected visible and total count, got:\n%s", view)
+	}
+}
+
+func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+
+	view := next.View().Content
+	if !strings.Contains(view, "[ ] like | demo_artist") {
+		t.Fatalf("expected unselected item row, got:\n%s", view)
+	}
+
+	next = updateModel(t, next, keyPress(" "))
+	view = next.View().Content
+	if next.selection.Len() != 1 {
+		t.Fatalf("expected one selected item, got %d", next.selection.Len())
+	}
+	for _, want := range []string{"[x] like | demo_artist", "Visible: 2 / Total: 2 | Selected: 1"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected view to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	next = updateModel(t, next, keyPress(" "))
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected toggle to deselect item, got %d", next.selection.Len())
+	}
+}
+
+func TestItemsBrowserSelectsAndDeselectsVisibleItems(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = applyTypeFilter(t, next, filterRowLike)
+
+	next = updateModel(t, next, keyPress("a"))
+	if next.selection.Len() != 1 || !next.selection.Contains("item-like") {
+		t.Fatalf("expected filtered like to be selected")
+	}
+	if next.selection.Contains("item-comment") {
+		t.Fatalf("expected hidden comment not to be selected")
+	}
+
+	next = updateModel(t, next, keyPress("n"))
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected visible like to be deselected, got %d", next.selection.Len())
+	}
+}
+
+func TestItemsBrowserSelectionShortcutsAcceptUppercase(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+
+	next = updateModel(t, next, keyPress("A"))
+	if next.selection.Len() != 2 {
+		t.Fatalf("expected uppercase A to select visible items, got %d", next.selection.Len())
+	}
+
+	next = updateModel(t, next, keyPress("N"))
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected uppercase N to deselect visible items, got %d", next.selection.Len())
+	}
+
+	next = updateModel(t, next, keyPress("S"))
+	if next.current != screenSelectionSummary {
+		t.Fatalf("expected uppercase S to open selection summary, got %v", next.current)
+	}
+}
+
+func TestSelectionPersistsWhenFiltersChangeAndClear(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress(" "))
+
+	next = applyTypeFilter(t, next, filterRowComment)
+	if !next.selection.Contains("item-like") {
+		t.Fatalf("expected selection to persist after filter changed")
+	}
+	if !strings.Contains(next.View().Content, "Visible: 1 / Total: 4 | Selected: 1") {
+		t.Fatalf("expected selected count to persist, got:\n%s", next.View().Content)
+	}
+
+	next = clearFilters(t, next)
+	if !next.selection.Contains("item-like") {
+		t.Fatalf("expected selection to persist after filters clear")
+	}
+	if !strings.Contains(next.View().Content, "Visible: 4 / Total: 4 | Selected: 1") {
+		t.Fatalf("expected selected count after clear filters, got:\n%s", next.View().Content)
+	}
+}
+
+func TestNewImportResetsSelection(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress(" "))
+
+	if next.selection.Len() != 1 {
+		t.Fatalf("expected test setup to select item")
+	}
+
+	updated, _ := next.Update(importFinishedMsg{result: fakeImportResultWithRelationships(), source: "new demo"})
+	next = requireModel(t, updated)
+
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected new import to reset selection, got %d", next.selection.Len())
+	}
+}
+
+func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress("a"))
+	next = updateModel(t, next, keyPress("s"))
+
+	view := next.View().Content
+	for _, want := range []string{
+		"Selection Summary",
+		"Total selected: 4",
+		"Selected likes: 1",
+		"Selected comments: 1",
+		"Selected following: 1",
+		"Selected followers: 1",
+		"View selected items",
+		"Clear selection",
+		"Back",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected selection summary to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenSelectedItems {
+		t.Fatalf("expected selected items screen, got %v", next.current)
+	}
+	if !strings.Contains(next.View().Content, "Selected Items") || !strings.Contains(next.View().Content, "[x] like | demo_artist") {
+		t.Fatalf("expected selected items list, got:\n%s", next.View().Content)
+	}
+
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenSelectionSummary {
+		t.Fatalf("expected esc to return to selection summary, got %v", next.current)
+	}
+	next = updateModel(t, next, keyPress("down"))
+	next = updateModel(t, next, keyPress("enter"))
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected clear selection to remove all selected IDs, got %d", next.selection.Len())
+	}
+	if !strings.Contains(next.View().Content, "Total selected: 0") {
+		t.Fatalf("expected summary to show cleared selection, got:\n%s", next.View().Content)
 	}
 }
 
@@ -295,7 +505,7 @@ func TestApplyingTypeFilterUpdatesItemsBrowser(t *testing.T) {
 		t.Fatalf("expected items browser, got %v", next.current)
 	}
 	for _, want := range []string{
-		"1 / 4 parsed items visible",
+		"Visible: 1 / Total: 4",
 		"Filters active",
 		"like | demo_artist",
 	} {
@@ -452,6 +662,43 @@ func importedModel(t *testing.T, result instagram.ImportResult) Model {
 	return requireModel(t, updated)
 }
 
+func applyTypeFilter(t *testing.T, model Model, row int) Model {
+	t.Helper()
+
+	next := model
+	if next.current != screenFilters {
+		next = updateModel(t, next, keyPress("f"))
+	}
+	for next.filterCursor < row {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	for next.filterCursor > row {
+		next = updateModel(t, next, keyPress("up"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+	for next.filterCursor < filterRowApply {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	return updateModel(t, next, keyPress("enter"))
+}
+
+func clearFilters(t *testing.T, model Model) Model {
+	t.Helper()
+
+	next := model
+	if next.current != screenFilters {
+		next = updateModel(t, next, keyPress("f"))
+	}
+	for next.filterCursor < filterRowClear {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current == screenFilters {
+		next = updateModel(t, next, keyPress("esc"))
+	}
+	return next
+}
+
 func updateModel(t *testing.T, model Model, msg tea.Msg) Model {
 	t.Helper()
 
@@ -469,8 +716,12 @@ func keyPress(text string) tea.KeyPressMsg {
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
 	case "esc":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc})
+	case " ":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace})
 	case "ctrl+c":
 		return tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl})
+	case "ctrl+q":
+		return tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl})
 	}
 
 	key := tea.Key{Text: text}

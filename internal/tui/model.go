@@ -27,7 +27,10 @@ const (
 	screenImportResult
 	screenItemsBrowser
 	screenFilters
+	screenSelectionSummary
+	screenSelectedItems
 	screenWarnings
+	screenQuitConfirm
 )
 
 const (
@@ -70,6 +73,28 @@ var resultMenuItems = []string{
 	"Back home",
 }
 
+const (
+	selectionViewSelected = iota
+	selectionClear
+	selectionBack
+)
+
+var selectionMenuItems = []string{
+	"View selected items",
+	"Clear selection",
+	"Back",
+}
+
+const (
+	quitConfirmQuit = iota
+	quitConfirmCancel
+)
+
+var quitConfirmMenuItems = []string{
+	"Quit Vanish",
+	"Cancel",
+}
+
 // Model is the central state for a Bubble Tea app.
 //
 // A struct groups related fields together. Here it stores the current screen,
@@ -92,6 +117,7 @@ type Model struct {
 	importResult      instagram.ImportResult
 	importErr         error
 	itemFilter        domain.ActivityItemFilter
+	selection         domain.ActivitySelection
 	draftFilter       domain.ActivityItemFilter
 	draftOlderDate    string
 	draftNewerDate    string
@@ -102,8 +128,13 @@ type Model struct {
 	itemOffset        int
 	filterCursor      int
 	filterEditing     int
+	selectionCursor   int
+	selectedCursor    int
+	selectedOffset    int
 	warningCursor     int
 	warningOffset     int
+	quitReturnScreen  screen
+	quitCursor        int
 }
 
 // NewModel builds the initial app state before Bubble Tea starts sending
@@ -154,6 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pathInput.SetWidth(inputWidth(msg.Width))
 		m.setFilterInputWidths(inputWidth(msg.Width))
 		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.itemListHeight())
+		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
 		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
 
 	case importFinishedMsg:
@@ -163,6 +195,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resultCursor = 0
 		m.itemCursor = 0
 		m.itemOffset = 0
+		m.selection = domain.ActivitySelection{}
+		m.selectionCursor = 0
+		m.selectedCursor = 0
+		m.selectedOffset = 0
 		m.warningCursor = 0
 		m.warningOffset = 0
 		m.clearFilterState()
@@ -177,7 +213,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, m.keys.quit) {
-			return m, tea.Quit
+			if m.current != screenQuitConfirm {
+				m.openQuitConfirm()
+			}
+			return m, nil
 		}
 
 		switch m.current {
@@ -191,8 +230,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateItemsBrowser(msg)
 		case screenFilters:
 			return m.updateFilters(msg)
+		case screenSelectionSummary:
+			return m.updateSelectionSummary(msg)
+		case screenSelectedItems:
+			return m.updateSelectedItems(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
+		case screenQuitConfirm:
+			return m.updateQuitConfirm(msg)
 		}
 	}
 
@@ -218,7 +263,7 @@ func (m Model) updateHome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.importSource = "demo instagram export"
 			return m, tea.Batch(startSpinnerCmd(m.spinner), demoImportCmd())
 		case homeQuit:
-			return m, tea.Quit
+			m.openQuitConfirm()
 		}
 	}
 
@@ -289,6 +334,17 @@ func (m Model) updateItemsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.filter):
 		m.beginFilterDraft()
 		m.current = screenFilters
+	case key.Matches(msg, m.keys.toggleSelection):
+		if len(items) > 0 {
+			m.selection.Toggle(items[clampCursor(m.itemCursor, len(items))].ID)
+		}
+	case key.Matches(msg, m.keys.selectVisible):
+		m.selection.SelectItems(items)
+	case key.Matches(msg, m.keys.deselectVisible):
+		m.selection.DeselectItems(items)
+	case key.Matches(msg, m.keys.selectionSummary):
+		m.selectionCursor = 0
+		m.current = screenSelectionSummary
 	case key.Matches(msg, m.keys.back):
 		m.current = screenImportResult
 	}
@@ -341,6 +397,47 @@ func (m Model) updateFilters(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.selectionCursor = moveCursor(m.selectionCursor, len(selectionMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.selectionCursor = moveCursor(m.selectionCursor, len(selectionMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenItemsBrowser
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.selectionCursor {
+		case selectionViewSelected:
+			items := m.selectedItems()
+			m.selectedCursor = clampCursor(m.selectedCursor, len(items))
+			m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+			m.current = screenSelectedItems
+		case selectionClear:
+			m.selection.Clear()
+			m.selectedCursor = 0
+			m.selectedOffset = 0
+		case selectionBack:
+			m.current = screenItemsBrowser
+		}
+	}
+
+	return m, nil
+}
+
+func (m Model) updateSelectedItems(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	items := m.selectedItems()
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.selectedCursor = moveCursor(m.selectedCursor, len(items), -1)
+	case key.Matches(msg, m.keys.down):
+		m.selectedCursor = moveCursor(m.selectedCursor, len(items), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenSelectionSummary
+	}
+	m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+	return m, nil
+}
+
 func (m Model) updateWarnings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.up):
@@ -351,6 +448,26 @@ func (m Model) updateWarnings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.current = screenImportResult
 	}
 	m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+	return m, nil
+}
+
+func (m Model) updateQuitConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.quitCursor = moveCursor(m.quitCursor, len(quitConfirmMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.quitCursor = moveCursor(m.quitCursor, len(quitConfirmMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = m.quitReturnScreen
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.quitCursor {
+		case quitConfirmQuit:
+			return m, tea.Quit
+		case quitConfirmCancel:
+			m.current = m.quitReturnScreen
+		}
+	}
+
 	return m, nil
 }
 
@@ -369,8 +486,14 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.itemsBrowserView())
 	case screenFilters:
 		return tea.NewView(m.filtersView())
+	case screenSelectionSummary:
+		return tea.NewView(m.selectionSummaryView())
+	case screenSelectedItems:
+		return tea.NewView(m.selectedItemsView())
 	case screenWarnings:
 		return tea.NewView(m.warningsView())
+	case screenQuitConfirm:
+		return tea.NewView(m.quitConfirmView())
 	default:
 		return tea.NewView(m.homeView())
 	}
@@ -470,7 +593,8 @@ func (m Model) itemsBrowserView() string {
 	lines := []string{
 		m.styles.title.Render("Parsed Items"),
 		"",
-		m.styles.muted.Render(fmt.Sprintf("%d / %d parsed items visible from %s", len(items), total, emptyFallback(m.importSource, "instagram export"))),
+		m.styles.muted.Render(fmt.Sprintf("Visible: %d / Total: %d | Selected: %d", len(items), total, m.selection.Len())),
+		m.styles.muted.Render(fmt.Sprintf("Source: %s", emptyFallback(m.importSource, "instagram export"))),
 		"",
 	}
 	if m.itemFilter.Active() {
@@ -485,7 +609,7 @@ func (m Model) itemsBrowserView() string {
 			lines = append(lines, m.styles.muted.Render("..."))
 		}
 		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(itemRow(items[i]), i == cursor))
+			lines = append(lines, m.renderSelectableLine(m.selectableItemRow(items[i]), i == cursor))
 		}
 		if end < len(items) {
 			lines = append(lines, m.styles.muted.Render("..."))
@@ -501,7 +625,67 @@ func (m Model) itemsBrowserView() string {
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.filter, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.toggleSelection, m.keys.selectVisible, m.keys.deselectVisible, m.keys.selectionSummary, m.keys.filter, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) selectionSummaryView() string {
+	counts := m.selection.Counts(m.importResult.Items)
+	lines := []string{
+		m.styles.title.Render("Selection Summary"),
+		"",
+		m.styles.body.Render(fmt.Sprintf("Total selected: %d", counts.Total)),
+		m.styles.body.Render(fmt.Sprintf("Selected likes: %d", counts.Likes)),
+		m.styles.body.Render(fmt.Sprintf("Selected comments: %d", counts.Comments)),
+		m.styles.body.Render(fmt.Sprintf("Selected following: %d", counts.Following)),
+		m.styles.body.Render(fmt.Sprintf("Selected followers: %d", counts.Followers)),
+		"",
+	}
+
+	lines = append(lines, m.renderMenu(selectionMenuItems, m.selectionCursor)...)
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) selectedItemsView() string {
+	items := m.selectedItems()
+	total := len(m.importResult.Items)
+	visibleRows := m.itemListHeight()
+	cursor := clampCursor(m.selectedCursor, len(items))
+	offset := ensureOffset(cursor, m.selectedOffset, len(items), visibleRows)
+
+	lines := []string{
+		m.styles.title.Render("Selected Items"),
+		"",
+		m.styles.muted.Render(fmt.Sprintf("Selected: %d / Total: %d", len(items), total)),
+		"",
+	}
+
+	if len(items) == 0 {
+		lines = append(lines, m.styles.muted.Render("No selected items."))
+	} else {
+		end := minInt(len(items), offset+visibleRows)
+		if offset > 0 {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+		for i := offset; i < end; i++ {
+			lines = append(lines, m.renderSelectableLine(m.selectableItemRow(items[i]), i == cursor))
+		}
+		if end < len(items) {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+	}
+
+	lines = append(lines, "", m.styles.muted.Render("Details"))
+	if len(items) == 0 {
+		lines = append(lines, m.styles.muted.Render("No item selected."))
+	} else {
+		for _, line := range itemDetailLines(items[cursor]) {
+			lines = append(lines, m.styles.body.Render(line))
+		}
+	}
+
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -577,6 +761,19 @@ func (m Model) warningsView() string {
 	return m.frame(strings.Join(lines, "\n"))
 }
 
+func (m Model) quitConfirmView() string {
+	lines := []string{
+		m.styles.title.Render("Quit Vanish?"),
+		"",
+		m.styles.body.Render("Your current in-memory review state will be discarded."),
+		"",
+	}
+
+	lines = append(lines, m.renderMenu(quitConfirmMenuItems, m.quitCursor)...)
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
 func (m Model) renderMenu(items []string, cursor int) []string {
 	lines := make([]string, 0, len(items))
 	for i, item := range items {
@@ -614,10 +811,20 @@ func (m Model) resetImportState() Model {
 	m.resultCursor = 0
 	m.itemCursor = 0
 	m.itemOffset = 0
+	m.selection = domain.ActivitySelection{}
+	m.selectionCursor = 0
+	m.selectedCursor = 0
+	m.selectedOffset = 0
 	m.warningCursor = 0
 	m.warningOffset = 0
 	m.clearFilterState()
 	return m
+}
+
+func (m *Model) openQuitConfirm() {
+	m.quitReturnScreen = m.current
+	m.quitCursor = quitConfirmCancel
+	m.current = screenQuitConfirm
 }
 
 func (m Model) itemListHeight() int {
@@ -629,14 +836,18 @@ func (m Model) warningListHeight() int {
 }
 
 type keyMap struct {
-	up         key.Binding
-	down       key.Binding
-	selectItem key.Binding
-	start      key.Binding
-	save       key.Binding
-	filter     key.Binding
-	back       key.Binding
-	quit       key.Binding
+	up               key.Binding
+	down             key.Binding
+	selectItem       key.Binding
+	start            key.Binding
+	save             key.Binding
+	filter           key.Binding
+	toggleSelection  key.Binding
+	selectVisible    key.Binding
+	deselectVisible  key.Binding
+	selectionSummary key.Binding
+	back             key.Binding
+	quit             key.Binding
 }
 
 func newKeyMap() keyMap {
@@ -665,13 +876,29 @@ func newKeyMap() keyMap {
 			key.WithKeys("f"),
 			key.WithHelp("f", "filters"),
 		),
+		toggleSelection: key.NewBinding(
+			key.WithKeys("space"),
+			key.WithHelp("space", "toggle"),
+		),
+		selectVisible: key.NewBinding(
+			key.WithKeys("a", "A"),
+			key.WithHelp("a", "select visible"),
+		),
+		deselectVisible: key.NewBinding(
+			key.WithKeys("n", "N"),
+			key.WithHelp("n", "deselect visible"),
+		),
+		selectionSummary: key.NewBinding(
+			key.WithKeys("s", "S"),
+			key.WithHelp("s", "selection"),
+		),
 		back: key.NewBinding(
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "back"),
 		),
 		quit: key.NewBinding(
-			key.WithKeys("q", "ctrl+c"),
-			key.WithHelp("q", "quit"),
+			key.WithKeys("ctrl+c", "ctrl+q"),
+			key.WithHelp("ctrl+q", "quit"),
 		),
 	}
 }
@@ -682,7 +909,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.up, k.down, k.selectItem, k.start, k.save, k.filter, k.back, k.quit}}
+	return [][]key.Binding{{k.up, k.down, k.selectItem, k.start, k.save, k.filter, k.toggleSelection, k.selectVisible, k.deselectVisible, k.selectionSummary, k.back, k.quit}}
 }
 
 type screenHelp []key.Binding
@@ -786,6 +1013,14 @@ func itemRow(item domain.ActivityItem) string {
 	)
 }
 
+func (m Model) selectableItemRow(item domain.ActivityItem) string {
+	checked := " "
+	if m.selection.Contains(item.ID) {
+		checked = "x"
+	}
+	return fmt.Sprintf("[%s] %s", checked, itemRow(item))
+}
+
 func itemDetailLines(item domain.ActivityItem) []string {
 	lines := []string{
 		"ID: " + item.ID,
@@ -827,6 +1062,10 @@ func itemDetailLines(item domain.ActivityItem) []string {
 
 func (m Model) visibleItems() []domain.ActivityItem {
 	return domain.FilterActivityItems(m.importResult.Items, m.itemFilter)
+}
+
+func (m Model) selectedItems() []domain.ActivityItem {
+	return m.selection.SelectedItems(m.importResult.Items)
 }
 
 func (m *Model) beginFilterDraft() {
