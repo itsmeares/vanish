@@ -23,6 +23,7 @@ func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Import Instagram export ZIP",
+		"Load cleanup plan",
 		"Demo import with fake local data",
 		"Quit",
 	} {
@@ -44,8 +45,13 @@ func TestHomeMenuNavigationUsesArrowAndJK(t *testing.T) {
 	m := NewModel()
 
 	next := updateModel(t, m, keyPress("down"))
+	if next.homeCursor != homeLoadPlan {
+		t.Fatalf("expected down to select load plan, got %d", next.homeCursor)
+	}
+
+	next = updateModel(t, next, keyPress("j"))
 	if next.homeCursor != homeDemo {
-		t.Fatalf("expected down to select demo, got %d", next.homeCursor)
+		t.Fatalf("expected j to select demo, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("j"))
@@ -61,6 +67,11 @@ func TestHomeMenuNavigationUsesArrowAndJK(t *testing.T) {
 	next = updateModel(t, next, keyPress("up"))
 	if next.homeCursor != homeDemo {
 		t.Fatalf("expected up to select demo, got %d", next.homeCursor)
+	}
+
+	next = updateModel(t, next, keyPress("k"))
+	if next.homeCursor != homeLoadPlan {
+		t.Fatalf("expected k to select load plan, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("k"))
@@ -186,6 +197,133 @@ func TestImportPathScreenAcceptsTypedPathAndEscReturnsHome(t *testing.T) {
 	next = updateModel(t, next, keyPress("esc"))
 	if next.current != screenHome {
 		t.Fatalf("expected esc to return home, got %v", next.current)
+	}
+}
+
+func TestPlanLoadPathShowsFriendlyMissingFileError(t *testing.T) {
+	m := NewModel()
+	m.homeCursor = homeLoadPlan
+
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenPlanLoadPath {
+		t.Fatalf("expected plan load path screen, got %v", next.current)
+	}
+	if !strings.Contains(next.View().Content, "Load Cleanup Plan") {
+		t.Fatalf("expected load screen, got:\n%s", next.View().Content)
+	}
+
+	missingPath := filepath.Join(t.TempDir(), "missing-plan.json")
+	next.planPathInput.SetValue(missingPath)
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected plan load command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+
+	view := next.View().Content
+	if next.current != screenPlanLoadPath {
+		t.Fatalf("expected to stay on load path after error, got %v", next.current)
+	}
+	if !strings.Contains(view, "Plan file not found") {
+		t.Fatalf("expected friendly missing file error, got:\n%s", view)
+	}
+}
+
+func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
+	plan := fakeCleanupPlan()
+	path := writeTUIPlan(t, plan)
+
+	m := NewModel()
+	m.homeCursor = homeLoadPlan
+	next := updateModel(t, m, keyPress("enter"))
+	next.planPathInput.SetValue(path)
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected plan load command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+
+	if next.current != screenLoadedPlanSummary {
+		t.Fatalf("expected loaded plan summary, got %v", next.current)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Loaded Cleanup Plan",
+		"Plan ID: plan-loaded",
+		"Format version: 1",
+		"Platform: instagram",
+		"Source name: instagram-export",
+		"Mode: dry-run",
+		"Total actions: 3",
+		"delete_comment: 1",
+		"unfollow: 1",
+		"unlike: 1",
+		"pending: 1",
+		"done: 1",
+		"skipped: 1",
+		"View actions",
+		"Back home",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected summary to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenLoadedPlanActions {
+		t.Fatalf("expected actions browser, got %v", next.current)
+	}
+	view = next.View().Content
+	for _, want := range []string{
+		"Plan Actions",
+		"unlike | pending | https://instagram.example/p/1",
+		"Type: unlike",
+		"Status: pending",
+		"Target URL: https://instagram.example/p/1",
+		"Target ID: target-1",
+		"Source activity item ID: item-1",
+		"Created at: 2026-06-26T12:00:00Z",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected actions browser to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	next = updateModel(t, next, keyPress("j"))
+	if next.loadedActionCursor != 1 {
+		t.Fatalf("expected j to move action cursor, got %d", next.loadedActionCursor)
+	}
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenLoadedPlanSummary {
+		t.Fatalf("expected esc to return to summary, got %v", next.current)
+	}
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenHome {
+		t.Fatalf("expected esc to return home, got %v", next.current)
+	}
+}
+
+func TestLoadedPlanQuitConfirmation(t *testing.T) {
+	plan := fakeCleanupPlan()
+	path := writeTUIPlan(t, plan)
+
+	m := NewModel()
+	m.homeCursor = homeLoadPlan
+	next := updateModel(t, m, keyPress("enter"))
+	next.planPathInput.SetValue(path)
+	updated, cmd := next.Update(keyPress("enter"))
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+
+	next = updateModel(t, next, keyPress("ctrl+q"))
+	if next.current != screenQuitConfirm {
+		t.Fatalf("expected ctrl+q to open quit confirmation, got %v", next.current)
+	}
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenLoadedPlanSummary {
+		t.Fatalf("expected esc to return to loaded summary, got %v", next.current)
 	}
 }
 
@@ -764,6 +902,57 @@ func planPreviewModel(t *testing.T) Model {
 	next = updateModel(t, next, keyPress("a"))
 	next = updateModel(t, next, keyPress("s"))
 	return updateModel(t, next, keyPress("enter"))
+}
+
+func fakeCleanupPlan() domain.CleanupPlan {
+	createdAt := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	actions := []domain.CleanupAction{
+		{
+			ID:                   "action-1",
+			Platform:             domain.PlatformInstagram,
+			Type:                 domain.ActionUnlike,
+			TargetURL:            "https://instagram.example/p/1",
+			TargetID:             "target-1",
+			SourceActivityItemID: "item-1",
+			Status:               domain.ActionStatusPending,
+			CreatedAt:            createdAt,
+		},
+		{
+			ID:                   "action-2",
+			Platform:             domain.PlatformInstagram,
+			Type:                 domain.ActionDeleteComment,
+			TargetID:             "comment-1",
+			SourceActivityItemID: "item-2",
+			Status:               domain.ActionStatusDone,
+			CreatedAt:            createdAt.Add(time.Minute),
+		},
+		{
+			ID:                   "action-3",
+			Platform:             domain.PlatformInstagram,
+			Type:                 domain.ActionUnfollow,
+			TargetURL:            "https://instagram.example/demo",
+			SourceActivityItemID: "item-3",
+			Status:               domain.ActionStatusSkipped,
+			CreatedAt:            createdAt.Add(2 * time.Minute),
+		},
+	}
+	return domain.NewCleanupPlan("plan-loaded", domain.PlatformInstagram, "instagram-export", createdAt, actions)
+}
+
+func writeTUIPlan(t *testing.T, plan domain.CleanupPlan) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "vanish-plan.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	defer file.Close()
+
+	if err := domain.WritePlanJSON(file, plan); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	return path
 }
 
 func applyTypeFilter(t *testing.T, model Model, row int) Model {

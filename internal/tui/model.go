@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -32,12 +34,16 @@ const (
 	screenSelectedItems
 	screenPlanPreview
 	screenPlanExportPath
+	screenPlanLoadPath
+	screenLoadedPlanSummary
+	screenLoadedPlanActions
 	screenWarnings
 	screenQuitConfirm
 )
 
 const (
 	homeImportZip = iota
+	homeLoadPlan
 	homeDemo
 	homeQuit
 )
@@ -66,6 +72,7 @@ const filterEditNone = -1
 
 var homeMenuItems = []string{
 	"Import Instagram export ZIP",
+	"Load cleanup plan",
 	"Demo import with fake local data",
 	"Quit",
 }
@@ -103,6 +110,16 @@ var planPreviewMenuItems = []string{
 const defaultPlanExportPath = "vanish-plan.json"
 
 const (
+	loadedPlanViewActions = iota
+	loadedPlanBackHome
+)
+
+var loadedPlanSummaryMenuItems = []string{
+	"View actions",
+	"Back home",
+}
+
+const (
 	quitConfirmQuit = iota
 	quitConfirmCancel
 )
@@ -118,47 +135,53 @@ var quitConfirmMenuItems = []string{
 // terminal dimensions, styles, and reusable Bubbles components. Bubble Tea
 // passes this value through Init, Update, and View as the app runs.
 type Model struct {
-	current           screen
-	width             int
-	height            int
-	styles            styles
-	keys              keyMap
-	help              help.Model
-	pathInput         textinput.Model
-	planPathInput     textinput.Model
-	filterActorInput  textinput.Model
-	filterTargetInput textinput.Model
-	filterOlderInput  textinput.Model
-	filterNewerInput  textinput.Model
-	spinner           spinner.Model
-	importSource      string
-	importResult      instagram.ImportResult
-	importErr         error
-	itemFilter        domain.ActivityItemFilter
-	selection         domain.ActivitySelection
-	planResult        instagram.PlanBuildResult
-	draftFilter       domain.ActivityItemFilter
-	draftOlderDate    string
-	draftNewerDate    string
-	filterError       string
-	selectionMessage  string
-	planExportStatus  string
-	planExportError   string
-	homeCursor        int
-	resultCursor      int
-	itemCursor        int
-	itemOffset        int
-	filterCursor      int
-	filterEditing     int
-	selectionCursor   int
-	selectedCursor    int
-	selectedOffset    int
-	planPreviewCursor int
-	planListOffset    int
-	warningCursor     int
-	warningOffset     int
-	quitReturnScreen  screen
-	quitCursor        int
+	current            screen
+	width              int
+	height             int
+	styles             styles
+	keys               keyMap
+	help               help.Model
+	pathInput          textinput.Model
+	planPathInput      textinput.Model
+	filterActorInput   textinput.Model
+	filterTargetInput  textinput.Model
+	filterOlderInput   textinput.Model
+	filterNewerInput   textinput.Model
+	spinner            spinner.Model
+	importSource       string
+	importResult       instagram.ImportResult
+	importErr          error
+	itemFilter         domain.ActivityItemFilter
+	selection          domain.ActivitySelection
+	planResult         instagram.PlanBuildResult
+	loadedPlan         domain.CleanupPlan
+	loadedPlanSummary  domain.CleanupPlanSummary
+	draftFilter        domain.ActivityItemFilter
+	draftOlderDate     string
+	draftNewerDate     string
+	filterError        string
+	selectionMessage   string
+	planExportStatus   string
+	planExportError    string
+	planLoadError      string
+	homeCursor         int
+	resultCursor       int
+	itemCursor         int
+	itemOffset         int
+	filterCursor       int
+	filterEditing      int
+	selectionCursor    int
+	selectedCursor     int
+	selectedOffset     int
+	planPreviewCursor  int
+	planListOffset     int
+	loadedPlanCursor   int
+	loadedActionCursor int
+	loadedActionOffset int
+	warningCursor      int
+	warningOffset      int
+	quitReturnScreen   screen
+	quitCursor         int
 }
 
 // NewModel builds the initial app state before Bubble Tea starts sending
@@ -213,6 +236,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.itemListHeight())
 		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
 		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+		m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
 
 	case importFinishedMsg:
 		m.importResult = msg.result
@@ -249,6 +273,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.planExportStatus = fmt.Sprintf("Saved plan to %s", msg.path)
 		return m, nil
 
+	case loadPlanFinishedMsg:
+		if msg.err != nil {
+			m.planLoadError = friendlyPlanLoadError(msg.err)
+			return m, nil
+		}
+		m.loadedPlan = msg.plan
+		m.loadedPlanSummary = msg.summary
+		m.planLoadError = ""
+		m.loadedPlanCursor = 0
+		m.loadedActionCursor = 0
+		m.loadedActionOffset = 0
+		m.planPathInput.Blur()
+		m.current = screenLoadedPlanSummary
+		return m, nil
+
 	case tea.KeyPressMsg:
 		if key.Matches(msg, m.keys.quit) {
 			if m.current != screenQuitConfirm {
@@ -276,6 +315,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePlanPreview(msg)
 		case screenPlanExportPath:
 			return m.updatePlanExportPath(msg)
+		case screenPlanLoadPath:
+			return m.updatePlanLoadPath(msg)
+		case screenLoadedPlanSummary:
+			return m.updateLoadedPlanSummary(msg)
+		case screenLoadedPlanActions:
+			return m.updateLoadedPlanActions(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
 		case screenQuitConfirm:
@@ -299,6 +344,11 @@ func (m Model) updateHome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.current = screenImportPath
 			cmd := m.pathInput.Focus()
 			return m, cmd
+		case homeLoadPlan:
+			m.resetLoadedPlanState()
+			m.planPathInput.SetValue(defaultPlanExportPath)
+			m.current = screenPlanLoadPath
+			return m, m.planPathInput.Focus()
 		case homeDemo:
 			m = m.resetImportState()
 			m.current = screenImporting
@@ -537,6 +587,62 @@ func (m Model) updatePlanExportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) updatePlanLoadPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.start):
+		planPath := strings.TrimSpace(m.planPathInput.Value())
+		if planPath == "" {
+			planPath = defaultPlanExportPath
+			m.planPathInput.SetValue(planPath)
+		}
+		m.planLoadError = ""
+		return m, loadPlanJSONCmd(planPath)
+	case key.Matches(msg, m.keys.back):
+		m.planPathInput.Blur()
+		m.current = screenHome
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.planPathInput, cmd = m.planPathInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m Model) updateLoadedPlanSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.loadedPlanCursor = moveCursor(m.loadedPlanCursor, len(loadedPlanSummaryMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.loadedPlanCursor = moveCursor(m.loadedPlanCursor, len(loadedPlanSummaryMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenHome
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.loadedPlanCursor {
+		case loadedPlanViewActions:
+			m.loadedActionCursor = clampCursor(m.loadedActionCursor, len(m.loadedPlan.Actions))
+			m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
+			m.current = screenLoadedPlanActions
+		case loadedPlanBackHome:
+			m.current = screenHome
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateLoadedPlanActions(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	actions := m.loadedPlan.Actions
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.loadedActionCursor = moveCursor(m.loadedActionCursor, len(actions), -1)
+	case key.Matches(msg, m.keys.down):
+		m.loadedActionCursor = moveCursor(m.loadedActionCursor, len(actions), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenLoadedPlanSummary
+	}
+	m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(actions), m.planActionListHeight())
+	return m, nil
+}
+
 func (m Model) updateSelectedItems(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	items := m.selectedItems()
 	switch {
@@ -607,6 +713,12 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.planPreviewView())
 	case screenPlanExportPath:
 		return tea.NewView(m.planExportPathView())
+	case screenPlanLoadPath:
+		return tea.NewView(m.planLoadPathView())
+	case screenLoadedPlanSummary:
+		return tea.NewView(m.loadedPlanSummaryView())
+	case screenLoadedPlanActions:
+		return tea.NewView(m.loadedPlanActionsView())
 	case screenWarnings:
 		return tea.NewView(m.warningsView())
 	case screenQuitConfirm:
@@ -623,7 +735,7 @@ func (m Model) homeView() string {
 		m.styles.body.Render("Local-first review and cleanup planning for your social media footprint."),
 		m.styles.muted.Render("No cloud backend. No telemetry by default. No hidden background actions."),
 		"",
-		m.styles.body.Render("Import a local Instagram data export ZIP to see parsed activity counts."),
+		m.styles.body.Render("Import a local Instagram export ZIP or inspect an exported cleanup plan."),
 		"",
 	}
 	lines = append(lines, m.renderMenu(homeMenuItems, m.homeCursor)...)
@@ -868,6 +980,99 @@ func (m Model) planExportPathView() string {
 	return m.frame(strings.Join(lines, "\n"))
 }
 
+func (m Model) planLoadPathView() string {
+	lines := []string{
+		m.styles.title.Render("Load Cleanup Plan"),
+		"",
+		m.styles.body.Render("Type the path to a local cleanup plan JSON file."),
+		m.styles.muted.Render("Vanish will only read and validate the local file."),
+		"",
+		m.planPathInput.View(),
+		"",
+	}
+
+	if strings.TrimSpace(m.planLoadError) != "" {
+		lines = append(lines, m.styles.error.Render(m.planLoadError), "")
+	}
+
+	lines = append(lines, m.helpLine(m.keys.start, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) loadedPlanSummaryView() string {
+	plan := m.loadedPlan
+	summary := m.loadedPlanSummary
+
+	lines := []string{
+		m.styles.title.Render("Loaded Cleanup Plan"),
+		"",
+		m.styles.body.Render(fmt.Sprintf("Plan ID: %s", emptyFallback(plan.ID, "-"))),
+		m.styles.body.Render(fmt.Sprintf("Format version: %d", plan.FormatVersion)),
+		m.styles.body.Render(fmt.Sprintf("Platform: %s", emptyFallback(string(plan.Platform), "-"))),
+		m.styles.body.Render(fmt.Sprintf("Source name: %s", emptyFallback(plan.SourceName, "-"))),
+		m.styles.body.Render(fmt.Sprintf("Mode: %s", emptyFallback(string(plan.Mode), "-"))),
+		m.styles.body.Render(fmt.Sprintf("Created at: %s", formatPlanTime(plan.CreatedAt))),
+		m.styles.body.Render(fmt.Sprintf("Total actions: %d", summary.TotalActions)),
+		"",
+		m.styles.muted.Render("Action counts by type"),
+	}
+	lines = append(lines, m.actionCountLines(summary.ActionCounts)...)
+	lines = append(lines,
+		"",
+		m.styles.muted.Render("Status counts"),
+		m.styles.body.Render(fmt.Sprintf("pending: %d", summary.StatusCounts[domain.ActionStatusPending])),
+		m.styles.body.Render(fmt.Sprintf("running: %d", summary.StatusCounts[domain.ActionStatusRunning])),
+		m.styles.body.Render(fmt.Sprintf("done: %d", summary.StatusCounts[domain.ActionStatusDone])),
+		m.styles.body.Render(fmt.Sprintf("failed: %d", summary.StatusCounts[domain.ActionStatusFailed])),
+		m.styles.body.Render(fmt.Sprintf("skipped: %d", summary.StatusCounts[domain.ActionStatusSkipped])),
+		"",
+	)
+	lines = append(lines, m.renderMenu(loadedPlanSummaryMenuItems, m.loadedPlanCursor)...)
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) loadedPlanActionsView() string {
+	actions := m.loadedPlan.Actions
+	visibleRows := m.planActionListHeight()
+	cursor := clampCursor(m.loadedActionCursor, len(actions))
+	offset := ensureOffset(cursor, m.loadedActionOffset, len(actions), visibleRows)
+
+	lines := []string{
+		m.styles.title.Render("Plan Actions"),
+		"",
+		m.styles.muted.Render(fmt.Sprintf("Actions: %d | Plan: %s", len(actions), emptyFallback(m.loadedPlan.ID, "-"))),
+		"",
+	}
+
+	if len(actions) == 0 {
+		lines = append(lines, m.styles.muted.Render("No actions in this plan."))
+	} else {
+		end := minInt(len(actions), offset+visibleRows)
+		if offset > 0 {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+		for i := offset; i < end; i++ {
+			lines = append(lines, m.renderSelectableLine(planActionRow(actions[i]), i == cursor))
+		}
+		if end < len(actions) {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+	}
+
+	lines = append(lines, "", m.styles.muted.Render("Details"))
+	if len(actions) == 0 {
+		lines = append(lines, m.styles.muted.Render("No action selected."))
+	} else {
+		for _, line := range planActionDetailLines(actions[cursor]) {
+			lines = append(lines, m.styles.body.Render(line))
+		}
+	}
+
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
 func (m Model) filtersView() string {
 	lines := []string{
 		m.styles.title.Render("Filters"),
@@ -1012,6 +1217,16 @@ func (m *Model) resetPlanState() {
 	m.planExportError = ""
 }
 
+func (m *Model) resetLoadedPlanState() {
+	m.loadedPlan = domain.CleanupPlan{}
+	m.loadedPlanSummary = domain.CleanupPlanSummary{}
+	m.loadedPlanCursor = 0
+	m.loadedActionCursor = 0
+	m.loadedActionOffset = 0
+	m.planLoadError = ""
+	m.planPathInput.Blur()
+}
+
 func (m *Model) openQuitConfirm() {
 	m.quitReturnScreen = m.current
 	m.quitCursor = quitConfirmCancel
@@ -1028,6 +1243,10 @@ func (m Model) warningListHeight() int {
 
 func (m Model) planListHeight() int {
 	return boundedListHeight(m.height, 20, 3, 8)
+}
+
+func (m Model) planActionListHeight() int {
+	return boundedListHeight(m.height, 18, 3, 10)
 }
 
 type keyMap struct {
@@ -1171,6 +1390,13 @@ type exportPlanFinishedMsg struct {
 	err  error
 }
 
+type loadPlanFinishedMsg struct {
+	path    string
+	plan    domain.CleanupPlan
+	summary domain.CleanupPlanSummary
+	err     error
+}
+
 func importZIPCmd(zipPath, source string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := instagram.ImportZIP(zipPath)
@@ -1190,6 +1416,20 @@ func writePlanJSONCmd(outputPath string, plan domain.CleanupPlan) tea.Cmd {
 			return exportPlanFinishedMsg{path: outputPath, err: fmt.Errorf("export plan: %w", err)}
 		}
 		return exportPlanFinishedMsg{path: outputPath}
+	}
+}
+
+func loadPlanJSONCmd(planPath string) tea.Cmd {
+	return func() tea.Msg {
+		plan, err := domain.LoadPlanJSONFile(planPath)
+		if err != nil {
+			return loadPlanFinishedMsg{path: planPath, err: err}
+		}
+		return loadPlanFinishedMsg{
+			path:    planPath,
+			plan:    plan,
+			summary: domain.SummarizeCleanupPlan(plan),
+		}
 	}
 }
 
@@ -1295,6 +1535,94 @@ func planPreviewRows(actions []domain.CleanupAction, skipped []instagram.PlanBui
 		))
 	}
 	return rows
+}
+
+func planActionRow(action domain.CleanupAction) string {
+	target := firstNonEmptyString(action.TargetURL, action.TargetID)
+	return fmt.Sprintf(
+		"%s | %s | %s",
+		action.Type,
+		action.Status,
+		emptyFallback(target, "-"),
+	)
+}
+
+func planActionDetailLines(action domain.CleanupAction) []string {
+	lines := []string{
+		"ID: " + action.ID,
+		"Type: " + string(action.Type),
+		"Status: " + string(action.Status),
+	}
+	if action.TargetURL != "" {
+		lines = append(lines, "Target URL: "+action.TargetURL)
+	}
+	if action.TargetID != "" {
+		lines = append(lines, "Target ID: "+action.TargetID)
+	}
+	if action.SourceActivityItemID != "" {
+		lines = append(lines, "Source activity item ID: "+action.SourceActivityItemID)
+	}
+	if !action.CreatedAt.IsZero() {
+		lines = append(lines, "Created at: "+action.CreatedAt.Format(time.RFC3339))
+	}
+	return lines
+}
+
+func (m Model) actionCountLines(counts map[domain.ActionType]int) []string {
+	if len(counts) == 0 {
+		return []string{m.styles.muted.Render("none")}
+	}
+
+	keys := make([]string, 0, len(counts))
+	for actionType := range counts {
+		keys = append(keys, string(actionType))
+	}
+	sort.Strings(keys)
+
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, m.styles.body.Render(fmt.Sprintf("%s: %d", key, counts[domain.ActionType(key)])))
+	}
+	return lines
+}
+
+func formatPlanTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format(time.RFC3339)
+}
+
+func friendlyPlanLoadError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(err.Error(), "plan path is required") {
+		return "Plan path is required."
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "Plan file not found. Check the path and try again."
+	}
+	if errors.Is(err, domain.ErrUnsupportedPlanMode) {
+		return "Unsupported plan mode. Vanish can only inspect dry-run plans right now."
+	}
+
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) || strings.Contains(err.Error(), "unexpected EOF") {
+		return "Plan file is malformed JSON. Fix the JSON and try again."
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return "Plan file contains unsupported data. Check the field types and try again."
+	}
+	if strings.Contains(err.Error(), "unknown field") {
+		return "Plan file has an unknown field. Export a fresh plan or remove unsupported fields."
+	}
+	if strings.Contains(err.Error(), "validation failed") {
+		return "Plan file failed validation: " + err.Error()
+	}
+
+	return "Could not load plan: " + err.Error()
 }
 
 func (m Model) visibleItems() []domain.ActivityItem {
