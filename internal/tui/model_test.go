@@ -2,6 +2,8 @@ package tui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -441,6 +443,7 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 		"Selected comments: 1",
 		"Selected following: 1",
 		"Selected followers: 1",
+		"Generate dry-run plan",
 		"View selected items",
 		"Clear selection",
 		"Back",
@@ -450,6 +453,7 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 		}
 	}
 
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	if next.current != screenSelectedItems {
 		t.Fatalf("expected selected items screen, got %v", next.current)
@@ -469,6 +473,96 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 	}
 	if !strings.Contains(next.View().Content, "Total selected: 0") {
 		t.Fatalf("expected summary to show cleared selection, got:\n%s", next.View().Content)
+	}
+}
+
+func TestSelectionSummaryWithoutSelectionShowsPlanMessage(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress("s"))
+
+	next = updateModel(t, next, keyPress("enter"))
+
+	if next.current != screenSelectionSummary {
+		t.Fatalf("expected to stay on selection summary, got %v", next.current)
+	}
+	if !strings.Contains(next.View().Content, "Select at least one item before generating a plan.") {
+		t.Fatalf("expected friendly no-selection message, got:\n%s", next.View().Content)
+	}
+}
+
+func TestPlanPreviewShowsCountsAndUnsupportedFollowers(t *testing.T) {
+	next := planPreviewModel(t)
+
+	if next.current != screenPlanPreview {
+		t.Fatalf("expected plan preview, got %v", next.current)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Dry-Run Plan Preview",
+		"Plan mode: dry-run",
+		"Source platform: instagram",
+		"Selected items: 4",
+		"Supported actions: 3",
+		"Unsupported/skipped selected items: 1",
+		"Action counts: unlike 1, delete_comment 1, unfollow 1",
+		"unlike | item-like | https://www.instagram.com/p/demo_like/",
+		"delete_comment | item-comment | demo_bakery",
+		"unfollow | item-following | https://www.instagram.com/demo_following/",
+		"skipped | item-follower",
+		"unsupported follower",
+		"Export JSON",
+		"Back",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected plan preview to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestPlanExportPathDefaultsAndWritesReadableJSON(t *testing.T) {
+	next := planPreviewModel(t)
+	next = updateModel(t, next, keyPress("enter"))
+
+	if next.current != screenPlanExportPath {
+		t.Fatalf("expected export path screen, got %v", next.current)
+	}
+	if next.planPathInput.Value() != defaultPlanExportPath {
+		t.Fatalf("expected default export path %q, got %q", defaultPlanExportPath, next.planPathInput.Value())
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "plan.json")
+	next.planPathInput.SetValue(outputPath)
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected export command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+
+	view := next.View().Content
+	if next.planExportStatus != "Saved plan to "+outputPath || !strings.Contains(view, "Saved plan to") {
+		t.Fatalf("expected export success message, status=%q view:\n%s", next.planExportStatus, view)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected exported plan JSON: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{
+		"\n  \"format_version\"",
+		"\"mode\": \"dry-run\"",
+		"\"type\": \"unlike\"",
+		"\"type\": \"delete_comment\"",
+		"\"type\": \"unfollow\"",
+	} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("expected exported JSON to contain %q, got:\n%s", want, jsonText)
+		}
+	}
+	if strings.Contains(jsonText, "raw private comment") {
+		t.Fatalf("expected raw private text not to be exported, got:\n%s", jsonText)
 	}
 }
 
@@ -660,6 +754,16 @@ func importedModel(t *testing.T, result instagram.ImportResult) Model {
 		t.Fatalf("expected import result message not to return command")
 	}
 	return requireModel(t, updated)
+}
+
+func planPreviewModel(t *testing.T) Model {
+	t.Helper()
+
+	next := importedModel(t, fakeImportResultWithRelationships())
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, keyPress("a"))
+	next = updateModel(t, next, keyPress("s"))
+	return updateModel(t, next, keyPress("enter"))
 }
 
 func applyTypeFilter(t *testing.T, model Model, row int) Model {

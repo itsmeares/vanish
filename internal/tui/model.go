@@ -16,6 +16,7 @@ import (
 
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
+	"github.com/itsmeares/vanish/internal/platform"
 )
 
 type screen int
@@ -29,6 +30,8 @@ const (
 	screenFilters
 	screenSelectionSummary
 	screenSelectedItems
+	screenPlanPreview
+	screenPlanExportPath
 	screenWarnings
 	screenQuitConfirm
 )
@@ -74,16 +77,30 @@ var resultMenuItems = []string{
 }
 
 const (
-	selectionViewSelected = iota
+	selectionGeneratePlan = iota
+	selectionViewSelected
 	selectionClear
 	selectionBack
 )
 
 var selectionMenuItems = []string{
+	"Generate dry-run plan",
 	"View selected items",
 	"Clear selection",
 	"Back",
 }
+
+const (
+	planPreviewExport = iota
+	planPreviewBack
+)
+
+var planPreviewMenuItems = []string{
+	"Export JSON",
+	"Back",
+}
+
+const defaultPlanExportPath = "vanish-plan.json"
 
 const (
 	quitConfirmQuit = iota
@@ -108,6 +125,7 @@ type Model struct {
 	keys              keyMap
 	help              help.Model
 	pathInput         textinput.Model
+	planPathInput     textinput.Model
 	filterActorInput  textinput.Model
 	filterTargetInput textinput.Model
 	filterOlderInput  textinput.Model
@@ -118,10 +136,14 @@ type Model struct {
 	importErr         error
 	itemFilter        domain.ActivityItemFilter
 	selection         domain.ActivitySelection
+	planResult        instagram.PlanBuildResult
 	draftFilter       domain.ActivityItemFilter
 	draftOlderDate    string
 	draftNewerDate    string
 	filterError       string
+	selectionMessage  string
+	planExportStatus  string
+	planExportError   string
 	homeCursor        int
 	resultCursor      int
 	itemCursor        int
@@ -131,6 +153,8 @@ type Model struct {
 	selectionCursor   int
 	selectedCursor    int
 	selectedOffset    int
+	planPreviewCursor int
+	planListOffset    int
 	warningCursor     int
 	warningOffset     int
 	quitReturnScreen  screen
@@ -156,6 +180,7 @@ func NewModel() Model {
 		keys:              newKeyMap(),
 		help:              helpModel,
 		pathInput:         pathInput,
+		planPathInput:     newPlanPathInput(),
 		filterActorInput:  newFilterInput("username"),
 		filterTargetInput: newFilterInput("URL or ID"),
 		filterOlderInput:  newFilterInput("YYYY-MM-DD"),
@@ -183,6 +208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		m.pathInput.SetWidth(inputWidth(msg.Width))
+		m.planPathInput.SetWidth(inputWidth(msg.Width))
 		m.setFilterInputWidths(inputWidth(msg.Width))
 		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.itemListHeight())
 		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
@@ -197,6 +223,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.itemOffset = 0
 		m.selection = domain.ActivitySelection{}
 		m.selectionCursor = 0
+		m.selectionMessage = ""
+		m.resetPlanState()
 		m.selectedCursor = 0
 		m.selectedOffset = 0
 		m.warningCursor = 0
@@ -210,6 +238,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
+
+	case exportPlanFinishedMsg:
+		if msg.err != nil {
+			m.planExportError = msg.err.Error()
+			m.planExportStatus = ""
+			return m, nil
+		}
+		m.planExportError = ""
+		m.planExportStatus = fmt.Sprintf("Saved plan to %s", msg.path)
+		return m, nil
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, m.keys.quit) {
@@ -234,6 +272,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSelectionSummary(msg)
 		case screenSelectedItems:
 			return m.updateSelectedItems(msg)
+		case screenPlanPreview:
+			return m.updatePlanPreview(msg)
+		case screenPlanExportPath:
+			return m.updatePlanExportPath(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
 		case screenQuitConfirm:
@@ -398,6 +440,7 @@ func (m Model) updateFilters(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.selectionMessage = ""
 	switch {
 	case key.Matches(msg, m.keys.up):
 		m.selectionCursor = moveCursor(m.selectionCursor, len(selectionMenuItems), -1)
@@ -407,6 +450,29 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.current = screenItemsBrowser
 	case key.Matches(msg, m.keys.selectItem):
 		switch m.selectionCursor {
+		case selectionGeneratePlan:
+			selected := m.selectedItems()
+			if len(selected) == 0 {
+				m.selectionMessage = "Select at least one item before generating a plan."
+				return m, nil
+			}
+			result, err := instagram.BuildCleanupPlan(platform.BuildPlanRequest{
+				Platform:   domain.PlatformInstagram,
+				SourceName: emptyFallback(m.importSource, "instagram export"),
+				CreatedAt:  time.Now().UTC(),
+				Items:      selected,
+			})
+			if err != nil {
+				m.selectionMessage = err.Error()
+				return m, nil
+			}
+			m.planResult = result
+			m.planPreviewCursor = 0
+			m.planListOffset = 0
+			m.planExportStatus = ""
+			m.planExportError = ""
+			m.planPathInput.SetValue(defaultPlanExportPath)
+			m.current = screenPlanPreview
 		case selectionViewSelected:
 			items := m.selectedItems()
 			m.selectedCursor = clampCursor(m.selectedCursor, len(items))
@@ -422,6 +488,53 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	}
 
 	return m, nil
+}
+
+func (m Model) updatePlanPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.planPreviewCursor = moveCursor(m.planPreviewCursor, len(planPreviewMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.planPreviewCursor = moveCursor(m.planPreviewCursor, len(planPreviewMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenSelectionSummary
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.planPreviewCursor {
+		case planPreviewExport:
+			m.current = screenPlanExportPath
+			if strings.TrimSpace(m.planPathInput.Value()) == "" {
+				m.planPathInput.SetValue(defaultPlanExportPath)
+			}
+			m.planExportStatus = ""
+			m.planExportError = ""
+			return m, m.planPathInput.Focus()
+		case planPreviewBack:
+			m.current = screenSelectionSummary
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updatePlanExportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.save):
+		outputPath := strings.TrimSpace(m.planPathInput.Value())
+		if outputPath == "" {
+			outputPath = defaultPlanExportPath
+			m.planPathInput.SetValue(outputPath)
+		}
+		m.planExportStatus = ""
+		m.planExportError = ""
+		return m, writePlanJSONCmd(outputPath, m.planResult.Plan)
+	case key.Matches(msg, m.keys.back):
+		m.planPathInput.Blur()
+		m.current = screenPlanPreview
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.planPathInput, cmd = m.planPathInput.Update(msg)
+		return m, cmd
+	}
 }
 
 func (m Model) updateSelectedItems(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -490,6 +603,10 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.selectionSummaryView())
 	case screenSelectedItems:
 		return tea.NewView(m.selectedItemsView())
+	case screenPlanPreview:
+		return tea.NewView(m.planPreviewView())
+	case screenPlanExportPath:
+		return tea.NewView(m.planExportPathView())
 	case screenWarnings:
 		return tea.NewView(m.warningsView())
 	case screenQuitConfirm:
@@ -642,6 +759,9 @@ func (m Model) selectionSummaryView() string {
 		"",
 	}
 
+	if strings.TrimSpace(m.selectionMessage) != "" {
+		lines = append(lines, m.styles.warning.Render(m.selectionMessage), "")
+	}
 	lines = append(lines, m.renderMenu(selectionMenuItems, m.selectionCursor)...)
 	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
@@ -686,6 +806,65 @@ func (m Model) selectedItemsView() string {
 	}
 
 	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) planPreviewView() string {
+	result := m.planResult
+	rows := planPreviewRows(result.Plan.Actions, result.Skipped)
+	visibleRows := m.planListHeight()
+	offset := ensureOffset(0, m.planListOffset, len(rows), visibleRows)
+
+	lines := []string{
+		m.styles.title.Render("Dry-Run Plan Preview"),
+		"",
+		m.styles.body.Render(fmt.Sprintf("Plan mode: %s", result.Plan.Mode)),
+		m.styles.body.Render(fmt.Sprintf("Source platform: %s", result.Plan.Platform)),
+		m.styles.body.Render(fmt.Sprintf("Selected items: %d", result.SelectedCount)),
+		m.styles.body.Render(fmt.Sprintf("Supported actions: %d", len(result.Plan.Actions))),
+		m.styles.body.Render(fmt.Sprintf("Unsupported/skipped selected items: %d", len(result.Skipped))),
+		m.styles.body.Render(fmt.Sprintf("Action counts: unlike %d, delete_comment %d, unfollow %d", result.Counts.Unlike, result.Counts.DeleteComment, result.Counts.Unfollow)),
+		"",
+	}
+
+	lines = append(lines, m.renderMenu(planPreviewMenuItems, m.planPreviewCursor)...)
+	lines = append(lines, "", m.styles.muted.Render("Planned actions"))
+	if len(rows) == 0 {
+		lines = append(lines, m.styles.muted.Render("No supported actions."))
+	} else {
+		end := minInt(len(rows), offset+visibleRows)
+		if offset > 0 {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+		for i := offset; i < end; i++ {
+			lines = append(lines, m.styles.body.Render(rows[i]))
+		}
+		if end < len(rows) {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+	}
+
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) planExportPathView() string {
+	lines := []string{
+		m.styles.title.Render("Export Plan JSON"),
+		"",
+		m.styles.body.Render("Output path"),
+		m.planPathInput.View(),
+		"",
+	}
+
+	if strings.TrimSpace(m.planExportStatus) != "" {
+		lines = append(lines, m.styles.body.Render(m.planExportStatus), "")
+	}
+	if strings.TrimSpace(m.planExportError) != "" {
+		lines = append(lines, m.styles.error.Render(m.planExportError), "")
+	}
+
+	lines = append(lines, m.helpLine(m.keys.save, m.keys.back, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -813,12 +992,24 @@ func (m Model) resetImportState() Model {
 	m.itemOffset = 0
 	m.selection = domain.ActivitySelection{}
 	m.selectionCursor = 0
+	m.selectionMessage = ""
+	m.resetPlanState()
 	m.selectedCursor = 0
 	m.selectedOffset = 0
 	m.warningCursor = 0
 	m.warningOffset = 0
 	m.clearFilterState()
 	return m
+}
+
+func (m *Model) resetPlanState() {
+	m.planResult = instagram.PlanBuildResult{}
+	m.planPreviewCursor = 0
+	m.planListOffset = 0
+	m.planPathInput.SetValue(defaultPlanExportPath)
+	m.planPathInput.Blur()
+	m.planExportStatus = ""
+	m.planExportError = ""
 }
 
 func (m *Model) openQuitConfirm() {
@@ -833,6 +1024,10 @@ func (m Model) itemListHeight() int {
 
 func (m Model) warningListHeight() int {
 	return boundedListHeight(m.height, 8, 3, 18)
+}
+
+func (m Model) planListHeight() int {
+	return boundedListHeight(m.height, 20, 3, 8)
 }
 
 type keyMap struct {
@@ -971,10 +1166,30 @@ type importFinishedMsg struct {
 	source string
 }
 
+type exportPlanFinishedMsg struct {
+	path string
+	err  error
+}
+
 func importZIPCmd(zipPath, source string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := instagram.ImportZIP(zipPath)
 		return importFinishedMsg{result: result, err: err, source: source}
+	}
+}
+
+func writePlanJSONCmd(outputPath string, plan domain.CleanupPlan) tea.Cmd {
+	return func() tea.Msg {
+		file, err := os.Create(outputPath)
+		if err != nil {
+			return exportPlanFinishedMsg{path: outputPath, err: fmt.Errorf("export plan: %w", err)}
+		}
+		defer file.Close()
+
+		if err := domain.WritePlanJSON(file, plan); err != nil {
+			return exportPlanFinishedMsg{path: outputPath, err: fmt.Errorf("export plan: %w", err)}
+		}
+		return exportPlanFinishedMsg{path: outputPath}
 	}
 }
 
@@ -1058,6 +1273,28 @@ func itemDetailLines(item domain.ActivityItem) []string {
 	}
 
 	return lines
+}
+
+func planPreviewRows(actions []domain.CleanupAction, skipped []instagram.PlanBuildSkip) []string {
+	rows := make([]string, 0, len(actions)+len(skipped))
+	for _, action := range actions {
+		target := firstNonEmptyString(action.TargetURL, action.TargetID)
+		rows = append(rows, fmt.Sprintf(
+			"%s | %s | %s",
+			action.Type,
+			action.SourceActivityItemID,
+			emptyFallback(target, "-"),
+		))
+	}
+	for _, skip := range skipped {
+		rows = append(rows, fmt.Sprintf(
+			"skipped | %s | %s | %s",
+			emptyFallback(skip.SourceActivityItemID, "-"),
+			emptyFallback(skip.TargetRef, "-"),
+			emptyFallback(skip.Reason, "unsupported"),
+		))
+	}
+	return rows
 }
 
 func (m Model) visibleItems() []domain.ActivityItem {
@@ -1216,6 +1453,16 @@ func newFilterInput(placeholder string) textinput.Model {
 	input.Prompt = ""
 	input.CharLimit = 256
 	input.SetWidth(74)
+	return input
+}
+
+func newPlanPathInput() textinput.Model {
+	input := textinput.New()
+	input.Placeholder = defaultPlanExportPath
+	input.Prompt = "> "
+	input.CharLimit = 1024
+	input.SetWidth(74)
+	input.SetValue(defaultPlanExportPath)
 	return input
 }
 
