@@ -26,6 +26,7 @@ const (
 	screenImporting
 	screenImportResult
 	screenItemsBrowser
+	screenFilters
 	screenWarnings
 )
 
@@ -40,6 +41,22 @@ const (
 	resultViewWarnings
 	resultBackHome
 )
+
+const (
+	filterRowLike = iota
+	filterRowComment
+	filterRowFollowing
+	filterRowFollower
+	filterRowActor
+	filterRowTarget
+	filterRowOlder
+	filterRowNewer
+	filterRowApply
+	filterRowClear
+	filterRowCount
+)
+
+const filterEditNone = -1
 
 var homeMenuItems = []string{
 	"Import Instagram export ZIP",
@@ -59,23 +76,34 @@ var resultMenuItems = []string{
 // terminal dimensions, styles, and reusable Bubbles components. Bubble Tea
 // passes this value through Init, Update, and View as the app runs.
 type Model struct {
-	current       screen
-	width         int
-	height        int
-	styles        styles
-	keys          keyMap
-	help          help.Model
-	pathInput     textinput.Model
-	spinner       spinner.Model
-	importSource  string
-	importResult  instagram.ImportResult
-	importErr     error
-	homeCursor    int
-	resultCursor  int
-	itemCursor    int
-	itemOffset    int
-	warningCursor int
-	warningOffset int
+	current           screen
+	width             int
+	height            int
+	styles            styles
+	keys              keyMap
+	help              help.Model
+	pathInput         textinput.Model
+	filterActorInput  textinput.Model
+	filterTargetInput textinput.Model
+	filterOlderInput  textinput.Model
+	filterNewerInput  textinput.Model
+	spinner           spinner.Model
+	importSource      string
+	importResult      instagram.ImportResult
+	importErr         error
+	itemFilter        domain.ActivityItemFilter
+	draftFilter       domain.ActivityItemFilter
+	draftOlderDate    string
+	draftNewerDate    string
+	filterError       string
+	homeCursor        int
+	resultCursor      int
+	itemCursor        int
+	itemOffset        int
+	filterCursor      int
+	filterEditing     int
+	warningCursor     int
+	warningOffset     int
 }
 
 // NewModel builds the initial app state before Bubble Tea starts sending
@@ -92,12 +120,17 @@ func NewModel() Model {
 	pathInput.SetWidth(74)
 
 	return Model{
-		current:   screenHome,
-		styles:    newStyles(isDark),
-		keys:      newKeyMap(),
-		help:      helpModel,
-		pathInput: pathInput,
-		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		current:           screenHome,
+		styles:            newStyles(isDark),
+		keys:              newKeyMap(),
+		help:              helpModel,
+		pathInput:         pathInput,
+		filterActorInput:  newFilterInput("username"),
+		filterTargetInput: newFilterInput("URL or ID"),
+		filterOlderInput:  newFilterInput("YYYY-MM-DD"),
+		filterNewerInput:  newFilterInput("YYYY-MM-DD"),
+		filterEditing:     filterEditNone,
+		spinner:           spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 	}
 }
 
@@ -119,7 +152,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		m.pathInput.SetWidth(inputWidth(msg.Width))
-		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.importResult.Items), m.itemListHeight())
+		m.setFilterInputWidths(inputWidth(msg.Width))
+		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.itemListHeight())
 		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
 
 	case importFinishedMsg:
@@ -131,6 +165,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.itemOffset = 0
 		m.warningCursor = 0
 		m.warningOffset = 0
+		m.clearFilterState()
 		m.current = screenImportResult
 
 	case spinner.TickMsg:
@@ -154,6 +189,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateImportResult(msg)
 		case screenItemsBrowser:
 			return m.updateItemsBrowser(msg)
+		case screenFilters:
+			return m.updateFilters(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
 		}
@@ -226,8 +263,9 @@ func (m Model) updateImportResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.selectItem):
 		switch m.resultCursor {
 		case resultViewItems:
-			m.itemCursor = clampCursor(m.itemCursor, len(m.importResult.Items))
-			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.importResult.Items), m.itemListHeight())
+			items := m.visibleItems()
+			m.itemCursor = clampCursor(m.itemCursor, len(items))
+			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.itemListHeight())
 			m.current = screenItemsBrowser
 		case resultViewWarnings:
 			m.warningCursor = clampCursor(m.warningCursor, len(m.importResult.Warnings))
@@ -242,15 +280,64 @@ func (m Model) updateImportResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateItemsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	items := m.visibleItems()
 	switch {
 	case key.Matches(msg, m.keys.up):
-		m.itemCursor = moveCursor(m.itemCursor, len(m.importResult.Items), -1)
+		m.itemCursor = moveCursor(m.itemCursor, len(items), -1)
 	case key.Matches(msg, m.keys.down):
-		m.itemCursor = moveCursor(m.itemCursor, len(m.importResult.Items), 1)
+		m.itemCursor = moveCursor(m.itemCursor, len(items), 1)
+	case key.Matches(msg, m.keys.filter):
+		m.beginFilterDraft()
+		m.current = screenFilters
 	case key.Matches(msg, m.keys.back):
 		m.current = screenImportResult
 	}
-	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.importResult.Items), m.itemListHeight())
+	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.itemListHeight())
+	return m, nil
+}
+
+func (m Model) updateFilters(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.filterEditing != filterEditNone {
+		switch {
+		case key.Matches(msg, m.keys.selectItem):
+			m.acceptFilterInput()
+			return m, nil
+		case key.Matches(msg, m.keys.back):
+			m.cancelFilterInput()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.updateFocusedFilterInput(msg, &cmd)
+			return m, cmd
+		}
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.filterCursor = moveCursor(m.filterCursor, filterRowCount, -1)
+	case key.Matches(msg, m.keys.down):
+		m.filterCursor = moveCursor(m.filterCursor, filterRowCount, 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenItemsBrowser
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.filterCursor {
+		case filterRowLike:
+			m.toggleDraftType(domain.ActivityFilterLike)
+		case filterRowComment:
+			m.toggleDraftType(domain.ActivityFilterComment)
+		case filterRowFollowing:
+			m.toggleDraftType(domain.ActivityFilterFollowing)
+		case filterRowFollower:
+			m.toggleDraftType(domain.ActivityFilterFollower)
+		case filterRowActor, filterRowTarget, filterRowOlder, filterRowNewer:
+			return m.startFilterInput(m.filterCursor)
+		case filterRowApply:
+			m.applyDraftFilter()
+		case filterRowClear:
+			m.clearFilterState()
+		}
+	}
+
 	return m, nil
 }
 
@@ -280,6 +367,8 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.importResultView())
 	case screenItemsBrowser:
 		return tea.NewView(m.itemsBrowserView())
+	case screenFilters:
+		return tea.NewView(m.filtersView())
 	case screenWarnings:
 		return tea.NewView(m.warningsView())
 	default:
@@ -372,7 +461,8 @@ func (m Model) importResultView() string {
 }
 
 func (m Model) itemsBrowserView() string {
-	items := m.importResult.Items
+	items := m.visibleItems()
+	total := len(m.importResult.Items)
 	visibleRows := m.itemListHeight()
 	cursor := clampCursor(m.itemCursor, len(items))
 	offset := ensureOffset(cursor, m.itemOffset, len(items), visibleRows)
@@ -380,8 +470,11 @@ func (m Model) itemsBrowserView() string {
 	lines := []string{
 		m.styles.title.Render("Parsed Items"),
 		"",
-		m.styles.muted.Render(fmt.Sprintf("%d parsed items from %s", len(items), emptyFallback(m.importSource, "instagram export"))),
+		m.styles.muted.Render(fmt.Sprintf("%d / %d parsed items visible from %s", len(items), total, emptyFallback(m.importSource, "instagram export"))),
 		"",
+	}
+	if m.itemFilter.Active() {
+		lines = append(lines, m.styles.warning.Render("Filters active"), "")
 	}
 
 	if len(items) == 0 {
@@ -408,7 +501,47 @@ func (m Model) itemsBrowserView() string {
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.filter, m.keys.back, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) filtersView() string {
+	lines := []string{
+		m.styles.title.Render("Filters"),
+		"",
+		m.styles.muted.Render(fmt.Sprintf("%d / %d parsed items visible", len(m.visibleItems()), len(m.importResult.Items))),
+		"",
+	}
+
+	if m.itemFilter.Active() {
+		lines = append(lines, m.styles.warning.Render("Filters active"), "")
+	}
+	if strings.TrimSpace(m.filterError) != "" {
+		lines = append(lines, m.styles.error.Render(m.filterError), "")
+	}
+
+	rows := []string{
+		filterTypeRow("Like", m.draftFilter.IncludeTypes[domain.ActivityFilterLike]),
+		filterTypeRow("Comment", m.draftFilter.IncludeTypes[domain.ActivityFilterComment]),
+		filterTypeRow("Following", m.draftFilter.IncludeTypes[domain.ActivityFilterFollowing]),
+		filterTypeRow("Follower", m.draftFilter.IncludeTypes[domain.ActivityFilterFollower]),
+		m.filterInputRow("Actor contains", filterRowActor, m.filterActorInput, m.draftFilter.ActorContains),
+		m.filterInputRow("Target contains", filterRowTarget, m.filterTargetInput, m.draftFilter.TargetContains),
+		m.filterInputRow("Older than", filterRowOlder, m.filterOlderInput, m.draftOlderDate),
+		m.filterInputRow("Newer than", filterRowNewer, m.filterNewerInput, m.draftNewerDate),
+		"Apply filters",
+		"Clear all filters",
+	}
+
+	for i, row := range rows {
+		lines = append(lines, m.renderSelectableLine(row, i == m.filterCursor))
+	}
+
+	if m.filterEditing == filterEditNone {
+		lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	} else {
+		lines = append(lines, "", m.helpLine(m.keys.save, m.keys.back, m.keys.quit))
+	}
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -483,6 +616,7 @@ func (m Model) resetImportState() Model {
 	m.itemOffset = 0
 	m.warningCursor = 0
 	m.warningOffset = 0
+	m.clearFilterState()
 	return m
 }
 
@@ -499,6 +633,8 @@ type keyMap struct {
 	down       key.Binding
 	selectItem key.Binding
 	start      key.Binding
+	save       key.Binding
+	filter     key.Binding
 	back       key.Binding
 	quit       key.Binding
 }
@@ -521,6 +657,14 @@ func newKeyMap() keyMap {
 			key.WithKeys("enter"),
 			key.WithHelp("enter", "start"),
 		),
+		save: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "save"),
+		),
+		filter: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "filters"),
+		),
 		back: key.NewBinding(
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "back"),
@@ -534,11 +678,11 @@ func newKeyMap() keyMap {
 
 // ShortHelp and FullHelp make keyMap satisfy the Bubbles help.KeyMap interface.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.up, k.down, k.selectItem, k.back, k.quit}
+	return []key.Binding{k.up, k.down, k.selectItem, k.filter, k.back, k.quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.up, k.down, k.selectItem, k.start, k.back, k.quit}}
+	return [][]key.Binding{{k.up, k.down, k.selectItem, k.start, k.save, k.filter, k.back, k.quit}}
 }
 
 type screenHelp []key.Binding
@@ -679,6 +823,192 @@ func itemDetailLines(item domain.ActivityItem) []string {
 	}
 
 	return lines
+}
+
+func (m Model) visibleItems() []domain.ActivityItem {
+	return domain.FilterActivityItems(m.importResult.Items, m.itemFilter)
+}
+
+func (m *Model) beginFilterDraft() {
+	m.draftFilter = copyActivityItemFilter(m.itemFilter)
+	m.draftOlderDate = filterDateValue(m.itemFilter.OlderThan)
+	m.draftNewerDate = filterDateValue(m.itemFilter.NewerThan)
+	m.filterError = ""
+	m.filterEditing = filterEditNone
+	m.setFilterInputValues()
+}
+
+func (m *Model) clearFilterState() {
+	m.itemFilter = domain.ActivityItemFilter{}
+	m.draftFilter = domain.ActivityItemFilter{}
+	m.draftOlderDate = ""
+	m.draftNewerDate = ""
+	m.filterError = ""
+	m.filterEditing = filterEditNone
+	m.filterCursor = 0
+	m.itemCursor = 0
+	m.itemOffset = 0
+	m.setFilterInputValues()
+}
+
+func (m *Model) toggleDraftType(filterType domain.ActivityFilterType) {
+	if m.draftFilter.IncludeTypes == nil {
+		m.draftFilter.IncludeTypes = make(map[domain.ActivityFilterType]bool)
+	}
+	m.draftFilter.IncludeTypes[filterType] = !m.draftFilter.IncludeTypes[filterType]
+	m.filterError = ""
+}
+
+func (m *Model) startFilterInput(row int) (tea.Model, tea.Cmd) {
+	m.filterEditing = row
+	m.filterError = ""
+	m.blurFilterInputs()
+	switch row {
+	case filterRowActor:
+		return *m, m.filterActorInput.Focus()
+	case filterRowTarget:
+		return *m, m.filterTargetInput.Focus()
+	case filterRowOlder:
+		return *m, m.filterOlderInput.Focus()
+	case filterRowNewer:
+		return *m, m.filterNewerInput.Focus()
+	default:
+		m.filterEditing = filterEditNone
+		return *m, nil
+	}
+}
+
+func (m *Model) acceptFilterInput() {
+	switch m.filterEditing {
+	case filterRowActor:
+		m.draftFilter.ActorContains = strings.TrimSpace(m.filterActorInput.Value())
+	case filterRowTarget:
+		m.draftFilter.TargetContains = strings.TrimSpace(m.filterTargetInput.Value())
+	case filterRowOlder:
+		m.draftOlderDate = strings.TrimSpace(m.filterOlderInput.Value())
+	case filterRowNewer:
+		m.draftNewerDate = strings.TrimSpace(m.filterNewerInput.Value())
+	}
+	m.filterError = ""
+	m.filterEditing = filterEditNone
+	m.blurFilterInputs()
+	m.setFilterInputValues()
+}
+
+func (m *Model) cancelFilterInput() {
+	m.filterEditing = filterEditNone
+	m.blurFilterInputs()
+	m.setFilterInputValues()
+}
+
+func (m *Model) applyDraftFilter() {
+	next := copyActivityItemFilter(m.draftFilter)
+	next.OlderThan = nil
+	next.NewerThan = nil
+	if strings.TrimSpace(m.draftOlderDate) != "" {
+		olderThan, err := domain.ParseFilterDate(m.draftOlderDate)
+		if err != nil {
+			m.filterError = "Older than date must use YYYY-MM-DD."
+			return
+		}
+		next.OlderThan = &olderThan
+	}
+	if strings.TrimSpace(m.draftNewerDate) != "" {
+		newerThan, err := domain.ParseFilterDate(m.draftNewerDate)
+		if err != nil {
+			m.filterError = "Newer than date must use YYYY-MM-DD."
+			return
+		}
+		next.NewerThan = &newerThan
+	}
+
+	m.itemFilter = next
+	m.filterError = ""
+	items := m.visibleItems()
+	m.itemCursor = clampCursor(m.itemCursor, len(items))
+	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.itemListHeight())
+	m.current = screenItemsBrowser
+}
+
+func (m *Model) updateFocusedFilterInput(msg tea.Msg, cmd *tea.Cmd) {
+	switch m.filterEditing {
+	case filterRowActor:
+		m.filterActorInput, *cmd = m.filterActorInput.Update(msg)
+	case filterRowTarget:
+		m.filterTargetInput, *cmd = m.filterTargetInput.Update(msg)
+	case filterRowOlder:
+		m.filterOlderInput, *cmd = m.filterOlderInput.Update(msg)
+	case filterRowNewer:
+		m.filterNewerInput, *cmd = m.filterNewerInput.Update(msg)
+	}
+}
+
+func (m *Model) blurFilterInputs() {
+	m.filterActorInput.Blur()
+	m.filterTargetInput.Blur()
+	m.filterOlderInput.Blur()
+	m.filterNewerInput.Blur()
+}
+
+func (m *Model) setFilterInputValues() {
+	m.filterActorInput.SetValue(m.draftFilter.ActorContains)
+	m.filterTargetInput.SetValue(m.draftFilter.TargetContains)
+	m.filterOlderInput.SetValue(m.draftOlderDate)
+	m.filterNewerInput.SetValue(m.draftNewerDate)
+}
+
+func (m *Model) setFilterInputWidths(width int) {
+	m.filterActorInput.SetWidth(width)
+	m.filterTargetInput.SetWidth(width)
+	m.filterOlderInput.SetWidth(width)
+	m.filterNewerInput.SetWidth(width)
+}
+
+func (m Model) filterInputRow(label string, row int, input textinput.Model, value string) string {
+	if m.filterEditing == row {
+		return fmt.Sprintf("%s: %s", label, input.View())
+	}
+	return fmt.Sprintf("%s: %s", label, emptyFallback(value, "-"))
+}
+
+func newFilterInput(placeholder string) textinput.Model {
+	input := textinput.New()
+	input.Placeholder = placeholder
+	input.Prompt = ""
+	input.CharLimit = 256
+	input.SetWidth(74)
+	return input
+}
+
+func filterTypeRow(label string, included bool) string {
+	checked := " "
+	if included {
+		checked = "x"
+	}
+	return fmt.Sprintf("[%s] %s", checked, label)
+}
+
+func filterDateValue(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format("2006-01-02")
+}
+
+func copyActivityItemFilter(filter domain.ActivityItemFilter) domain.ActivityItemFilter {
+	copied := domain.ActivityItemFilter{
+		ActorContains:  filter.ActorContains,
+		TargetContains: filter.TargetContains,
+		OlderThan:      filter.OlderThan,
+		NewerThan:      filter.NewerThan,
+	}
+	if len(filter.IncludeTypes) > 0 {
+		copied.IncludeTypes = make(map[domain.ActivityFilterType]bool, len(filter.IncludeTypes))
+		for filterType, included := range filter.IncludeTypes {
+			copied.IncludeTypes[filterType] = included
+		}
+	}
+	return copied
 }
 
 func moveCursor(cursor, count, delta int) int {

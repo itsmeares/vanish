@@ -251,6 +251,98 @@ func TestItemsBrowserNavigationUsesArrowAndJK(t *testing.T) {
 	}
 }
 
+func TestItemsBrowserShowsVisibleAndTotalCount(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+
+	next := updateModel(t, m, keyPress("enter"))
+	view := next.View().Content
+
+	if !strings.Contains(view, "2 / 2 parsed items visible") {
+		t.Fatalf("expected visible and total count, got:\n%s", view)
+	}
+}
+
+func TestFiltersScreenOpensFromItemsBrowser(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+
+	next = updateModel(t, next, keyPress("f"))
+	view := next.View().Content
+
+	if next.current != screenFilters {
+		t.Fatalf("expected filters screen, got %v", next.current)
+	}
+	for _, want := range []string{"Filters", "[ ] Like", "Actor contains", "Apply filters", "Clear all filters"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected filters view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestApplyingTypeFilterUpdatesItemsBrowser(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress("f"))
+
+	next = updateModel(t, next, keyPress("enter"))
+	for range filterRowApply {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+
+	view := next.View().Content
+	if next.current != screenItemsBrowser {
+		t.Fatalf("expected items browser, got %v", next.current)
+	}
+	for _, want := range []string{
+		"1 / 4 parsed items visible",
+		"Filters active",
+		"like | demo_artist",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected filtered items view to contain %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "comment | demo_bakery") {
+		t.Fatalf("expected comment to be filtered out, got:\n%s", view)
+	}
+}
+
+func TestInvalidFilterDateShowsFriendlyErrorAndDoesNotApply(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress("f"))
+
+	for range filterRowOlder {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+	for _, keyName := range []string{"n", "o", "t", "-", "a", "-", "d", "a", "t", "e"} {
+		next = updateModel(t, next, keyPress(keyName))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+	for range filterRowApply - filterRowOlder {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+
+	view := next.View().Content
+	if next.current != screenFilters {
+		t.Fatalf("expected filters screen after invalid date, got %v", next.current)
+	}
+	if next.itemFilter.Active() {
+		t.Fatalf("expected invalid date not to apply filter")
+	}
+	if !strings.Contains(view, "Older than date must use YYYY-MM-DD.") {
+		t.Fatalf("expected friendly date error, got:\n%s", view)
+	}
+
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenItemsBrowser {
+		t.Fatalf("expected esc to return to items browser, got %v", next.current)
+	}
+}
+
 func TestWarningsViewShowsEmptyState(t *testing.T) {
 	result := fakeImportResult()
 	result.Warnings = nil
@@ -314,6 +406,40 @@ func fakeImportResult() instagram.ImportResult {
 		},
 		Warnings: []string{"settings/unknown_shape.json: unsupported Instagram JSON skipped"},
 	}
+}
+
+func fakeImportResultWithRelationships() instagram.ImportResult {
+	result := fakeImportResult()
+	followingOccurred := time.Date(2024, 3, 10, 16, 0, 0, 0, time.UTC)
+	followerOccurred := time.Date(2024, 3, 11, 16, 0, 0, 0, time.UTC)
+	result.Items = append(result.Items,
+		domain.ActivityItem{
+			ID:         "item-following",
+			Platform:   domain.PlatformInstagram,
+			Type:       domain.ItemTypeFollow,
+			Actor:      "demo_following",
+			TargetID:   "demo_following",
+			TargetURL:  "https://www.instagram.com/demo_following/",
+			OccurredAt: &followingOccurred,
+			Metadata:   map[string]string{"relationship": "following"},
+			Source:     domain.SourceMetadata{FileName: "following.json"},
+		},
+		domain.ActivityItem{
+			ID:         "item-follower",
+			Platform:   domain.PlatformInstagram,
+			Type:       domain.ItemTypeFollow,
+			Actor:      "demo_follower",
+			TargetID:   "demo_follower",
+			TargetURL:  "https://www.instagram.com/demo_follower/",
+			OccurredAt: &followerOccurred,
+			Metadata:   map[string]string{"relationship": "follower"},
+			Source:     domain.SourceMetadata{FileName: "followers_1.json"},
+		},
+	)
+	result.Summary.Total = len(result.Items)
+	result.Summary.Following = 1
+	result.Summary.Followers = 1
+	return result
 }
 
 func importedModel(t *testing.T, result instagram.ImportResult) Model {
