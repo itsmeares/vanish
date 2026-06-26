@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" viewBox="0 0 980 640" role="img" aria-labelledby="title desc">
+  <title id="title">Vanish parsed items screen</title>
+  <desc id="desc">Terminal screenshot of parsed Instagram items with local dry-run labels.</desc>
+  <rect width="980" height="640" rx="18" fill="#0d1117"/>
+  <rect x="34" y="34" width="912" height="572" rx="12" fill="#161b22" stroke="#30363d"/>
+  <text x="70" y="82" fill="#d6c7ff" font-family="Consolas, monospace" font-size="26" font-weight="700">Vanish</text>
+  <text x="166" y="82" fill="#8b949e" font-family="Consolas, monospace" font-size="26"> / Parsed Items</text>
+  <text x="70" y="120" fill="#79c0ff" font-family="Consolas, monospace" font-size="18" font-weight="700">[LOCAL] [DRY-RUN] [NO NETWORK]</text>
+  <text x="70" y="154" fill="#8b949e" font-family="Consolas, monospace" font-size="18">--------------------------------------------------------------------------</text>
+  <text x="70" y="198" fill="#8b949e" font-family="Consolas, monospace" font-size="19">Visible: 24 / 24 | Selected: 3 | Filters: off</text>
+  <text x="70" y="228" fill="#8b949e" font-family="Consolas, monospace" font-size="19">Source: demo instagram export</text>
+  <text x="70" y="280" fill="#79c0ff" font-family="Consolas, monospace" font-size="20" font-weight="700">&gt; [x] like | demo_artist | https://www.instagram.com/p/vanish_demo_like_01/</text>
+  <text x="70" y="316" fill="#e6edf3" font-family="Consolas, monospace" font-size="20">  [ ] comment | demo_bakery | https://www.instagram.com/p/vanish_demo_comment_01/</text>
+  <text x="70" y="352" fill="#e6edf3" font-family="Consolas, monospace" font-size="20">  [x] follow | demo_following | https://www.instagram.com/demo_following/</text>
+  <text x="70" y="388" fill="#e6edf3" font-family="Consolas, monospace" font-size="20">  [ ] follow | demo_follower | https://www.instagram.com/demo_follower/</text>
+  <text x="70" y="444" fill="#8b949e" font-family="Consolas, monospace" font-size="20" font-weight="700">Details</text>
+  <text x="70" y="480" fill="#e6edf3" font-family="Consolas, monospace" font-size="19">Type: like</text>
+  <text x="70" y="512" fill="#e6edf3" font-family="Consolas, monospace" font-size="19">Target URL: https://www.instagram.com/p/vanish_demo_like_01/</text>
+  <text x="70" y="544" fill="#e6edf3" font-family="Consolas, monospace" font-size="19">Source file: your_instagram_activity/likes/liked_posts.json</text>
+  <text x="70" y="584" fill="#8b949e" font-family="Consolas, monospace" font-size="16">enter select  -  space toggle  -  s selection  -  f filters  -  esc/backspace back</text>
+</svg>

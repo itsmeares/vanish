@@ -38,6 +38,7 @@ const (
 	screenLoadedPlanSummary
 	screenLoadedPlanActions
 	screenWarnings
+	screenKeybindings
 	screenQuitConfirm
 )
 
@@ -51,6 +52,7 @@ const (
 const (
 	resultViewItems = iota
 	resultViewWarnings
+	resultReviewSelection
 	resultBackHome
 )
 
@@ -80,12 +82,15 @@ var homeMenuItems = []string{
 var resultMenuItems = []string{
 	"View parsed items",
 	"View warnings",
+	"Review selection",
 	"Back home",
 }
 
 const (
 	selectionGeneratePlan = iota
 	selectionViewSelected
+	selectionSelectVisible
+	selectionDeselectVisible
 	selectionClear
 	selectionBack
 )
@@ -93,6 +98,8 @@ const (
 var selectionMenuItems = []string{
 	"Generate dry-run plan",
 	"View selected items",
+	"Select all visible items",
+	"Deselect all visible items",
 	"Clear selection",
 	"Back",
 }
@@ -180,6 +187,7 @@ type Model struct {
 	loadedActionOffset int
 	warningCursor      int
 	warningOffset      int
+	helpReturnScreen   screen
 	quitReturnScreen   screen
 	quitCursor         int
 }
@@ -295,6 +303,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if key.Matches(msg, m.keys.help) && m.current != screenKeybindings {
+			m.openKeybindings()
+			return m, nil
+		}
 
 		switch m.current {
 		case screenHome:
@@ -323,6 +335,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateLoadedPlanActions(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
+		case screenKeybindings:
+			return m.updateKeybindings(msg)
 		case screenQuitConfirm:
 			return m.updateQuitConfirm(msg)
 		}
@@ -371,7 +385,7 @@ func (m Model) updateImportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.importErr = nil
 		m.importResult = instagram.ImportResult{}
 		return m, tea.Batch(startSpinnerCmd(m.spinner), importZIPCmd(zipPath, zipPath))
-	case key.Matches(msg, m.keys.back):
+	case key.Matches(msg, m.keys.cancel):
 		m.current = screenHome
 		m.pathInput.Blur()
 		return m, nil
@@ -408,6 +422,9 @@ func (m Model) updateImportResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.warningCursor = clampCursor(m.warningCursor, len(m.importResult.Warnings))
 			m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
 			m.current = screenWarnings
+		case resultReviewSelection:
+			m.selectionCursor = 0
+			m.current = screenSelectionSummary
 		case resultBackHome:
 			m.current = screenHome
 		}
@@ -426,7 +443,7 @@ func (m Model) updateItemsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.filter):
 		m.beginFilterDraft()
 		m.current = screenFilters
-	case key.Matches(msg, m.keys.toggleSelection):
+	case key.Matches(msg, m.keys.selectItem), key.Matches(msg, m.keys.toggleSelection):
 		if len(items) > 0 {
 			m.selection.Toggle(items[clampCursor(m.itemCursor, len(items))].ID)
 		}
@@ -450,7 +467,7 @@ func (m Model) updateFilters(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.selectItem):
 			m.acceptFilterInput()
 			return m, nil
-		case key.Matches(msg, m.keys.back):
+		case key.Matches(msg, m.keys.cancel):
 			m.cancelFilterInput()
 			return m, nil
 		default:
@@ -528,10 +545,17 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.selectedCursor = clampCursor(m.selectedCursor, len(items))
 			m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
 			m.current = screenSelectedItems
+		case selectionSelectVisible:
+			m.selection.SelectItems(m.visibleItems())
+			m.selectionMessage = "Selected all visible items."
+		case selectionDeselectVisible:
+			m.selection.DeselectItems(m.visibleItems())
+			m.selectionMessage = "Deselected all visible items."
 		case selectionClear:
 			m.selection.Clear()
 			m.selectedCursor = 0
 			m.selectedOffset = 0
+			m.selectionMessage = "Selection cleared."
 		case selectionBack:
 			m.current = screenItemsBrowser
 		}
@@ -576,7 +600,7 @@ func (m Model) updatePlanExportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.planExportStatus = ""
 		m.planExportError = ""
 		return m, writePlanJSONCmd(outputPath, m.planResult.Plan)
-	case key.Matches(msg, m.keys.back):
+	case key.Matches(msg, m.keys.cancel):
 		m.planPathInput.Blur()
 		m.current = screenPlanPreview
 		return m, nil
@@ -597,7 +621,7 @@ func (m Model) updatePlanLoadPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.planLoadError = ""
 		return m, loadPlanJSONCmd(planPath)
-	case key.Matches(msg, m.keys.back):
+	case key.Matches(msg, m.keys.cancel):
 		m.planPathInput.Blur()
 		m.current = screenHome
 		return m, nil
@@ -670,6 +694,13 @@ func (m Model) updateWarnings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateKeybindings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.back) {
+		m.current = m.helpReturnScreen
+	}
+	return m, nil
+}
+
 func (m Model) updateQuitConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.up):
@@ -721,6 +752,8 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.loadedPlanActionsView())
 	case screenWarnings:
 		return tea.NewView(m.warningsView())
+	case screenKeybindings:
+		return tea.NewView(m.keybindingsView())
 	case screenQuitConfirm:
 		return tea.NewView(m.quitConfirmView())
 	default:
@@ -729,34 +762,34 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) homeView() string {
-	lines := []string{
-		m.styles.title.Render("Vanish"),
+	lines := m.header("Home")
+	lines = append(lines,
 		"",
 		m.styles.body.Render("Local-first review and cleanup planning for your social media footprint."),
 		m.styles.muted.Render("No cloud backend. No telemetry by default. No hidden background actions."),
 		"",
 		m.styles.body.Render("Import a local Instagram export ZIP or inspect an exported cleanup plan."),
 		"",
-	}
+	)
 	lines = append(lines, m.renderMenu(homeMenuItems, m.homeCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.help, m.keys.quit))
 
 	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) importPathView() string {
-	body := strings.Join([]string{
-		m.styles.title.Render("Import Instagram Export"),
+	lines := m.header("Import Instagram Export")
+	lines = append(lines,
 		"",
 		m.styles.body.Render("Type the path to a local Instagram data export .zip file."),
 		m.styles.muted.Render("Vanish will only read local JSON files from the ZIP."),
 		"",
 		m.pathInput.View(),
 		"",
-		m.helpLine(m.keys.start, m.keys.back, m.keys.quit),
-	}, "\n")
+		m.helpLine(m.keys.start, m.keys.cancel, m.keys.help, m.keys.quit),
+	)
 
-	return m.frame(body)
+	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) importingView() string {
@@ -765,50 +798,46 @@ func (m Model) importingView() string {
 		source = "instagram export"
 	}
 
-	body := strings.Join([]string{
-		m.styles.title.Render("Importing"),
+	lines := m.header("Importing")
+	lines = append(lines,
 		"",
 		m.styles.body.Render(fmt.Sprintf("%s Parsing local ZIP...", m.spinner.View())),
 		m.styles.muted.Render(source),
 		"",
-		m.helpLine(m.keys.quit),
-	}, "\n")
+		m.helpLine(m.keys.help, m.keys.quit),
+	)
 
-	return m.frame(body)
+	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) importResultView() string {
 	if m.importErr != nil {
-		body := strings.Join([]string{
-			m.styles.title.Render("Import Failed"),
+		lines := m.header("Import Failed")
+		lines = append(lines,
 			"",
 			m.styles.error.Render(m.importErr.Error()),
+			m.styles.muted.Render("Check that the path points to a local Instagram export .zip, then try again."),
 			m.styles.muted.Render(m.importSource),
 			"",
-			m.helpLine(m.keys.back, m.keys.quit),
-		}, "\n")
+			m.helpLine(m.keys.back, m.keys.help, m.keys.quit),
+		)
 
-		return m.frame(body)
+		return m.frame(strings.Join(lines, "\n"))
 	}
 
 	summary := m.importResult.Summary
-	lines := []string{
-		m.styles.title.Render("Import Complete"),
+	lines := m.header("Import Complete")
+	lines = append(lines,
 		"",
 		m.styles.body.Render(fmt.Sprintf("Source: %s", emptyFallback(m.importSource, "instagram export"))),
 		"",
-		m.styles.body.Render(fmt.Sprintf("Total parsed items: %d", summary.Total)),
-		m.styles.body.Render(fmt.Sprintf("Likes: %d", summary.Likes)),
-		m.styles.body.Render(fmt.Sprintf("Comments: %d", summary.Comments)),
-		m.styles.body.Render(fmt.Sprintf("Following: %d", summary.Following)),
-		m.styles.body.Render(fmt.Sprintf("Followers: %d", summary.Followers)),
-		m.styles.body.Render(fmt.Sprintf("Skipped or unknown files: %d", summary.Skipped)),
-		m.styles.body.Render(fmt.Sprintf("Warnings: %d", len(m.importResult.Warnings))),
+		m.styles.body.Render(fmt.Sprintf("Parsed: %d total | Likes: %d | Comments: %d | Following: %d | Followers: %d", summary.Total, summary.Likes, summary.Comments, summary.Following, summary.Followers)),
+		m.styles.body.Render(fmt.Sprintf("Skipped or unknown: %d | Warnings: %d", summary.Skipped, len(m.importResult.Warnings))),
 		"",
-	}
+	)
 
 	lines = append(lines, m.renderMenu(resultMenuItems, m.resultCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -819,13 +848,17 @@ func (m Model) itemsBrowserView() string {
 	cursor := clampCursor(m.itemCursor, len(items))
 	offset := ensureOffset(cursor, m.itemOffset, len(items), visibleRows)
 
-	lines := []string{
-		m.styles.title.Render("Parsed Items"),
+	filterStatus := "off"
+	if m.itemFilter.Active() {
+		filterStatus = "active"
+	}
+	lines := m.header("Parsed Items")
+	lines = append(lines,
 		"",
-		m.styles.muted.Render(fmt.Sprintf("Visible: %d / Total: %d | Selected: %d", len(items), total, m.selection.Len())),
+		m.styles.muted.Render(fmt.Sprintf("Visible: %d / %d | Selected: %d | Filters: %s", len(items), total, m.selection.Len(), filterStatus)),
 		m.styles.muted.Render(fmt.Sprintf("Source: %s", emptyFallback(m.importSource, "instagram export"))),
 		"",
-	}
+	)
 	if m.itemFilter.Active() {
 		lines = append(lines, m.styles.warning.Render("Filters active"), "")
 	}
@@ -845,37 +878,39 @@ func (m Model) itemsBrowserView() string {
 		}
 	}
 
-	lines = append(lines, "", m.styles.muted.Render("Details"))
+	lines = append(lines, "", m.styles.separator.Render("Details"))
 	if len(items) == 0 {
-		lines = append(lines, m.styles.muted.Render("No item selected."))
+		lines = append(lines, m.styles.muted.Render("No items match the current filters. Clear filters or import another ZIP."))
 	} else {
 		for _, line := range itemDetailLines(items[cursor]) {
 			lines = append(lines, m.styles.body.Render(line))
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.toggleSelection, m.keys.selectVisible, m.keys.deselectVisible, m.keys.selectionSummary, m.keys.filter, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.toggleSelection, m.keys.selectionSummary, m.keys.filter, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) selectionSummaryView() string {
 	counts := m.selection.Counts(m.importResult.Items)
-	lines := []string{
-		m.styles.title.Render("Selection Summary"),
+	visibleCount := len(m.visibleItems())
+	lines := m.header("Selection Summary")
+	lines = append(lines,
 		"",
 		m.styles.body.Render(fmt.Sprintf("Total selected: %d", counts.Total)),
+		m.styles.body.Render(fmt.Sprintf("Visible items: %d", visibleCount)),
 		m.styles.body.Render(fmt.Sprintf("Selected likes: %d", counts.Likes)),
 		m.styles.body.Render(fmt.Sprintf("Selected comments: %d", counts.Comments)),
 		m.styles.body.Render(fmt.Sprintf("Selected following: %d", counts.Following)),
 		m.styles.body.Render(fmt.Sprintf("Selected followers: %d", counts.Followers)),
 		"",
-	}
+	)
 
 	if strings.TrimSpace(m.selectionMessage) != "" {
 		lines = append(lines, m.styles.warning.Render(m.selectionMessage), "")
 	}
 	lines = append(lines, m.renderMenu(selectionMenuItems, m.selectionCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -886,15 +921,15 @@ func (m Model) selectedItemsView() string {
 	cursor := clampCursor(m.selectedCursor, len(items))
 	offset := ensureOffset(cursor, m.selectedOffset, len(items), visibleRows)
 
-	lines := []string{
-		m.styles.title.Render("Selected Items"),
+	lines := m.header("Selected Items")
+	lines = append(lines,
 		"",
 		m.styles.muted.Render(fmt.Sprintf("Selected: %d / Total: %d", len(items), total)),
 		"",
-	}
+	)
 
 	if len(items) == 0 {
-		lines = append(lines, m.styles.muted.Render("No selected items."))
+		lines = append(lines, m.styles.muted.Render("No selected items yet. Toggle items in the parsed item list or select visible items from the summary."))
 	} else {
 		end := minInt(len(items), offset+visibleRows)
 		if offset > 0 {
@@ -908,7 +943,7 @@ func (m Model) selectedItemsView() string {
 		}
 	}
 
-	lines = append(lines, "", m.styles.muted.Render("Details"))
+	lines = append(lines, "", m.styles.separator.Render("Details"))
 	if len(items) == 0 {
 		lines = append(lines, m.styles.muted.Render("No item selected."))
 	} else {
@@ -917,7 +952,7 @@ func (m Model) selectedItemsView() string {
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -927,8 +962,8 @@ func (m Model) planPreviewView() string {
 	visibleRows := m.planListHeight()
 	offset := ensureOffset(0, m.planListOffset, len(rows), visibleRows)
 
-	lines := []string{
-		m.styles.title.Render("Dry-Run Plan Preview"),
+	lines := m.header("Dry-Run Plan Preview")
+	lines = append(lines,
 		"",
 		m.styles.body.Render(fmt.Sprintf("Plan mode: %s", result.Plan.Mode)),
 		m.styles.body.Render(fmt.Sprintf("Source platform: %s", result.Plan.Platform)),
@@ -937,10 +972,10 @@ func (m Model) planPreviewView() string {
 		m.styles.body.Render(fmt.Sprintf("Unsupported/skipped selected items: %d", len(result.Skipped))),
 		m.styles.body.Render(fmt.Sprintf("Action counts: unlike %d, delete_comment %d, unfollow %d", result.Counts.Unlike, result.Counts.DeleteComment, result.Counts.Unfollow)),
 		"",
-	}
+	)
 
 	lines = append(lines, m.renderMenu(planPreviewMenuItems, m.planPreviewCursor)...)
-	lines = append(lines, "", m.styles.muted.Render("Planned actions"))
+	lines = append(lines, "", m.styles.separator.Render("Planned actions"))
 	if len(rows) == 0 {
 		lines = append(lines, m.styles.muted.Render("No supported actions."))
 	} else {
@@ -956,46 +991,46 @@ func (m Model) planPreviewView() string {
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) planExportPathView() string {
-	lines := []string{
-		m.styles.title.Render("Export Plan JSON"),
+	lines := m.header("Export Plan JSON")
+	lines = append(lines,
 		"",
 		m.styles.body.Render("Output path"),
 		m.planPathInput.View(),
 		"",
-	}
+	)
 
 	if strings.TrimSpace(m.planExportStatus) != "" {
-		lines = append(lines, m.styles.body.Render(m.planExportStatus), "")
+		lines = append(lines, m.styles.success.Render(m.planExportStatus), "")
 	}
 	if strings.TrimSpace(m.planExportError) != "" {
 		lines = append(lines, m.styles.error.Render(m.planExportError), "")
 	}
 
-	lines = append(lines, m.helpLine(m.keys.save, m.keys.back, m.keys.quit))
+	lines = append(lines, m.helpLine(m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) planLoadPathView() string {
-	lines := []string{
-		m.styles.title.Render("Load Cleanup Plan"),
+	lines := m.header("Load Cleanup Plan")
+	lines = append(lines,
 		"",
 		m.styles.body.Render("Type the path to a local cleanup plan JSON file."),
 		m.styles.muted.Render("Vanish will only read and validate the local file."),
 		"",
 		m.planPathInput.View(),
 		"",
-	}
+	)
 
 	if strings.TrimSpace(m.planLoadError) != "" {
 		lines = append(lines, m.styles.error.Render(m.planLoadError), "")
 	}
 
-	lines = append(lines, m.helpLine(m.keys.start, m.keys.back, m.keys.quit))
+	lines = append(lines, m.helpLine(m.keys.start, m.keys.cancel, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -1003,8 +1038,8 @@ func (m Model) loadedPlanSummaryView() string {
 	plan := m.loadedPlan
 	summary := m.loadedPlanSummary
 
-	lines := []string{
-		m.styles.title.Render("Loaded Cleanup Plan"),
+	lines := m.header("Loaded Cleanup Plan")
+	lines = append(lines,
 		"",
 		m.styles.body.Render(fmt.Sprintf("Plan ID: %s", emptyFallback(plan.ID, "-"))),
 		m.styles.body.Render(fmt.Sprintf("Format version: %d", plan.FormatVersion)),
@@ -1014,12 +1049,12 @@ func (m Model) loadedPlanSummaryView() string {
 		m.styles.body.Render(fmt.Sprintf("Created at: %s", formatPlanTime(plan.CreatedAt))),
 		m.styles.body.Render(fmt.Sprintf("Total actions: %d", summary.TotalActions)),
 		"",
-		m.styles.muted.Render("Action counts by type"),
-	}
+		m.styles.separator.Render("Action counts by type"),
+	)
 	lines = append(lines, m.actionCountLines(summary.ActionCounts)...)
 	lines = append(lines,
 		"",
-		m.styles.muted.Render("Status counts"),
+		m.styles.separator.Render("Status counts"),
 		m.styles.body.Render(fmt.Sprintf("pending: %d", summary.StatusCounts[domain.ActionStatusPending])),
 		m.styles.body.Render(fmt.Sprintf("running: %d", summary.StatusCounts[domain.ActionStatusRunning])),
 		m.styles.body.Render(fmt.Sprintf("done: %d", summary.StatusCounts[domain.ActionStatusDone])),
@@ -1028,7 +1063,7 @@ func (m Model) loadedPlanSummaryView() string {
 		"",
 	)
 	lines = append(lines, m.renderMenu(loadedPlanSummaryMenuItems, m.loadedPlanCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -1038,12 +1073,12 @@ func (m Model) loadedPlanActionsView() string {
 	cursor := clampCursor(m.loadedActionCursor, len(actions))
 	offset := ensureOffset(cursor, m.loadedActionOffset, len(actions), visibleRows)
 
-	lines := []string{
-		m.styles.title.Render("Plan Actions"),
+	lines := m.header("Plan Actions")
+	lines = append(lines,
 		"",
 		m.styles.muted.Render(fmt.Sprintf("Actions: %d | Plan: %s", len(actions), emptyFallback(m.loadedPlan.ID, "-"))),
 		"",
-	}
+	)
 
 	if len(actions) == 0 {
 		lines = append(lines, m.styles.muted.Render("No actions in this plan."))
@@ -1060,7 +1095,7 @@ func (m Model) loadedPlanActionsView() string {
 		}
 	}
 
-	lines = append(lines, "", m.styles.muted.Render("Details"))
+	lines = append(lines, "", m.styles.separator.Render("Details"))
 	if len(actions) == 0 {
 		lines = append(lines, m.styles.muted.Render("No action selected."))
 	} else {
@@ -1069,17 +1104,17 @@ func (m Model) loadedPlanActionsView() string {
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) filtersView() string {
-	lines := []string{
-		m.styles.title.Render("Filters"),
+	lines := m.header("Filters")
+	lines = append(lines,
 		"",
-		m.styles.muted.Render(fmt.Sprintf("%d / %d parsed items visible", len(m.visibleItems()), len(m.importResult.Items))),
+		m.styles.muted.Render(fmt.Sprintf("Visible: %d / %d | Filters: %s", len(m.visibleItems()), len(m.importResult.Items), activeLabel(m.itemFilter.Active()))),
 		"",
-	}
+	)
 
 	if m.itemFilter.Active() {
 		lines = append(lines, m.styles.warning.Render("Filters active"), "")
@@ -1106,9 +1141,9 @@ func (m Model) filtersView() string {
 	}
 
 	if m.filterEditing == filterEditNone {
-		lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.quit))
+		lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 	} else {
-		lines = append(lines, "", m.helpLine(m.keys.save, m.keys.back, m.keys.quit))
+		lines = append(lines, "", m.helpLine(m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit))
 	}
 	return m.frame(strings.Join(lines, "\n"))
 }
@@ -1119,12 +1154,12 @@ func (m Model) warningsView() string {
 	cursor := clampCursor(m.warningCursor, len(warnings))
 	offset := ensureOffset(cursor, m.warningOffset, len(warnings), visibleRows)
 
-	lines := []string{
-		m.styles.title.Render("Import Warnings"),
+	lines := m.header("Import Warnings")
+	lines = append(lines,
 		"",
 		m.styles.muted.Render(fmt.Sprintf("%d warnings from %s", len(warnings), emptyFallback(m.importSource, "instagram export"))),
 		"",
-	}
+	)
 
 	if len(warnings) == 0 {
 		lines = append(lines, m.styles.muted.Render("No warnings."))
@@ -1141,20 +1176,46 @@ func (m Model) warningsView() string {
 		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.quit))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) keybindingsView() string {
+	lines := m.header("Help")
+	lines = append(lines,
+		"",
+		m.styles.separator.Render("Navigation"),
+		m.styles.body.Render("Up/Down or j/k: move"),
+		m.styles.body.Render("Enter: primary action; toggles highlighted parsed item"),
+		m.styles.body.Render("Space: toggle highlighted parsed item"),
+		m.styles.body.Render("Esc: back"),
+		m.styles.body.Render("Backspace: back when no text input is focused"),
+		m.styles.body.Render("?: show this help"),
+		m.styles.body.Render("Ctrl+Q or Ctrl+C: quit confirmation"),
+		"",
+		m.styles.separator.Render("Selection and plans"),
+		m.styles.body.Render("Review selection: generate a dry-run plan, view selected items, select or deselect visible items."),
+		m.styles.body.Render("Plan export and load only read/write local JSON files."),
+		"",
+		m.styles.separator.Render("Safety"),
+		m.styles.body.Render("Vanish is local-only and dry-run only in this alpha."),
+		m.styles.body.Render("No login, browser automation, deletion, telemetry, or network requests."),
+		"",
+		m.helpLine(m.keys.back, m.keys.quit),
+	)
 	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) quitConfirmView() string {
-	lines := []string{
-		m.styles.title.Render("Quit Vanish?"),
+	lines := m.header("Quit Vanish?")
+	lines = append(lines,
 		"",
 		m.styles.body.Render("Your current in-memory review state will be discarded."),
 		"",
-	}
+	)
 
 	lines = append(lines, m.renderMenu(quitConfirmMenuItems, m.quitCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back))
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help))
 	return m.frame(strings.Join(lines, "\n"))
 }
 
@@ -1178,6 +1239,33 @@ func (m Model) renderSelectableLine(value string, selected bool) string {
 
 func (m Model) helpLine(bindings ...key.Binding) string {
 	return m.styles.help.Render(m.help.View(screenHelp(bindings)))
+}
+
+func (m Model) header(section string) []string {
+	return []string{
+		m.styles.title.Render("Vanish") + m.styles.muted.Render(" / "+section),
+		m.statusLine(),
+		m.separatorLine(),
+	}
+}
+
+func (m Model) statusLine() string {
+	return strings.Join([]string{
+		m.styles.badge.Render("[LOCAL]"),
+		m.styles.badge.Render("[DRY-RUN]"),
+		m.styles.badge.Render("[NO NETWORK]"),
+	}, " ")
+}
+
+func (m Model) separatorLine() string {
+	width := 74
+	if m.width > 8 && m.width-4 < width {
+		width = m.width - 4
+	}
+	if width < 20 {
+		width = 20
+	}
+	return m.styles.separator.Render(strings.Repeat("-", width))
 }
 
 func (m Model) frame(body string) string {
@@ -1233,6 +1321,11 @@ func (m *Model) openQuitConfirm() {
 	m.current = screenQuitConfirm
 }
 
+func (m *Model) openKeybindings() {
+	m.helpReturnScreen = m.current
+	m.current = screenKeybindings
+}
+
 func (m Model) itemListHeight() int {
 	return boundedListHeight(m.height, 15, 3, 10)
 }
@@ -1261,6 +1354,8 @@ type keyMap struct {
 	deselectVisible  key.Binding
 	selectionSummary key.Binding
 	back             key.Binding
+	cancel           key.Binding
+	help             key.Binding
 	quit             key.Binding
 }
 
@@ -1307,8 +1402,16 @@ func newKeyMap() keyMap {
 			key.WithHelp("s", "selection"),
 		),
 		back: key.NewBinding(
+			key.WithKeys("esc", "backspace"),
+			key.WithHelp("esc/backspace", "back"),
+		),
+		cancel: key.NewBinding(
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "back"),
+		),
+		help: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "help"),
 		),
 		quit: key.NewBinding(
 			key.WithKeys("ctrl+c", "ctrl+q"),
@@ -1319,11 +1422,11 @@ func newKeyMap() keyMap {
 
 // ShortHelp and FullHelp make keyMap satisfy the Bubbles help.KeyMap interface.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.up, k.down, k.selectItem, k.filter, k.back, k.quit}
+	return []key.Binding{k.up, k.down, k.selectItem, k.filter, k.back, k.help, k.quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.up, k.down, k.selectItem, k.start, k.save, k.filter, k.toggleSelection, k.selectVisible, k.deselectVisible, k.selectionSummary, k.back, k.quit}}
+	return [][]key.Binding{{k.up, k.down, k.selectItem, k.start, k.save, k.filter, k.toggleSelection, k.selectVisible, k.deselectVisible, k.selectionSummary, k.back, k.help, k.quit}}
 }
 
 type screenHelp []key.Binding
@@ -1337,15 +1440,18 @@ func (h screenHelp) FullHelp() [][]key.Binding {
 }
 
 type styles struct {
-	frame    lipgloss.Style
-	title    lipgloss.Style
-	body     lipgloss.Style
-	row      lipgloss.Style
-	selected lipgloss.Style
-	muted    lipgloss.Style
-	help     lipgloss.Style
-	error    lipgloss.Style
-	warning  lipgloss.Style
+	frame     lipgloss.Style
+	title     lipgloss.Style
+	body      lipgloss.Style
+	row       lipgloss.Style
+	selected  lipgloss.Style
+	muted     lipgloss.Style
+	help      lipgloss.Style
+	error     lipgloss.Style
+	success   lipgloss.Style
+	warning   lipgloss.Style
+	badge     lipgloss.Style
+	separator lipgloss.Style
 }
 
 func newStyles(isDark bool) styles {
@@ -1373,9 +1479,18 @@ func newStyles(isDark bool) styles {
 		error: lipgloss.NewStyle().
 			Foreground(lightDark(lipgloss.Color("#B42318"), lipgloss.Color("#FFB4A8"))).
 			Width(74),
+		success: lipgloss.NewStyle().
+			Foreground(lightDark(lipgloss.Color("#1A7F37"), lipgloss.Color("#7EE787"))).
+			Width(74),
 		warning: lipgloss.NewStyle().
 			Foreground(lightDark(lipgloss.Color("#8A6100"), lipgloss.Color("#FFD479"))).
 			Width(74),
+		badge: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lightDark(lipgloss.Color("#0969DA"), lipgloss.Color("#79C0FF"))),
+		separator: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lightDark(lipgloss.Color("#57606A"), lipgloss.Color("#8B949E"))),
 	}
 }
 
@@ -1896,6 +2011,13 @@ func emptyFallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func activeLabel(active bool) string {
+	if active {
+		return "active"
+	}
+	return "off"
 }
 
 func inputWidth(width int) int {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/itsmeares/vanish/internal/domain"
+	"github.com/itsmeares/vanish/internal/platform"
 )
 
 func TestImportZIPParsesDemoExport(t *testing.T) {
@@ -22,17 +23,34 @@ func TestImportZIPParsesDemoExport(t *testing.T) {
 		t.Fatalf("expected import to succeed, got error: %v", err)
 	}
 
-	if result.Summary.Total != 4 {
-		t.Fatalf("expected 4 parsed items, got %#v", result.Summary)
+	if result.Summary.Total < 24 {
+		t.Fatalf("expected at least 24 parsed demo items, got %#v", result.Summary)
 	}
-	if result.Summary.Likes != 1 || result.Summary.Comments != 1 || result.Summary.Following != 1 || result.Summary.Followers != 1 {
-		t.Fatalf("expected one item in each supported category, got %#v", result.Summary)
+	if result.Summary.Likes < 6 || result.Summary.Comments < 6 || result.Summary.Following < 6 || result.Summary.Followers < 6 {
+		t.Fatalf("expected at least six items in each supported category, got %#v", result.Summary)
 	}
-	if result.Summary.Skipped != 1 {
-		t.Fatalf("expected unknown file to be skipped, got %#v", result.Summary)
+	if result.Summary.Skipped < 2 {
+		t.Fatalf("expected skipped unknown files, got %#v", result.Summary)
 	}
 	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "unsupported Instagram JSON skipped") {
 		t.Fatalf("expected unsupported JSON warning, got %#v", result.Warnings)
+	}
+
+	var likes, comments, following, followers int
+	for _, item := range result.Items {
+		switch domain.ActivityFilterTypeForItem(item) {
+		case domain.ActivityFilterLike:
+			likes++
+		case domain.ActivityFilterComment:
+			comments++
+		case domain.ActivityFilterFollowing:
+			following++
+		case domain.ActivityFilterFollower:
+			followers++
+		}
+	}
+	if likes < 6 || comments < 6 || following < 6 || followers < 6 {
+		t.Fatalf("expected demo data useful for scroll/filter/select testing, got likes=%d comments=%d following=%d followers=%d", likes, comments, following, followers)
 	}
 
 	for _, item := range result.Items {
@@ -45,6 +63,36 @@ func TestImportZIPParsesDemoExport(t *testing.T) {
 		if item.Source.FileName == "" {
 			t.Fatalf("expected source file name on %#v", item)
 		}
+	}
+}
+
+func TestDemoExportCanBuildMixedSupportPlan(t *testing.T) {
+	zipPath, err := CreateDemoExportZIP(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected demo zip, got error: %v", err)
+	}
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected import to succeed, got error: %v", err)
+	}
+
+	plan, err := BuildCleanupPlan(platform.BuildPlanRequest{
+		Platform:   domain.PlatformInstagram,
+		SourceName: "demo instagram export",
+		Items:      result.Items,
+	})
+	if err != nil {
+		t.Fatalf("expected demo items to build a plan, got error: %v", err)
+	}
+	if len(plan.Plan.Actions) == 0 {
+		t.Fatalf("expected supported demo actions")
+	}
+	if len(plan.Skipped) == 0 {
+		t.Fatalf("expected unsupported follower demo items to be skipped")
+	}
+	if plan.Counts.Unlike == 0 || plan.Counts.DeleteComment == 0 || plan.Counts.Unfollow == 0 {
+		t.Fatalf("expected demo plan to cover unlike/delete_comment/unfollow, got %#v", plan.Counts)
 	}
 }
 

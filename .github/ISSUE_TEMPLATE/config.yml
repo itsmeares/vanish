@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Safety reminder
+    url: https://github.com/itsmeares/vanish/blob/main/docs/safety.md
+    about: Do not share secrets, raw exports, cookies, tokens, sessions, or private messages.

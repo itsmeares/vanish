@@ -22,6 +22,9 @@ func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 		t.Fatalf("expected initial view to contain app name")
 	}
 	for _, want := range []string{
+		"[LOCAL]",
+		"[DRY-RUN]",
+		"[NO NETWORK]",
 		"Import Instagram export ZIP",
 		"Load cleanup plan",
 		"Demo import with fake local data",
@@ -147,6 +150,32 @@ func TestQNoLongerQuits(t *testing.T) {
 	}
 }
 
+func TestQuestionMarkOpensHelpScreen(t *testing.T) {
+	m := NewModel()
+
+	next := updateModel(t, m, keyPress("?"))
+	if next.current != screenKeybindings {
+		t.Fatalf("expected help screen, got %v", next.current)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Vanish",
+		"Help",
+		"Up/Down or j/k: move",
+		"Backspace: back when no text input is focused",
+		"Ctrl+Q or Ctrl+C: quit confirmation",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected help to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	next = updateModel(t, next, keyPress("backspace"))
+	if next.current != screenHome {
+		t.Fatalf("expected backspace to return from help, got %v", next.current)
+	}
+}
+
 func TestQuitConfirmationEscReturnsToPreviousScreen(t *testing.T) {
 	m := importedModel(t, fakeImportResult())
 	next := updateModel(t, m, keyPress("enter"))
@@ -192,6 +221,14 @@ func TestImportPathScreenAcceptsTypedPathAndEscReturnsHome(t *testing.T) {
 	}
 	if next.pathInput.Value() != "abc" {
 		t.Fatalf("expected typed path to be captured, got %q", next.pathInput.Value())
+	}
+
+	next = updateModel(t, next, keyPress("backspace"))
+	if next.current != screenImportPath {
+		t.Fatalf("expected backspace inside import path input to stay on input screen, got %v", next.current)
+	}
+	if next.pathInput.Value() != "ab" {
+		t.Fatalf("expected backspace to edit path input, got %q", next.pathInput.Value())
 	}
 
 	next = updateModel(t, next, keyPress("esc"))
@@ -350,15 +387,11 @@ func TestImportResultViewShowsSummaryCountsAndActions(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Import Complete",
-		"Total parsed items: 4",
-		"Likes: 1",
-		"Comments: 1",
-		"Following: 1",
-		"Followers: 1",
-		"Skipped or unknown files: 1",
-		"Warnings: 1",
+		"Parsed: 4 total | Likes: 1 | Comments: 1 | Following: 1 | Followers: 1",
+		"Skipped or unknown: 1 | Warnings: 1",
 		"View parsed items",
 		"View warnings",
+		"Review selection",
 		"Back home",
 	} {
 		if !strings.Contains(view, want) {
@@ -407,6 +440,12 @@ func TestImportResultActionsOpenItemsAndWarnings(t *testing.T) {
 	next = updateModel(t, next, keyPress("esc"))
 	if next.current != screenImportResult {
 		t.Fatalf("expected esc to return to import summary, got %v", next.current)
+	}
+
+	next = updateModel(t, next, keyPress("down"))
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenSelectionSummary {
+		t.Fatalf("expected review selection action to open summary, got %v", next.current)
 	}
 }
 
@@ -458,7 +497,7 @@ func TestItemsBrowserShowsVisibleAndTotalCount(t *testing.T) {
 	next := updateModel(t, m, keyPress("enter"))
 	view := next.View().Content
 
-	if !strings.Contains(view, "Visible: 2 / Total: 2 | Selected: 0") {
+	if !strings.Contains(view, "Visible: 2 / 2 | Selected: 0 | Filters: off") {
 		t.Fatalf("expected visible and total count, got:\n%s", view)
 	}
 }
@@ -477,7 +516,7 @@ func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
 	if next.selection.Len() != 1 {
 		t.Fatalf("expected one selected item, got %d", next.selection.Len())
 	}
-	for _, want := range []string{"[x] like | demo_artist", "Visible: 2 / Total: 2 | Selected: 1"} {
+	for _, want := range []string{"[x] like | demo_artist", "Visible: 2 / 2 | Selected: 1 | Filters: off"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected view to contain %q, got:\n%s", want, view)
 		}
@@ -486,6 +525,34 @@ func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
 	next = updateModel(t, next, keyPress(" "))
 	if next.selection.Len() != 0 {
 		t.Fatalf("expected toggle to deselect item, got %d", next.selection.Len())
+	}
+}
+
+func TestItemsBrowserToggleWithEnter(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.selection.Len() != 1 || !next.selection.Contains("item-like") {
+		t.Fatalf("expected enter to toggle highlighted item selection")
+	}
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected second enter to deselect highlighted item, got %d", next.selection.Len())
+	}
+}
+
+func TestBackspaceNavigatesWhenNoInputFocused(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenItemsBrowser {
+		t.Fatalf("expected items browser, got %v", next.current)
+	}
+
+	next = updateModel(t, next, keyPress("backspace"))
+	if next.current != screenImportResult {
+		t.Fatalf("expected backspace to return to import result, got %v", next.current)
 	}
 }
 
@@ -537,7 +604,7 @@ func TestSelectionPersistsWhenFiltersChangeAndClear(t *testing.T) {
 	if !next.selection.Contains("item-like") {
 		t.Fatalf("expected selection to persist after filter changed")
 	}
-	if !strings.Contains(next.View().Content, "Visible: 1 / Total: 4 | Selected: 1") {
+	if !strings.Contains(next.View().Content, "Visible: 1 / 4 | Selected: 1 | Filters: active") {
 		t.Fatalf("expected selected count to persist, got:\n%s", next.View().Content)
 	}
 
@@ -545,7 +612,7 @@ func TestSelectionPersistsWhenFiltersChangeAndClear(t *testing.T) {
 	if !next.selection.Contains("item-like") {
 		t.Fatalf("expected selection to persist after filters clear")
 	}
-	if !strings.Contains(next.View().Content, "Visible: 4 / Total: 4 | Selected: 1") {
+	if !strings.Contains(next.View().Content, "Visible: 4 / 4 | Selected: 1 | Filters: off") {
 		t.Fatalf("expected selected count after clear filters, got:\n%s", next.View().Content)
 	}
 }
@@ -577,12 +644,15 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 	for _, want := range []string{
 		"Selection Summary",
 		"Total selected: 4",
+		"Visible items: 4",
 		"Selected likes: 1",
 		"Selected comments: 1",
 		"Selected following: 1",
 		"Selected followers: 1",
 		"Generate dry-run plan",
 		"View selected items",
+		"Select all visible items",
+		"Deselect all visible items",
 		"Clear selection",
 		"Back",
 	} {
@@ -604,13 +674,39 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 	if next.current != screenSelectionSummary {
 		t.Fatalf("expected esc to return to selection summary, got %v", next.current)
 	}
-	next = updateModel(t, next, keyPress("down"))
+	for range 3 {
+		next = updateModel(t, next, keyPress("down"))
+	}
 	next = updateModel(t, next, keyPress("enter"))
 	if next.selection.Len() != 0 {
 		t.Fatalf("expected clear selection to remove all selected IDs, got %d", next.selection.Len())
 	}
 	if !strings.Contains(next.View().Content, "Total selected: 0") {
 		t.Fatalf("expected summary to show cleared selection, got:\n%s", next.View().Content)
+	}
+}
+
+func TestSelectionSummarySelectsAndDeselectsVisibleItems(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = applyTypeFilter(t, next, filterRowLike)
+	next = updateModel(t, next, keyPress("s"))
+
+	for range selectionSelectVisible {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+	if next.selection.Len() != 1 || !next.selection.Contains("item-like") {
+		t.Fatalf("expected select visible to select only filtered item")
+	}
+	if !strings.Contains(next.View().Content, "Selected all visible items.") {
+		t.Fatalf("expected select visible status, got:\n%s", next.View().Content)
+	}
+
+	next = updateModel(t, next, keyPress("down"))
+	next = updateModel(t, next, keyPress("enter"))
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected deselect visible to clear filtered item, got %d", next.selection.Len())
 	}
 }
 
@@ -721,6 +817,27 @@ func TestFiltersScreenOpensFromItemsBrowser(t *testing.T) {
 	}
 }
 
+func TestBackspaceEditsFocusedFilterInput(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithRelationships())
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, keyPress("f"))
+	for range filterRowActor {
+		next = updateModel(t, next, keyPress("down"))
+	}
+	next = updateModel(t, next, keyPress("enter"))
+	for _, keyName := range []string{"d", "e", "m", "o"} {
+		next = updateModel(t, next, keyPress(keyName))
+	}
+
+	next = updateModel(t, next, keyPress("backspace"))
+	if next.current != screenFilters || next.filterEditing != filterRowActor {
+		t.Fatalf("expected backspace to stay editing filter input, screen=%v editing=%d", next.current, next.filterEditing)
+	}
+	if next.filterActorInput.Value() != "dem" {
+		t.Fatalf("expected backspace to edit filter input, got %q", next.filterActorInput.Value())
+	}
+}
+
 func TestApplyingTypeFilterUpdatesItemsBrowser(t *testing.T) {
 	m := importedModel(t, fakeImportResultWithRelationships())
 	next := updateModel(t, m, keyPress("enter"))
@@ -737,7 +854,7 @@ func TestApplyingTypeFilterUpdatesItemsBrowser(t *testing.T) {
 		t.Fatalf("expected items browser, got %v", next.current)
 	}
 	for _, want := range []string{
-		"Visible: 1 / Total: 4",
+		"Visible: 1 / 4 | Selected: 0 | Filters: active",
 		"Filters active",
 		"like | demo_artist",
 	} {
@@ -1009,6 +1126,8 @@ func keyPress(text string) tea.KeyPressMsg {
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
 	case "esc":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc})
+	case "backspace":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace})
 	case " ":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace})
 	case "ctrl+c":
