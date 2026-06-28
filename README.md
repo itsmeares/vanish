@@ -6,6 +6,10 @@ activity and building safe cleanup plans.
 Current status: **v0.1.0-alpha**. The app is useful for local review and dry-run
 planning, but it does not delete anything yet.
 
+The v0.2 local workspace work is documented here, but v0.2 has not been
+released. The same alpha limits still apply: Vanish remains local-only,
+dry-run-only, and does not log in to platforms or apply cleanup actions.
+
 ![Vanish home screen](docs/assets/home.svg)
 
 ![Vanish parsed items screen](docs/assets/parsed-items.svg)
@@ -36,6 +40,55 @@ planning, but it does not delete anything yet.
 - Cleanup plans are dry-run JSON files you can inspect before doing anything else.
 
 See [docs/safety.md](docs/safety.md) for the longer safety model.
+
+## Local Data Behavior
+
+Vanish v0.2 keeps a local workspace so recent work is easier to inspect without
+re-importing everything. This local data is stored on your machine in the Vanish
+app directory and is not synced to a hosted account.
+
+The app directory stores:
+
+- Configuration needed by the local app, including local workspace timestamps
+  and the last/default plan paths used by the TUI.
+- Recent import history with file path, total count, per-type counts, skipped
+  count, warning count, and demo/source metadata.
+- Recent cleanup plan history with file path, plan creation time, last used
+  time, last operation, and plan summary metadata.
+- A local audit log for workspace events such as imports, plan exports, plan
+  loads, and wipes.
+
+The app directory does not store raw parsed items, raw exports, raw comments,
+credentials, cookies, tokens, sessions, or authorization data. Imported export
+ZIPs and exported plans remain normal local files at the paths you choose.
+
+Default app directory locations:
+
+- Windows: `%APPDATA%\vanish`
+- macOS: `$HOME/Library/Application Support/vanish`
+- Linux: `${XDG_CONFIG_HOME:-$HOME/.config}/vanish`
+
+For development and tests, set `VANISH_APP_DIR` to point Vanish at a disposable
+workspace:
+
+```bash
+VANISH_APP_DIR=/tmp/vanish-dev go run ./cmd/vanish
+```
+
+On PowerShell:
+
+```powershell
+$env:VANISH_APP_DIR = "$env:TEMP\vanish-dev"
+go run ./cmd/vanish
+```
+
+The local data wipe flow clears Vanish-managed configuration, history, and audit
+records from the active app directory. It does not delete the original Instagram
+export ZIPs or cleanup plan JSON files unless those files are inside the active
+app directory.
+
+See [docs/local-data.md](docs/local-data.md) for the detailed local workspace
+model.
 
 ## Supported Today
 

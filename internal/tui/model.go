@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
+	"github.com/itsmeares/vanish/internal/workspace"
 )
 
 type screen int
@@ -38,6 +40,11 @@ const (
 	screenLoadedPlanSummary
 	screenLoadedPlanActions
 	screenWarnings
+	screenLocalDataOverview
+	screenRecentImports
+	screenRecentPlans
+	screenAuditLog
+	screenWipeLocalDataConfirm
 	screenKeybindings
 	screenQuitConfirm
 )
@@ -46,6 +53,7 @@ const (
 	homeImportZip = iota
 	homeLoadPlan
 	homeDemo
+	homeLocalData
 	homeQuit
 )
 
@@ -76,6 +84,7 @@ var homeMenuItems = []string{
 	"Import Instagram export ZIP",
 	"Load cleanup plan",
 	"Demo import with fake local data",
+	"Local data",
 	"Quit",
 }
 
@@ -114,7 +123,7 @@ var planPreviewMenuItems = []string{
 	"Back",
 }
 
-const defaultPlanExportPath = "vanish-plan.json"
+const defaultPlanExportPath = workspace.DefaultPlanExportPath
 
 const (
 	loadedPlanViewActions = iota
@@ -124,6 +133,32 @@ const (
 var loadedPlanSummaryMenuItems = []string{
 	"View actions",
 	"Back home",
+}
+
+const (
+	localDataRecentImports = iota
+	localDataRecentPlans
+	localDataAuditLog
+	localDataWipe
+	localDataBackHome
+)
+
+var localDataMenuItems = []string{
+	"Recent imports",
+	"Recent plans",
+	"Audit log",
+	"Wipe local data",
+	"Back home",
+}
+
+const (
+	wipeLocalDataConfirm = iota
+	wipeLocalDataCancel
+)
+
+var wipeLocalDataMenuItems = []string{
+	"Wipe local data",
+	"Cancel",
 }
 
 const (
@@ -142,59 +177,82 @@ var quitConfirmMenuItems = []string{
 // terminal dimensions, styles, and reusable Bubbles components. Bubble Tea
 // passes this value through Init, Update, and View as the app runs.
 type Model struct {
-	current            screen
-	width              int
-	height             int
-	styles             styles
-	keys               keyMap
-	help               help.Model
-	pathInput          textinput.Model
-	planPathInput      textinput.Model
-	filterActorInput   textinput.Model
-	filterTargetInput  textinput.Model
-	filterOlderInput   textinput.Model
-	filterNewerInput   textinput.Model
-	spinner            spinner.Model
-	importSource       string
-	importResult       instagram.ImportResult
-	importErr          error
-	itemFilter         domain.ActivityItemFilter
-	selection          domain.ActivitySelection
-	planResult         instagram.PlanBuildResult
-	loadedPlan         domain.CleanupPlan
-	loadedPlanSummary  domain.CleanupPlanSummary
-	draftFilter        domain.ActivityItemFilter
-	draftOlderDate     string
-	draftNewerDate     string
-	filterError        string
-	selectionMessage   string
-	planExportStatus   string
-	planExportError    string
-	planLoadError      string
-	homeCursor         int
-	resultCursor       int
-	itemCursor         int
-	itemOffset         int
-	filterCursor       int
-	filterEditing      int
-	selectionCursor    int
-	selectedCursor     int
-	selectedOffset     int
-	planPreviewCursor  int
-	planListOffset     int
-	loadedPlanCursor   int
-	loadedActionCursor int
-	loadedActionOffset int
-	warningCursor      int
-	warningOffset      int
-	helpReturnScreen   screen
-	quitReturnScreen   screen
-	quitCursor         int
+	current             screen
+	width               int
+	height              int
+	styles              styles
+	keys                keyMap
+	help                help.Model
+	localWorkspace      *workspace.Workspace
+	pathInput           textinput.Model
+	planPathInput       textinput.Model
+	filterActorInput    textinput.Model
+	filterTargetInput   textinput.Model
+	filterOlderInput    textinput.Model
+	filterNewerInput    textinput.Model
+	spinner             spinner.Model
+	importSource        string
+	importResult        instagram.ImportResult
+	importErr           error
+	itemFilter          domain.ActivityItemFilter
+	selection           domain.ActivitySelection
+	planResult          instagram.PlanBuildResult
+	loadedPlan          domain.CleanupPlan
+	loadedPlanSummary   domain.CleanupPlanSummary
+	draftFilter         domain.ActivityItemFilter
+	draftOlderDate      string
+	draftNewerDate      string
+	filterError         string
+	selectionMessage    string
+	planExportStatus    string
+	planExportError     string
+	planLoadError       string
+	recentPlanError     string
+	localDataStatus     string
+	localDataWarning    string
+	localConfig         workspace.Config
+	recentImports       []workspace.RecentImport
+	recentPlans         []workspace.RecentPlan
+	auditEvents         []workspace.AuditEvent
+	auditMalformed      int
+	homeCursor          int
+	resultCursor        int
+	itemCursor          int
+	itemOffset          int
+	filterCursor        int
+	filterEditing       int
+	selectionCursor     int
+	selectedCursor      int
+	selectedOffset      int
+	planPreviewCursor   int
+	planListOffset      int
+	loadedPlanCursor    int
+	loadedActionCursor  int
+	loadedActionOffset  int
+	warningCursor       int
+	warningOffset       int
+	localDataCursor     int
+	recentImportCursor  int
+	recentImportOffset  int
+	recentPlanCursor    int
+	recentPlanOffset    int
+	auditCursor         int
+	auditOffset         int
+	wipeLocalDataCursor int
+	helpReturnScreen    screen
+	quitReturnScreen    screen
+	quitCursor          int
 }
 
 // NewModel builds the initial app state before Bubble Tea starts sending
 // terminal messages.
 func NewModel() Model {
+	return NewModelWithWorkspace(nil, nil)
+}
+
+// NewModelWithWorkspace builds app state with an optional local metadata
+// workspace. Passing nil keeps the TUI usable without touching local disk.
+func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) Model {
 	isDark := true
 	helpModel := help.New()
 	helpModel.Styles = help.DefaultStyles(isDark)
@@ -205,11 +263,12 @@ func NewModel() Model {
 	pathInput.CharLimit = 1024
 	pathInput.SetWidth(74)
 
-	return Model{
+	m := Model{
 		current:           screenHome,
 		styles:            newStyles(isDark),
 		keys:              newKeyMap(),
 		help:              helpModel,
+		localWorkspace:    localWorkspace,
 		pathInput:         pathInput,
 		planPathInput:     newPlanPathInput(),
 		filterActorInput:  newFilterInput("username"),
@@ -219,6 +278,16 @@ func NewModel() Model {
 		filterEditing:     filterEditNone,
 		spinner:           spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 	}
+	if localErr != nil {
+		m.localDataWarning = "Local data unavailable: " + localErr.Error()
+	}
+	if localWorkspace != nil {
+		m.refreshLocalData()
+		if planPath := m.defaultPlanPathValue(); planPath != "" {
+			m.planPathInput.SetValue(planPath)
+		}
+	}
+	return m
 }
 
 // Init is called once when Bubble Tea starts.
@@ -245,6 +314,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
 		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
 		m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
+		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+		m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+		m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
 
 	case importFinishedMsg:
 		m.importResult = msg.result
@@ -262,6 +334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.warningCursor = 0
 		m.warningOffset = 0
 		m.clearFilterState()
+		m.recordImportFinished(msg)
 		m.current = screenImportResult
 
 	case spinner.TickMsg:
@@ -279,10 +352,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.planExportError = ""
 		m.planExportStatus = fmt.Sprintf("Saved plan to %s", msg.path)
+		m.planPathInput.SetValue(msg.path)
+		m.recordPlanExported(msg.path)
 		return m, nil
 
 	case loadPlanFinishedMsg:
 		if msg.err != nil {
+			m.recordPlanLoadFailed(msg.path, msg.err)
+			if msg.fromRecent {
+				m.recentPlanError = friendlyPlanLoadError(msg.err)
+				m.current = screenRecentPlans
+				return m, nil
+			}
 			m.planLoadError = friendlyPlanLoadError(msg.err)
 			return m, nil
 		}
@@ -292,7 +373,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadedPlanCursor = 0
 		m.loadedActionCursor = 0
 		m.loadedActionOffset = 0
+		m.recentPlanError = ""
+		m.planPathInput.SetValue(msg.path)
 		m.planPathInput.Blur()
+		m.recordPlanLoaded(msg.path, msg.plan, msg.summary)
 		m.current = screenLoadedPlanSummary
 		return m, nil
 
@@ -335,6 +419,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateLoadedPlanActions(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
+		case screenLocalDataOverview:
+			return m.updateLocalDataOverview(msg)
+		case screenRecentImports:
+			return m.updateRecentImports(msg)
+		case screenRecentPlans:
+			return m.updateRecentPlans(msg)
+		case screenAuditLog:
+			return m.updateAuditLog(msg)
+		case screenWipeLocalDataConfirm:
+			return m.updateWipeLocalDataConfirm(msg)
 		case screenKeybindings:
 			return m.updateKeybindings(msg)
 		case screenQuitConfirm:
@@ -360,7 +454,7 @@ func (m Model) updateHome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case homeLoadPlan:
 			m.resetLoadedPlanState()
-			m.planPathInput.SetValue(defaultPlanExportPath)
+			m.planPathInput.SetValue(m.loadPlanPathValue())
 			m.current = screenPlanLoadPath
 			return m, m.planPathInput.Focus()
 		case homeDemo:
@@ -368,6 +462,8 @@ func (m Model) updateHome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.current = screenImporting
 			m.importSource = "demo instagram export"
 			return m, tea.Batch(startSpinnerCmd(m.spinner), demoImportCmd())
+		case homeLocalData:
+			m.openLocalDataOverview()
 		case homeQuit:
 			m.openQuitConfirm()
 		}
@@ -534,11 +630,12 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 				return m, nil
 			}
 			m.planResult = result
+			m.recordPlanGenerated(result)
 			m.planPreviewCursor = 0
 			m.planListOffset = 0
 			m.planExportStatus = ""
 			m.planExportError = ""
-			m.planPathInput.SetValue(defaultPlanExportPath)
+			m.planPathInput.SetValue(m.defaultPlanPathValue())
 			m.current = screenPlanPreview
 		case selectionViewSelected:
 			items := m.selectedItems()
@@ -577,7 +674,7 @@ func (m Model) updatePlanPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case planPreviewExport:
 			m.current = screenPlanExportPath
 			if strings.TrimSpace(m.planPathInput.Value()) == "" {
-				m.planPathInput.SetValue(defaultPlanExportPath)
+				m.planPathInput.SetValue(m.defaultPlanPathValue())
 			}
 			m.planExportStatus = ""
 			m.planExportError = ""
@@ -594,7 +691,7 @@ func (m Model) updatePlanExportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.save):
 		outputPath := strings.TrimSpace(m.planPathInput.Value())
 		if outputPath == "" {
-			outputPath = defaultPlanExportPath
+			outputPath = m.defaultPlanPathValue()
 			m.planPathInput.SetValue(outputPath)
 		}
 		m.planExportStatus = ""
@@ -616,11 +713,11 @@ func (m Model) updatePlanLoadPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.start):
 		planPath := strings.TrimSpace(m.planPathInput.Value())
 		if planPath == "" {
-			planPath = defaultPlanExportPath
+			planPath = m.loadPlanPathValue()
 			m.planPathInput.SetValue(planPath)
 		}
 		m.planLoadError = ""
-		return m, loadPlanJSONCmd(planPath)
+		return m, loadPlanJSONCmd(planPath, false)
 	case key.Matches(msg, m.keys.cancel):
 		m.planPathInput.Blur()
 		m.current = screenHome
@@ -694,6 +791,115 @@ func (m Model) updateWarnings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateLocalDataOverview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.localDataCursor = moveCursor(m.localDataCursor, len(localDataMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.localDataCursor = moveCursor(m.localDataCursor, len(localDataMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenHome
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.localDataCursor {
+		case localDataRecentImports:
+			m.refreshLocalData()
+			m.recentImportCursor = clampCursor(m.recentImportCursor, len(m.recentImports))
+			m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+			m.current = screenRecentImports
+		case localDataRecentPlans:
+			m.refreshLocalData()
+			m.recentPlanCursor = clampCursor(m.recentPlanCursor, len(m.recentPlans))
+			m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+			m.current = screenRecentPlans
+		case localDataAuditLog:
+			m.refreshLocalData()
+			m.auditCursor = clampCursor(m.auditCursor, len(m.auditEvents))
+			m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
+			m.current = screenAuditLog
+		case localDataWipe:
+			m.wipeLocalDataCursor = wipeLocalDataCancel
+			m.current = screenWipeLocalDataConfirm
+		case localDataBackHome:
+			m.current = screenHome
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateRecentImports(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.recentImportCursor = moveCursor(m.recentImportCursor, len(m.recentImports), -1)
+	case key.Matches(msg, m.keys.down):
+		m.recentImportCursor = moveCursor(m.recentImportCursor, len(m.recentImports), 1)
+	case key.Matches(msg, m.keys.back):
+		m.openLocalDataOverview()
+	}
+	m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+	return m, nil
+}
+
+func (m Model) updateRecentPlans(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.recentPlanError = ""
+		m.recentPlanCursor = moveCursor(m.recentPlanCursor, len(m.recentPlans), -1)
+	case key.Matches(msg, m.keys.down):
+		m.recentPlanError = ""
+		m.recentPlanCursor = moveCursor(m.recentPlanCursor, len(m.recentPlans), 1)
+	case key.Matches(msg, m.keys.back):
+		m.recentPlanError = ""
+		m.openLocalDataOverview()
+	case key.Matches(msg, m.keys.selectItem):
+		if len(m.recentPlans) == 0 {
+			return m, nil
+		}
+		plan := m.recentPlans[clampCursor(m.recentPlanCursor, len(m.recentPlans))]
+		planPath := strings.TrimSpace(plan.Path)
+		if planPath == "" {
+			m.recentPlanError = "Recent plan does not have a local path."
+			return m, nil
+		}
+		m.recentPlanError = ""
+		return m, loadPlanJSONCmd(planPath, true)
+	}
+	m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+	return m, nil
+}
+
+func (m Model) updateAuditLog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.auditCursor = moveCursor(m.auditCursor, len(m.auditEvents), -1)
+	case key.Matches(msg, m.keys.down):
+		m.auditCursor = moveCursor(m.auditCursor, len(m.auditEvents), 1)
+	case key.Matches(msg, m.keys.back):
+		m.openLocalDataOverview()
+	}
+	m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
+	return m, nil
+}
+
+func (m Model) updateWipeLocalDataConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.wipeLocalDataCursor = moveCursor(m.wipeLocalDataCursor, len(wipeLocalDataMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.wipeLocalDataCursor = moveCursor(m.wipeLocalDataCursor, len(wipeLocalDataMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.openLocalDataOverview()
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.wipeLocalDataCursor {
+		case wipeLocalDataConfirm:
+			m.wipeLocalData()
+			m.openLocalDataOverview()
+		case wipeLocalDataCancel:
+			m.openLocalDataOverview()
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateKeybindings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.back) {
 		m.current = m.helpReturnScreen
@@ -752,6 +958,16 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.loadedPlanActionsView())
 	case screenWarnings:
 		return tea.NewView(m.warningsView())
+	case screenLocalDataOverview:
+		return tea.NewView(m.localDataOverviewView())
+	case screenRecentImports:
+		return tea.NewView(m.recentImportsView())
+	case screenRecentPlans:
+		return tea.NewView(m.recentPlansView())
+	case screenAuditLog:
+		return tea.NewView(m.auditLogView())
+	case screenWipeLocalDataConfirm:
+		return tea.NewView(m.wipeLocalDataConfirmView())
 	case screenKeybindings:
 		return tea.NewView(m.keybindingsView())
 	case screenQuitConfirm:
@@ -771,6 +987,7 @@ func (m Model) homeView() string {
 		m.styles.body.Render("Import a local Instagram export ZIP or inspect an exported cleanup plan."),
 		"",
 	)
+	lines = append(lines, m.localDataMessages()...)
 	lines = append(lines, m.renderMenu(homeMenuItems, m.homeCursor)...)
 	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.help, m.keys.quit))
 
@@ -819,8 +1036,9 @@ func (m Model) importResultView() string {
 			m.styles.muted.Render("Check that the path points to a local Instagram export .zip, then try again."),
 			m.styles.muted.Render(m.importSource),
 			"",
-			m.helpLine(m.keys.back, m.keys.help, m.keys.quit),
 		)
+		lines = append(lines, m.localDataMessages()...)
+		lines = append(lines, m.helpLine(m.keys.back, m.keys.help, m.keys.quit))
 
 		return m.frame(strings.Join(lines, "\n"))
 	}
@@ -835,6 +1053,7 @@ func (m Model) importResultView() string {
 		m.styles.body.Render(fmt.Sprintf("Skipped or unknown: %d | Warnings: %d", summary.Skipped, len(m.importResult.Warnings))),
 		"",
 	)
+	lines = append(lines, m.localDataMessages()...)
 
 	lines = append(lines, m.renderMenu(resultMenuItems, m.resultCursor)...)
 	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
@@ -1010,6 +1229,7 @@ func (m Model) planExportPathView() string {
 	if strings.TrimSpace(m.planExportError) != "" {
 		lines = append(lines, m.styles.error.Render(m.planExportError), "")
 	}
+	lines = append(lines, m.localDataMessages()...)
 
 	lines = append(lines, m.helpLine(m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit))
 	return m.frame(strings.Join(lines, "\n"))
@@ -1180,6 +1400,161 @@ func (m Model) warningsView() string {
 	return m.frame(strings.Join(lines, "\n"))
 }
 
+func (m Model) localDataOverviewView() string {
+	lines := m.header("Local Data")
+	lines = append(lines,
+		"",
+		m.styles.body.Render("Vanish stores local metadata only in its app directory."),
+		m.styles.muted.Render("Imports and cleanup plans stay at the local paths you choose."),
+		"",
+		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
+		m.styles.body.Render(fmt.Sprintf("Telemetry: %s", enabledLabel(m.localConfig.Telemetry.Enabled))),
+		m.styles.body.Render(fmt.Sprintf("Recent imports: %d", len(m.recentImports))),
+		m.styles.body.Render(fmt.Sprintf("Recent plans: %d", len(m.recentPlans))),
+		m.styles.body.Render(fmt.Sprintf("Audit events: %d", len(m.auditEvents))),
+	)
+	if m.auditMalformed > 0 {
+		lines = append(lines, m.styles.warning.Render(fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)))
+	}
+	lines = append(lines, "")
+	lines = append(lines, m.localDataMessages()...)
+	lines = append(lines, m.renderMenu(localDataMenuItems, m.localDataCursor)...)
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) recentImportsView() string {
+	visibleRows := m.localDataListHeight()
+	cursor := clampCursor(m.recentImportCursor, len(m.recentImports))
+	offset := ensureOffset(cursor, m.recentImportOffset, len(m.recentImports), visibleRows)
+	lines := m.header("Recent Imports")
+	lines = append(lines,
+		"",
+		m.styles.muted.Render(fmt.Sprintf("%d recent imports from %s", len(m.recentImports), m.localDataDirLabel())),
+		"",
+	)
+	lines = append(lines, m.localDataMessages()...)
+	if len(m.recentImports) == 0 {
+		lines = append(lines, m.styles.muted.Render("No recent imports yet. Import demo data or a local Instagram ZIP to add one."))
+	} else {
+		end := minInt(len(m.recentImports), offset+visibleRows)
+		if offset > 0 {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+		for i := offset; i < end; i++ {
+			lines = append(lines, m.renderSelectableLine(recentImportRow(m.recentImports[i]), i == cursor))
+		}
+		if end < len(m.recentImports) {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+	}
+	lines = append(lines, "", m.styles.separator.Render("Details"))
+	if len(m.recentImports) == 0 {
+		lines = append(lines, m.styles.muted.Render("No import selected."))
+	} else {
+		for _, line := range recentImportDetailLines(m.recentImports[cursor]) {
+			lines = append(lines, m.styles.body.Render(line))
+		}
+	}
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) recentPlansView() string {
+	visibleRows := m.localDataListHeight()
+	cursor := clampCursor(m.recentPlanCursor, len(m.recentPlans))
+	offset := ensureOffset(cursor, m.recentPlanOffset, len(m.recentPlans), visibleRows)
+	lines := m.header("Recent Plans")
+	lines = append(lines,
+		"",
+		m.styles.muted.Render(fmt.Sprintf("%d recent plans from %s", len(m.recentPlans), m.localDataDirLabel())),
+		"",
+	)
+	lines = append(lines, m.localDataMessages()...)
+	if strings.TrimSpace(m.recentPlanError) != "" {
+		lines = append(lines, m.styles.error.Render(m.recentPlanError), "")
+	}
+	if len(m.recentPlans) == 0 {
+		lines = append(lines, m.styles.muted.Render("No recent plans yet. Export or load a dry-run cleanup plan to add one."))
+	} else {
+		end := minInt(len(m.recentPlans), offset+visibleRows)
+		if offset > 0 {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+		for i := offset; i < end; i++ {
+			lines = append(lines, m.renderSelectableLine(recentPlanRow(m.recentPlans[i]), i == cursor))
+		}
+		if end < len(m.recentPlans) {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+	}
+	lines = append(lines, "", m.styles.separator.Render("Details"))
+	if len(m.recentPlans) == 0 {
+		lines = append(lines, m.styles.muted.Render("No plan selected."))
+	} else {
+		for _, line := range recentPlanDetailLines(m.recentPlans[cursor]) {
+			lines = append(lines, m.styles.body.Render(line))
+		}
+	}
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) auditLogView() string {
+	visibleRows := m.localDataListHeight()
+	cursor := clampCursor(m.auditCursor, len(m.auditEvents))
+	offset := ensureOffset(cursor, m.auditOffset, len(m.auditEvents), visibleRows)
+	lines := m.header("Audit Log")
+	lines = append(lines,
+		"",
+		m.styles.muted.Render(fmt.Sprintf("%d audit events from %s", len(m.auditEvents), m.localDataDirLabel())),
+		"",
+	)
+	lines = append(lines, m.localDataMessages()...)
+	if m.auditMalformed > 0 {
+		lines = append(lines, m.styles.warning.Render(fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)), "")
+	}
+	if len(m.auditEvents) == 0 {
+		lines = append(lines, m.styles.muted.Render("No audit events yet."))
+	} else {
+		end := minInt(len(m.auditEvents), offset+visibleRows)
+		if offset > 0 {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+		for i := offset; i < end; i++ {
+			lines = append(lines, m.renderSelectableLine(auditEventRow(m.auditEvents[i]), i == cursor))
+		}
+		if end < len(m.auditEvents) {
+			lines = append(lines, m.styles.muted.Render("..."))
+		}
+	}
+	lines = append(lines, "", m.styles.separator.Render("Details"))
+	if len(m.auditEvents) == 0 {
+		lines = append(lines, m.styles.muted.Render("No audit event selected."))
+	} else {
+		for _, line := range auditEventDetailLines(m.auditEvents[cursor]) {
+			lines = append(lines, m.styles.body.Render(line))
+		}
+	}
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
+func (m Model) wipeLocalDataConfirmView() string {
+	lines := m.header("Wipe Local Data?")
+	lines = append(lines,
+		"",
+		m.styles.warning.Render("This clears Vanish-managed config, recent history, and audit records."),
+		m.styles.body.Render("It does not delete Instagram export ZIPs or cleanup plan JSON files outside the app directory."),
+		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
+		"",
+	)
+	lines = append(lines, m.localDataMessages()...)
+	lines = append(lines, m.renderMenu(wipeLocalDataMenuItems, m.wipeLocalDataCursor)...)
+	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
+	return m.frame(strings.Join(lines, "\n"))
+}
+
 func (m Model) keybindingsView() string {
 	lines := m.header("Help")
 	lines = append(lines,
@@ -1299,7 +1674,7 @@ func (m *Model) resetPlanState() {
 	m.planResult = instagram.PlanBuildResult{}
 	m.planPreviewCursor = 0
 	m.planListOffset = 0
-	m.planPathInput.SetValue(defaultPlanExportPath)
+	m.planPathInput.SetValue(m.defaultPlanPathValue())
 	m.planPathInput.Blur()
 	m.planExportStatus = ""
 	m.planExportError = ""
@@ -1326,6 +1701,221 @@ func (m *Model) openKeybindings() {
 	m.current = screenKeybindings
 }
 
+func (m *Model) openLocalDataOverview() {
+	m.refreshLocalData()
+	m.localDataCursor = clampCursor(m.localDataCursor, len(localDataMenuItems))
+	m.current = screenLocalDataOverview
+}
+
+func (m *Model) refreshLocalData() {
+	if m.localWorkspace == nil {
+		m.localConfig = workspace.Config{}
+		m.recentImports = nil
+		m.recentPlans = nil
+		m.auditEvents = nil
+		m.auditMalformed = 0
+		if strings.TrimSpace(m.localDataWarning) == "" {
+			m.localDataWarning = "Local data unavailable in this run."
+		}
+		return
+	}
+
+	config, err := m.localWorkspace.LoadConfig()
+	if err != nil {
+		m.warnLocalData("load config", err)
+	} else {
+		m.localConfig = config
+	}
+	imports, err := m.localWorkspace.RecentImports()
+	if err != nil {
+		m.warnLocalData("load recent imports", err)
+	} else {
+		m.recentImports = imports
+	}
+	plans, err := m.localWorkspace.RecentPlans()
+	if err != nil {
+		m.warnLocalData("load recent plans", err)
+	} else {
+		m.recentPlans = plans
+	}
+	audit, err := m.localWorkspace.ReadAudit()
+	if err != nil {
+		m.warnLocalData("load audit log", err)
+	} else {
+		m.auditEvents = audit.Events
+		m.auditMalformed = audit.MalformedLines
+	}
+
+	m.recentImportCursor = clampCursor(m.recentImportCursor, len(m.recentImports))
+	m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+	m.recentPlanCursor = clampCursor(m.recentPlanCursor, len(m.recentPlans))
+	m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+	m.auditCursor = clampCursor(m.auditCursor, len(m.auditEvents))
+	m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
+}
+
+func (m *Model) recordImportFinished(msg importFinishedMsg) {
+	if msg.err != nil {
+		m.appendAudit("import_failed", map[string]any{
+			"source_label": sourceLabel(msg.source),
+			"source_path":  sourcePath(msg.source),
+			"platform":     string(domain.PlatformInstagram),
+			"demo":         isDemoSource(msg.source),
+			"error":        msg.err.Error(),
+		})
+		return
+	}
+	entry := workspace.RecentImport{
+		SourceLabel:    sourceLabel(msg.source),
+		SourcePath:     sourcePath(msg.source),
+		Platform:       string(domain.PlatformInstagram),
+		ImportedAt:     time.Now().UTC(),
+		Demo:           isDemoSource(msg.source),
+		ItemCount:      msg.result.Summary.Total,
+		LikeCount:      msg.result.Summary.Likes,
+		CommentCount:   msg.result.Summary.Comments,
+		FollowingCount: msg.result.Summary.Following,
+		FollowerCount:  msg.result.Summary.Followers,
+		WarningCount:   len(msg.result.Warnings),
+		SkippedCount:   msg.result.Summary.Skipped,
+	}
+	if m.localWorkspace != nil {
+		if err := m.localWorkspace.UpsertRecentImport(entry); err != nil {
+			m.warnLocalData("save recent import", err)
+		}
+	}
+	m.appendAudit("import_completed", map[string]any{
+		"source_label":    entry.SourceLabel,
+		"source_path":     entry.SourcePath,
+		"platform":        entry.Platform,
+		"demo":            entry.Demo,
+		"item_count":      entry.ItemCount,
+		"like_count":      entry.LikeCount,
+		"comment_count":   entry.CommentCount,
+		"following_count": entry.FollowingCount,
+		"follower_count":  entry.FollowerCount,
+		"warning_count":   entry.WarningCount,
+		"skipped_count":   entry.SkippedCount,
+	})
+	m.refreshLocalData()
+}
+
+func (m *Model) recordPlanGenerated(result instagram.PlanBuildResult) {
+	m.appendAudit("plan_generated", map[string]any{
+		"plan_id":              result.Plan.ID,
+		"mode":                 string(result.Plan.Mode),
+		"source_name":          result.Plan.SourceName,
+		"platform":             string(result.Plan.Platform),
+		"selected_count":       result.SelectedCount,
+		"action_count":         len(result.Plan.Actions),
+		"skipped_count":        len(result.Skipped),
+		"unlike_count":         result.Counts.Unlike,
+		"delete_comment_count": result.Counts.DeleteComment,
+		"unfollow_count":       result.Counts.Unfollow,
+	})
+}
+
+func (m *Model) recordPlanExported(path string) {
+	m.upsertRecentPlan(path, m.planResult.Plan, "exported")
+	m.updateConfig("update default plan export path", func(config *workspace.Config) {
+		config.DefaultPlanExportPath = strings.TrimSpace(path)
+	})
+	m.appendAudit("plan_exported", planAuditFields(path, m.planResult.Plan, domain.SummarizeCleanupPlan(m.planResult.Plan)))
+	m.refreshLocalData()
+}
+
+func (m *Model) recordPlanLoaded(path string, plan domain.CleanupPlan, summary domain.CleanupPlanSummary) {
+	m.upsertRecentPlan(path, plan, "loaded")
+	m.updateConfig("update last opened plan path", func(config *workspace.Config) {
+		config.LastOpenedPlanPath = strings.TrimSpace(path)
+	})
+	m.appendAudit("plan_loaded", planAuditFields(path, plan, summary))
+	m.refreshLocalData()
+}
+
+func (m *Model) recordPlanLoadFailed(path string, err error) {
+	m.appendAudit("plan_load_failed", map[string]any{
+		"path":  path,
+		"error": friendlyPlanLoadError(err),
+	})
+	m.refreshLocalData()
+}
+
+func (m *Model) upsertRecentPlan(path string, plan domain.CleanupPlan, operation string) {
+	if m.localWorkspace == nil {
+		return
+	}
+	summary := domain.SummarizeCleanupPlan(plan)
+	entry := workspace.RecentPlan{
+		ID:            plan.ID,
+		Path:          strings.TrimSpace(path),
+		Mode:          string(plan.Mode),
+		SourceName:    plan.SourceName,
+		PlanCreatedAt: plan.CreatedAt,
+		LastUsedAt:    time.Now().UTC(),
+		LastOperation: operation,
+		ActionCounts:  actionCountsForWorkspace(summary.ActionCounts),
+		StatusCounts:  statusCountsForWorkspace(summary.StatusCounts),
+	}
+	if err := m.localWorkspace.UpsertRecentPlan(entry); err != nil {
+		m.warnLocalData("save recent plan", err)
+	}
+}
+
+func (m *Model) updateConfig(action string, update func(*workspace.Config)) {
+	if m.localWorkspace == nil {
+		return
+	}
+	if err := m.localWorkspace.UpdateConfig(update); err != nil {
+		m.warnLocalData(action, err)
+	}
+}
+
+func (m *Model) appendAudit(eventType string, fields map[string]any) {
+	if m.localWorkspace == nil {
+		return
+	}
+	if err := m.localWorkspace.AppendAudit(workspace.AuditEvent{
+		Type:      eventType,
+		Timestamp: time.Now().UTC(),
+		Fields:    cleanAuditFields(fields),
+	}); err != nil {
+		m.warnLocalData("append audit event", err)
+	}
+}
+
+func (m *Model) wipeLocalData() {
+	if m.localWorkspace == nil {
+		m.warnLocalData("wipe local data", errors.New("local workspace is unavailable"))
+		return
+	}
+	if err := m.localWorkspace.Wipe(); err != nil {
+		m.warnLocalData("wipe local data", err)
+		return
+	}
+	m.localDataStatus = "Local data wiped. Vanish-managed defaults were recreated."
+	m.localDataWarning = ""
+	m.localConfig = workspace.Config{}
+	m.recentImports = nil
+	m.recentPlans = nil
+	m.auditEvents = nil
+	m.auditMalformed = 0
+	m.recentImportCursor = 0
+	m.recentImportOffset = 0
+	m.recentPlanCursor = 0
+	m.recentPlanOffset = 0
+	m.auditCursor = 0
+	m.auditOffset = 0
+	m.refreshLocalData()
+}
+
+func (m *Model) warnLocalData(action string, err error) {
+	if err == nil {
+		return
+	}
+	m.localDataWarning = fmt.Sprintf("Local data warning: %s: %v", action, err)
+}
+
 func (m Model) itemListHeight() int {
 	return boundedListHeight(m.height, 15, 3, 10)
 }
@@ -1340,6 +1930,10 @@ func (m Model) planListHeight() int {
 
 func (m Model) planActionListHeight() int {
 	return boundedListHeight(m.height, 18, 3, 10)
+}
+
+func (m Model) localDataListHeight() int {
+	return boundedListHeight(m.height, 18, 3, 8)
 }
 
 type keyMap struct {
@@ -1506,10 +2100,11 @@ type exportPlanFinishedMsg struct {
 }
 
 type loadPlanFinishedMsg struct {
-	path    string
-	plan    domain.CleanupPlan
-	summary domain.CleanupPlanSummary
-	err     error
+	path       string
+	plan       domain.CleanupPlan
+	summary    domain.CleanupPlanSummary
+	err        error
+	fromRecent bool
 }
 
 func importZIPCmd(zipPath, source string) tea.Cmd {
@@ -1534,16 +2129,17 @@ func writePlanJSONCmd(outputPath string, plan domain.CleanupPlan) tea.Cmd {
 	}
 }
 
-func loadPlanJSONCmd(planPath string) tea.Cmd {
+func loadPlanJSONCmd(planPath string, fromRecent bool) tea.Cmd {
 	return func() tea.Msg {
 		plan, err := domain.LoadPlanJSONFile(planPath)
 		if err != nil {
-			return loadPlanFinishedMsg{path: planPath, err: err}
+			return loadPlanFinishedMsg{path: planPath, err: err, fromRecent: fromRecent}
 		}
 		return loadPlanFinishedMsg{
-			path:    planPath,
-			plan:    plan,
-			summary: domain.SummarizeCleanupPlan(plan),
+			path:       planPath,
+			plan:       plan,
+			summary:    domain.SummarizeCleanupPlan(plan),
+			fromRecent: fromRecent,
 		}
 	}
 }
@@ -1699,6 +2295,253 @@ func (m Model) actionCountLines(counts map[domain.ActionType]int) []string {
 		lines = append(lines, m.styles.body.Render(fmt.Sprintf("%s: %d", key, counts[domain.ActionType(key)])))
 	}
 	return lines
+}
+
+func (m Model) localDataMessages() []string {
+	lines := []string{}
+	if strings.TrimSpace(m.localDataStatus) != "" {
+		lines = append(lines, m.styles.success.Render(m.localDataStatus))
+	}
+	if strings.TrimSpace(m.localDataWarning) != "" {
+		lines = append(lines, m.styles.warning.Render(m.localDataWarning))
+	}
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+func (m Model) localDataDirLabel() string {
+	if m.localWorkspace == nil {
+		return "unavailable"
+	}
+	return m.localWorkspace.Dir()
+}
+
+func (m Model) defaultPlanPathValue() string {
+	path := strings.TrimSpace(m.localConfig.DefaultPlanExportPath)
+	if path != "" {
+		return path
+	}
+	return defaultPlanExportPath
+}
+
+func (m Model) loadPlanPathValue() string {
+	path := strings.TrimSpace(m.localConfig.LastOpenedPlanPath)
+	if path != "" {
+		return path
+	}
+	return m.defaultPlanPathValue()
+}
+
+func recentImportRow(entry workspace.RecentImport) string {
+	return fmt.Sprintf(
+		"%s | %s | items %d | warnings %d",
+		formatPlanTime(entry.ImportedAt),
+		emptyFallback(entry.SourceLabel, "-"),
+		entry.ItemCount,
+		entry.WarningCount,
+	)
+}
+
+func recentImportDetailLines(entry workspace.RecentImport) []string {
+	lines := []string{
+		"Source label: " + emptyFallback(entry.SourceLabel, "-"),
+		"Source path: " + emptyFallback(entry.SourcePath, "-"),
+		"Platform: " + emptyFallback(entry.Platform, "-"),
+		"Imported at: " + formatPlanTime(entry.ImportedAt),
+		fmt.Sprintf("Demo: %t", entry.Demo),
+		fmt.Sprintf("Total items: %d", entry.ItemCount),
+		fmt.Sprintf("Likes: %d", entry.LikeCount),
+		fmt.Sprintf("Comments: %d", entry.CommentCount),
+		fmt.Sprintf("Following: %d", entry.FollowingCount),
+		fmt.Sprintf("Followers: %d", entry.FollowerCount),
+		fmt.Sprintf("Skipped or unknown: %d", entry.SkippedCount),
+		fmt.Sprintf("Warnings: %d", entry.WarningCount),
+	}
+	return lines
+}
+
+func recentPlanRow(entry workspace.RecentPlan) string {
+	return fmt.Sprintf(
+		"%s | %s | %s | actions %d",
+		formatPlanTime(entry.LastUsedAt),
+		emptyFallback(entry.LastOperation, "-"),
+		emptyFallback(entry.SourceName, entry.ID),
+		sumStringCounts(entry.ActionCounts),
+	)
+}
+
+func recentPlanDetailLines(entry workspace.RecentPlan) []string {
+	lines := []string{
+		"Plan ID: " + emptyFallback(entry.ID, "-"),
+		"Path: " + emptyFallback(entry.Path, "-"),
+		"Mode: " + emptyFallback(entry.Mode, "-"),
+		"Source name: " + emptyFallback(entry.SourceName, "-"),
+		"Plan created at: " + formatPlanTime(entry.PlanCreatedAt),
+		"Last used at: " + formatPlanTime(entry.LastUsedAt),
+		"Last operation: " + emptyFallback(entry.LastOperation, "-"),
+		"Action counts: " + formatStringCounts(entry.ActionCounts),
+		"Status counts: " + formatStringCounts(entry.StatusCounts),
+	}
+	return lines
+}
+
+func auditEventRow(event workspace.AuditEvent) string {
+	return fmt.Sprintf("%s | %s", formatPlanTime(event.Timestamp), emptyFallback(event.Type, "-"))
+}
+
+func auditEventDetailLines(event workspace.AuditEvent) []string {
+	lines := []string{
+		"Type: " + emptyFallback(event.Type, "-"),
+		"Timestamp: " + formatPlanTime(event.Timestamp),
+	}
+	if len(event.Fields) == 0 {
+		return append(lines, "Fields: none")
+	}
+	lines = append(lines, "Fields:")
+	keys := make([]string, 0, len(event.Fields))
+	for key := range event.Fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		lines = append(lines, fmt.Sprintf("  %s: %s", key, formatAuditValue(event.Fields[key])))
+	}
+	return lines
+}
+
+func actionCountsForWorkspace(counts map[domain.ActionType]int) map[string]int {
+	if len(counts) == 0 {
+		return nil
+	}
+	result := make(map[string]int, len(counts))
+	for actionType, count := range counts {
+		result[string(actionType)] = count
+	}
+	return result
+}
+
+func statusCountsForWorkspace(counts map[domain.ActionStatus]int) map[string]int {
+	if len(counts) == 0 {
+		return nil
+	}
+	result := make(map[string]int, len(counts))
+	for status, count := range counts {
+		result[string(status)] = count
+	}
+	return result
+}
+
+func planAuditFields(path string, plan domain.CleanupPlan, summary domain.CleanupPlanSummary) map[string]any {
+	return map[string]any{
+		"path":                 strings.TrimSpace(path),
+		"plan_id":              plan.ID,
+		"mode":                 string(plan.Mode),
+		"source_name":          plan.SourceName,
+		"platform":             string(plan.Platform),
+		"action_count":         summary.TotalActions,
+		"unlike_count":         summary.ActionCounts[domain.ActionUnlike],
+		"delete_comment_count": summary.ActionCounts[domain.ActionDeleteComment],
+		"unfollow_count":       summary.ActionCounts[domain.ActionUnfollow],
+		"pending_count":        summary.StatusCounts[domain.ActionStatusPending],
+		"running_count":        summary.StatusCounts[domain.ActionStatusRunning],
+		"done_count":           summary.StatusCounts[domain.ActionStatusDone],
+		"failed_count":         summary.StatusCounts[domain.ActionStatusFailed],
+		"skipped_count":        summary.StatusCounts[domain.ActionStatusSkipped],
+	}
+}
+
+func cleanAuditFields(fields map[string]any) map[string]any {
+	if len(fields) == 0 {
+		return nil
+	}
+	cleaned := make(map[string]any, len(fields))
+	for key, value := range fields {
+		switch typed := value.(type) {
+		case string:
+			cleaned[key] = strings.TrimSpace(typed)
+		case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, nil:
+			cleaned[key] = typed
+		default:
+			cleaned[key] = fmt.Sprint(typed)
+		}
+	}
+	return cleaned
+}
+
+func sourceLabel(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "instagram export"
+	}
+	if isDemoSource(source) {
+		return "demo instagram export"
+	}
+	base := filepath.Base(strings.Trim(source, `"'`))
+	if base == "." || base == string(filepath.Separator) || strings.TrimSpace(base) == "" {
+		return source
+	}
+	return base
+}
+
+func sourcePath(source string) string {
+	source = strings.Trim(strings.TrimSpace(source), `"'`)
+	if source == "" || isDemoSource(source) {
+		return ""
+	}
+	return filepath.Clean(source)
+}
+
+func isDemoSource(source string) bool {
+	return strings.EqualFold(strings.TrimSpace(source), "demo instagram export")
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func formatStringCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "none"
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", key, counts[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sumStringCounts(counts map[string]int) int {
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	return total
+}
+
+func formatAuditValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "-"
+	case string:
+		return typed
+	case float64:
+		if typed == float64(int64(typed)) {
+			return fmt.Sprintf("%d", int64(typed))
+		}
+		return fmt.Sprintf("%g", typed)
+	default:
+		return fmt.Sprint(typed)
+	}
 }
 
 func formatPlanTime(value time.Time) string {

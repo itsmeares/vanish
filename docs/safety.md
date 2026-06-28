@@ -30,6 +30,38 @@ Plan files and normalized activity items must not store:
 The Instagram importer normalizes records into safe item metadata, target
 references, timestamps, and optional safe text hashes.
 
+## Local Workspace Privacy Rules
+
+The v0.2 local workspace stores only Vanish-managed app state on the user's
+machine. This includes configuration, recent import history, recent cleanup plan
+history, and audit records for local workspace events.
+
+Allowed local history and audit metadata:
+
+- Local file paths selected by the user.
+- Import timestamps, total counts, per-type counts, skipped counts, and warning
+  counts.
+- Plan creation timestamps, last-used timestamps, last local operations, and
+  summary counts.
+- Platform, source type, action type, and warning/error summaries.
+- Stable IDs or hashes when needed to reconnect app state without storing raw
+  content.
+
+The local workspace must not store:
+
+- Raw parsed items.
+- Raw export files.
+- Raw comment text.
+- Raw private messages.
+- Credentials.
+- Cookies.
+- Access tokens.
+- Session IDs.
+- Authorization headers, OAuth grants, or other authorization data.
+
+If future features need more sensitive data, they should require a separate,
+explicit design review and user-facing disclosure before implementation.
+
 ## Plan Files
 
 Cleanup plans are local JSON documents. In v0.1.0-alpha they are dry-run only:
