@@ -42,6 +42,37 @@ Suggested static check:
 rg -n "net/http|http\\.Get|http\\.Post|NewRequest|chromedp|selenium|playwright|agouti|rod|webdriver" --glob "*.go"
 ```
 
+## v0.2 Local Workspace Verification
+
+Use this section for local workspace validation work. It is not a v0.2 release
+announcement.
+
+- [ ] Local data screens match the documented app directory behavior.
+- [ ] Recent import history records only allowed path and summary metadata.
+- [ ] Recent plan history records only allowed path and summary metadata.
+- [ ] Audit hooks record local workspace events without raw parsed content.
+- [ ] Wipe flow clears Vanish-managed config, history, and audit records from
+  the active app directory.
+- [ ] Wipe flow does not remove user export ZIPs or plan JSON files outside the
+  active app directory.
+- [ ] `VANISH_APP_DIR` points the app at an isolated development workspace.
+- [ ] No network calls were added for local workspace features.
+- [ ] No browser automation was added for local workspace features.
+- [ ] No credentials, cookies, tokens, sessions, or authorization data are
+  collected or stored.
+- [ ] No raw parsed items, raw exports, or raw comments are stored in the app
+  directory.
+- [ ] Static checks cover network, browser automation, credential, and
+  authorization handling.
+
+Suggested v0.2 static checks:
+
+```bash
+rg -n "net/http|http\\.Get|http\\.Post|NewRequest|chromedp|selenium|playwright|agouti|rod|webdriver" --glob "*.go"
+rg -n "password|cookie|token|session|authorization|Authorization|oauth|credential" --glob "*.go"
+rg -n "VANISH_APP_DIR|UserConfigDir|UserHomeDir|XDG_CONFIG_HOME|Application Support|APPDATA" --glob "*.go"
+```
+
 ## GitHub Release
 
 - [ ] Commit alpha polish work on `main`.
