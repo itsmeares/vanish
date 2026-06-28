@@ -39,8 +39,10 @@ history, and audit records for local workspace events.
 Allowed local history and audit metadata:
 
 - Local file paths selected by the user.
-- Import timestamps and summary counts.
-- Plan timestamps and summary counts.
+- Import timestamps, total counts, per-type counts, skipped counts, and warning
+  counts.
+- Plan creation timestamps, last-used timestamps, last local operations, and
+  summary counts.
 - Platform, source type, action type, and warning/error summaries.
 - Stable IDs or hashes when needed to reconnect app state without storing raw
   content.

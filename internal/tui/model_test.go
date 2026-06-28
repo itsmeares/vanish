@@ -294,13 +294,15 @@ func TestRecentPlanEnterLoadsExistingPlanThroughLoadPath(t *testing.T) {
 	path := writeTUIPlan(t, plan)
 	summary := domain.SummarizeCleanupPlan(plan)
 	if err := w.UpsertRecentPlan(workspace.RecentPlan{
-		ID:           plan.ID,
-		Path:         path,
-		Mode:         string(plan.Mode),
-		SourceName:   plan.SourceName,
-		CreatedAt:    plan.CreatedAt,
-		ActionCounts: map[string]int{"unlike": summary.ActionCounts[domain.ActionUnlike]},
-		StatusCounts: map[string]int{"pending": summary.StatusCounts[domain.ActionStatusPending]},
+		ID:            plan.ID,
+		Path:          path,
+		Mode:          string(plan.Mode),
+		SourceName:    plan.SourceName,
+		PlanCreatedAt: plan.CreatedAt,
+		LastUsedAt:    plan.CreatedAt.Add(time.Hour),
+		LastOperation: "exported",
+		ActionCounts:  map[string]int{"unlike": summary.ActionCounts[domain.ActionUnlike]},
+		StatusCounts:  map[string]int{"pending": summary.StatusCounts[domain.ActionStatusPending]},
 	}); err != nil {
 		t.Fatalf("seed recent plan: %v", err)
 	}
@@ -308,6 +310,12 @@ func TestRecentPlanEnterLoadsExistingPlanThroughLoadPath(t *testing.T) {
 	next := openLocalDataOverview(t, NewModelWithWorkspace(w, nil))
 	next.localDataCursor = localDataRecentPlans
 	next = updateModel(t, next, keyPress("enter"))
+	view := next.View().Content
+	for _, want := range []string{"Plan created at:", "Last used at:", "Last operation: exported"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected recent plans screen to contain %q, got:\n%s", want, view)
+		}
+	}
 	updated, cmd := next.Update(keyPress("enter"))
 	if cmd == nil {
 		t.Fatalf("expected recent plan load command")
@@ -326,6 +334,51 @@ func TestRecentPlanEnterLoadsExistingPlanThroughLoadPath(t *testing.T) {
 	}
 }
 
+func TestRecentImportsScreenRendersPerTypeCounts(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	if err := w.UpsertRecentImport(workspace.RecentImport{
+		SourceLabel:    "instagram-export.zip",
+		SourcePath:     filepath.Join(t.TempDir(), "instagram-export.zip"),
+		Platform:       string(domain.PlatformInstagram),
+		ImportedAt:     time.Date(2026, 6, 28, 8, 0, 0, 0, time.UTC),
+		Demo:           true,
+		ItemCount:      10,
+		LikeCount:      4,
+		CommentCount:   3,
+		FollowingCount: 2,
+		FollowerCount:  1,
+		SkippedCount:   6,
+		WarningCount:   5,
+	}); err != nil {
+		t.Fatalf("seed recent import: %v", err)
+	}
+
+	next := openLocalDataOverview(t, NewModelWithWorkspace(w, nil))
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenRecentImports {
+		t.Fatalf("expected recent imports screen, got %v", next.current)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Total items: 10",
+		"Likes: 4",
+		"Comments: 3",
+		"Following: 2",
+		"Followers: 1",
+		"Skipped or unknown: 6",
+		"Warnings: 5",
+		"Demo: true",
+		"Source label: instagram-export.zip",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected recent imports screen to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestRecentPlanMissingFileShowsErrorOnRecentPlans(t *testing.T) {
 	w, err := workspace.Open(t.TempDir())
 	if err != nil {
@@ -333,11 +386,13 @@ func TestRecentPlanMissingFileShowsErrorOnRecentPlans(t *testing.T) {
 	}
 	missingPath := filepath.Join(t.TempDir(), "missing-plan.json")
 	if err := w.UpsertRecentPlan(workspace.RecentPlan{
-		ID:         "missing-plan",
-		Path:       missingPath,
-		Mode:       string(domain.PlanModeDryRun),
-		SourceName: "instagram-export",
-		CreatedAt:  time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC),
+		ID:            "missing-plan",
+		Path:          missingPath,
+		Mode:          string(domain.PlanModeDryRun),
+		SourceName:    "instagram-export",
+		PlanCreatedAt: time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC),
+		LastUsedAt:    time.Date(2026, 6, 28, 9, 1, 0, 0, time.UTC),
+		LastOperation: "loaded",
 	}); err != nil {
 		t.Fatalf("seed recent plan: %v", err)
 	}
@@ -371,10 +426,12 @@ func TestWipeLocalDataDefaultsToCancelAndPreservesExternalPlan(t *testing.T) {
 		t.Fatalf("write external plan: %v", err)
 	}
 	if err := w.UpsertRecentPlan(workspace.RecentPlan{
-		ID:        "outside",
-		Path:      externalPlan,
-		Mode:      string(domain.PlanModeDryRun),
-		CreatedAt: time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC),
+		ID:            "outside",
+		Path:          externalPlan,
+		Mode:          string(domain.PlanModeDryRun),
+		PlanCreatedAt: time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC),
+		LastUsedAt:    time.Date(2026, 6, 28, 10, 1, 0, 0, time.UTC),
+		LastOperation: "exported",
 	}); err != nil {
 		t.Fatalf("seed recent plan: %v", err)
 	}
@@ -1026,7 +1083,7 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	if len(imports) != 1 {
 		t.Fatalf("recent imports = %d, want 1", len(imports))
 	}
-	if imports[0].SourcePath != filepath.Clean(sourcePath) || imports[0].ItemCount != 4 || imports[0].WarningCount != 1 {
+	if imports[0].SourcePath != filepath.Clean(sourcePath) || imports[0].ItemCount != 4 || imports[0].LikeCount != 1 || imports[0].CommentCount != 1 || imports[0].FollowingCount != 1 || imports[0].FollowerCount != 1 || imports[0].WarningCount != 1 {
 		t.Fatalf("unexpected recent import: %#v", imports[0])
 	}
 	requireAuditEvent(t, w, "import_completed")
@@ -1056,6 +1113,16 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	if len(plans) != 1 || plans[0].Path != outputPath || plans[0].ID != next.planResult.Plan.ID {
 		t.Fatalf("unexpected recent plans after export: %#v", plans)
 	}
+	if !plans[0].PlanCreatedAt.Equal(next.planResult.Plan.CreatedAt) || plans[0].LastUsedAt.IsZero() || plans[0].LastOperation != "exported" {
+		t.Fatalf("unexpected recent plan usage fields after export: %#v", plans[0])
+	}
+	config, err := w.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config after export: %v", err)
+	}
+	if config.DefaultPlanExportPath != outputPath {
+		t.Fatalf("default plan export path = %q, want %q", config.DefaultPlanExportPath, outputPath)
+	}
 	requireAuditEvent(t, w, "plan_exported")
 
 	reloaded := NewModelWithWorkspace(w, nil)
@@ -1070,6 +1137,20 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	reloaded = updateModel(t, reloaded, cmd())
 	if reloaded.current != screenLoadedPlanSummary {
 		t.Fatalf("expected loaded summary after workspace load, got %v", reloaded.current)
+	}
+	plans, err = w.RecentPlans()
+	if err != nil {
+		t.Fatalf("read recent plans after load: %v", err)
+	}
+	if len(plans) != 1 || plans[0].LastOperation != "loaded" || plans[0].LastUsedAt.IsZero() {
+		t.Fatalf("unexpected recent plan usage fields after load: %#v", plans)
+	}
+	config, err = w.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config after plan load: %v", err)
+	}
+	if config.LastOpenedPlanPath != outputPath {
+		t.Fatalf("last opened plan path = %q, want %q", config.LastOpenedPlanPath, outputPath)
 	}
 	requireAuditEvent(t, w, "plan_loaded")
 }
@@ -1093,6 +1174,42 @@ func TestWorkspaceMetadataWriteFailureIsNonFatalWarning(t *testing.T) {
 	}
 	if !strings.Contains(next.View().Content, "Local data warning") {
 		t.Fatalf("expected warning to be visible, got:\n%s", next.View().Content)
+	}
+}
+
+func TestPlanExportConfigWriteFailureIsNonFatalWarning(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	next := NewModelWithWorkspace(w, nil)
+	next = updateModel(t, next, importFinishedMsg{result: fakeImportResultWithRelationships(), source: "demo instagram export"})
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, keyPress("a"))
+	next = updateModel(t, next, keyPress("s"))
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, keyPress("enter"))
+	outputPath := filepath.Join(t.TempDir(), "exported-plan.json")
+	next.planPathInput.SetValue(outputPath)
+	if err := os.WriteFile(filepath.Join(w.Dir(), "config.json"), []byte(`{"version":`), 0o600); err != nil {
+		t.Fatalf("corrupt config: %v", err)
+	}
+
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected export command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+
+	if next.planExportStatus != "Saved plan to "+outputPath {
+		t.Fatalf("expected successful export despite config failure, status=%q", next.planExportStatus)
+	}
+	if !strings.Contains(next.localDataWarning, "Local data warning") {
+		t.Fatalf("expected nonfatal local data warning, got %q", next.localDataWarning)
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("expected exported plan file: %v", err)
 	}
 }
 

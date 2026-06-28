@@ -49,9 +49,12 @@ app directory and is not synced to a hosted account.
 
 The app directory stores:
 
-- Configuration needed by the local app.
-- Recent import history with file path and import summary metadata.
-- Recent cleanup plan history with file path and plan summary metadata.
+- Configuration needed by the local app, including local workspace timestamps
+  and the last/default plan paths used by the TUI.
+- Recent import history with file path, total count, per-type counts, skipped
+  count, warning count, and demo/source metadata.
+- Recent cleanup plan history with file path, plan creation time, last used
+  time, last operation, and plan summary metadata.
 - A local audit log for workspace events such as imports, plan exports, plan
   loads, and wipes.
 

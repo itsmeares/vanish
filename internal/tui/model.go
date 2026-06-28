@@ -123,7 +123,7 @@ var planPreviewMenuItems = []string{
 	"Back",
 }
 
-const defaultPlanExportPath = "vanish-plan.json"
+const defaultPlanExportPath = workspace.DefaultPlanExportPath
 
 const (
 	loadedPlanViewActions = iota
@@ -280,6 +280,12 @@ func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) 
 	}
 	if localErr != nil {
 		m.localDataWarning = "Local data unavailable: " + localErr.Error()
+	}
+	if localWorkspace != nil {
+		m.refreshLocalData()
+		if planPath := m.defaultPlanPathValue(); planPath != "" {
+			m.planPathInput.SetValue(planPath)
+		}
 	}
 	return m
 }
@@ -448,7 +454,7 @@ func (m Model) updateHome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case homeLoadPlan:
 			m.resetLoadedPlanState()
-			m.planPathInput.SetValue(defaultPlanExportPath)
+			m.planPathInput.SetValue(m.loadPlanPathValue())
 			m.current = screenPlanLoadPath
 			return m, m.planPathInput.Focus()
 		case homeDemo:
@@ -629,7 +635,7 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.planListOffset = 0
 			m.planExportStatus = ""
 			m.planExportError = ""
-			m.planPathInput.SetValue(defaultPlanExportPath)
+			m.planPathInput.SetValue(m.defaultPlanPathValue())
 			m.current = screenPlanPreview
 		case selectionViewSelected:
 			items := m.selectedItems()
@@ -668,7 +674,7 @@ func (m Model) updatePlanPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case planPreviewExport:
 			m.current = screenPlanExportPath
 			if strings.TrimSpace(m.planPathInput.Value()) == "" {
-				m.planPathInput.SetValue(defaultPlanExportPath)
+				m.planPathInput.SetValue(m.defaultPlanPathValue())
 			}
 			m.planExportStatus = ""
 			m.planExportError = ""
@@ -685,7 +691,7 @@ func (m Model) updatePlanExportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.save):
 		outputPath := strings.TrimSpace(m.planPathInput.Value())
 		if outputPath == "" {
-			outputPath = defaultPlanExportPath
+			outputPath = m.defaultPlanPathValue()
 			m.planPathInput.SetValue(outputPath)
 		}
 		m.planExportStatus = ""
@@ -707,7 +713,7 @@ func (m Model) updatePlanLoadPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.start):
 		planPath := strings.TrimSpace(m.planPathInput.Value())
 		if planPath == "" {
-			planPath = defaultPlanExportPath
+			planPath = m.loadPlanPathValue()
 			m.planPathInput.SetValue(planPath)
 		}
 		m.planLoadError = ""
@@ -1668,7 +1674,7 @@ func (m *Model) resetPlanState() {
 	m.planResult = instagram.PlanBuildResult{}
 	m.planPreviewCursor = 0
 	m.planListOffset = 0
-	m.planPathInput.SetValue(defaultPlanExportPath)
+	m.planPathInput.SetValue(m.defaultPlanPathValue())
 	m.planPathInput.Blur()
 	m.planExportStatus = ""
 	m.planExportError = ""
@@ -1760,14 +1766,18 @@ func (m *Model) recordImportFinished(msg importFinishedMsg) {
 		return
 	}
 	entry := workspace.RecentImport{
-		SourceLabel:  sourceLabel(msg.source),
-		SourcePath:   sourcePath(msg.source),
-		Platform:     string(domain.PlatformInstagram),
-		ImportedAt:   time.Now().UTC(),
-		Demo:         isDemoSource(msg.source),
-		ItemCount:    msg.result.Summary.Total,
-		WarningCount: len(msg.result.Warnings),
-		SkippedCount: msg.result.Summary.Skipped,
+		SourceLabel:    sourceLabel(msg.source),
+		SourcePath:     sourcePath(msg.source),
+		Platform:       string(domain.PlatformInstagram),
+		ImportedAt:     time.Now().UTC(),
+		Demo:           isDemoSource(msg.source),
+		ItemCount:      msg.result.Summary.Total,
+		LikeCount:      msg.result.Summary.Likes,
+		CommentCount:   msg.result.Summary.Comments,
+		FollowingCount: msg.result.Summary.Following,
+		FollowerCount:  msg.result.Summary.Followers,
+		WarningCount:   len(msg.result.Warnings),
+		SkippedCount:   msg.result.Summary.Skipped,
 	}
 	if m.localWorkspace != nil {
 		if err := m.localWorkspace.UpsertRecentImport(entry); err != nil {
@@ -1775,13 +1785,17 @@ func (m *Model) recordImportFinished(msg importFinishedMsg) {
 		}
 	}
 	m.appendAudit("import_completed", map[string]any{
-		"source_label":  entry.SourceLabel,
-		"source_path":   entry.SourcePath,
-		"platform":      entry.Platform,
-		"demo":          entry.Demo,
-		"item_count":    entry.ItemCount,
-		"warning_count": entry.WarningCount,
-		"skipped_count": entry.SkippedCount,
+		"source_label":    entry.SourceLabel,
+		"source_path":     entry.SourcePath,
+		"platform":        entry.Platform,
+		"demo":            entry.Demo,
+		"item_count":      entry.ItemCount,
+		"like_count":      entry.LikeCount,
+		"comment_count":   entry.CommentCount,
+		"following_count": entry.FollowingCount,
+		"follower_count":  entry.FollowerCount,
+		"warning_count":   entry.WarningCount,
+		"skipped_count":   entry.SkippedCount,
 	})
 	m.refreshLocalData()
 }
@@ -1802,13 +1816,19 @@ func (m *Model) recordPlanGenerated(result instagram.PlanBuildResult) {
 }
 
 func (m *Model) recordPlanExported(path string) {
-	m.upsertRecentPlan(path, m.planResult.Plan)
+	m.upsertRecentPlan(path, m.planResult.Plan, "exported")
+	m.updateConfig("update default plan export path", func(config *workspace.Config) {
+		config.DefaultPlanExportPath = strings.TrimSpace(path)
+	})
 	m.appendAudit("plan_exported", planAuditFields(path, m.planResult.Plan, domain.SummarizeCleanupPlan(m.planResult.Plan)))
 	m.refreshLocalData()
 }
 
 func (m *Model) recordPlanLoaded(path string, plan domain.CleanupPlan, summary domain.CleanupPlanSummary) {
-	m.upsertRecentPlan(path, plan)
+	m.upsertRecentPlan(path, plan, "loaded")
+	m.updateConfig("update last opened plan path", func(config *workspace.Config) {
+		config.LastOpenedPlanPath = strings.TrimSpace(path)
+	})
 	m.appendAudit("plan_loaded", planAuditFields(path, plan, summary))
 	m.refreshLocalData()
 }
@@ -1821,22 +1841,33 @@ func (m *Model) recordPlanLoadFailed(path string, err error) {
 	m.refreshLocalData()
 }
 
-func (m *Model) upsertRecentPlan(path string, plan domain.CleanupPlan) {
+func (m *Model) upsertRecentPlan(path string, plan domain.CleanupPlan, operation string) {
 	if m.localWorkspace == nil {
 		return
 	}
 	summary := domain.SummarizeCleanupPlan(plan)
 	entry := workspace.RecentPlan{
-		ID:           plan.ID,
-		Path:         strings.TrimSpace(path),
-		Mode:         string(plan.Mode),
-		SourceName:   plan.SourceName,
-		CreatedAt:    plan.CreatedAt,
-		ActionCounts: actionCountsForWorkspace(summary.ActionCounts),
-		StatusCounts: statusCountsForWorkspace(summary.StatusCounts),
+		ID:            plan.ID,
+		Path:          strings.TrimSpace(path),
+		Mode:          string(plan.Mode),
+		SourceName:    plan.SourceName,
+		PlanCreatedAt: plan.CreatedAt,
+		LastUsedAt:    time.Now().UTC(),
+		LastOperation: operation,
+		ActionCounts:  actionCountsForWorkspace(summary.ActionCounts),
+		StatusCounts:  statusCountsForWorkspace(summary.StatusCounts),
 	}
 	if err := m.localWorkspace.UpsertRecentPlan(entry); err != nil {
 		m.warnLocalData("save recent plan", err)
+	}
+}
+
+func (m *Model) updateConfig(action string, update func(*workspace.Config)) {
+	if m.localWorkspace == nil {
+		return
+	}
+	if err := m.localWorkspace.UpdateConfig(update); err != nil {
+		m.warnLocalData(action, err)
 	}
 }
 
@@ -2287,6 +2318,22 @@ func (m Model) localDataDirLabel() string {
 	return m.localWorkspace.Dir()
 }
 
+func (m Model) defaultPlanPathValue() string {
+	path := strings.TrimSpace(m.localConfig.DefaultPlanExportPath)
+	if path != "" {
+		return path
+	}
+	return defaultPlanExportPath
+}
+
+func (m Model) loadPlanPathValue() string {
+	path := strings.TrimSpace(m.localConfig.LastOpenedPlanPath)
+	if path != "" {
+		return path
+	}
+	return m.defaultPlanPathValue()
+}
+
 func recentImportRow(entry workspace.RecentImport) string {
 	return fmt.Sprintf(
 		"%s | %s | items %d | warnings %d",
@@ -2303,18 +2350,23 @@ func recentImportDetailLines(entry workspace.RecentImport) []string {
 		"Source path: " + emptyFallback(entry.SourcePath, "-"),
 		"Platform: " + emptyFallback(entry.Platform, "-"),
 		"Imported at: " + formatPlanTime(entry.ImportedAt),
-		"Demo: " + boolLabel(entry.Demo),
-		fmt.Sprintf("Items: %d", entry.ItemCount),
-		fmt.Sprintf("Warnings: %d", entry.WarningCount),
+		fmt.Sprintf("Demo: %t", entry.Demo),
+		fmt.Sprintf("Total items: %d", entry.ItemCount),
+		fmt.Sprintf("Likes: %d", entry.LikeCount),
+		fmt.Sprintf("Comments: %d", entry.CommentCount),
+		fmt.Sprintf("Following: %d", entry.FollowingCount),
+		fmt.Sprintf("Followers: %d", entry.FollowerCount),
 		fmt.Sprintf("Skipped or unknown: %d", entry.SkippedCount),
+		fmt.Sprintf("Warnings: %d", entry.WarningCount),
 	}
 	return lines
 }
 
 func recentPlanRow(entry workspace.RecentPlan) string {
 	return fmt.Sprintf(
-		"%s | %s | actions %d",
-		formatPlanTime(entry.CreatedAt),
+		"%s | %s | %s | actions %d",
+		formatPlanTime(entry.LastUsedAt),
+		emptyFallback(entry.LastOperation, "-"),
 		emptyFallback(entry.SourceName, entry.ID),
 		sumStringCounts(entry.ActionCounts),
 	)
@@ -2326,7 +2378,9 @@ func recentPlanDetailLines(entry workspace.RecentPlan) []string {
 		"Path: " + emptyFallback(entry.Path, "-"),
 		"Mode: " + emptyFallback(entry.Mode, "-"),
 		"Source name: " + emptyFallback(entry.SourceName, "-"),
-		"Created at: " + formatPlanTime(entry.CreatedAt),
+		"Plan created at: " + formatPlanTime(entry.PlanCreatedAt),
+		"Last used at: " + formatPlanTime(entry.LastUsedAt),
+		"Last operation: " + emptyFallback(entry.LastOperation, "-"),
 		"Action counts: " + formatStringCounts(entry.ActionCounts),
 		"Status counts: " + formatStringCounts(entry.StatusCounts),
 	}
@@ -2448,13 +2502,6 @@ func enabledLabel(enabled bool) string {
 		return "enabled"
 	}
 	return "disabled"
-}
-
-func boolLabel(value bool) string {
-	if value {
-		return "yes"
-	}
-	return "no"
 }
 
 func formatStringCounts(counts map[string]int) string {

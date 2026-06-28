@@ -22,6 +22,7 @@ const (
 	ConfigVersion         = 1
 	MaxRecentImports      = 20
 	MaxRecentPlans        = 20
+	DefaultPlanExportPath = "vanish-plan.json"
 )
 
 // Workspace owns Vanish's local metadata directory. It must not own imported
@@ -31,9 +32,12 @@ type Workspace struct {
 }
 
 type Config struct {
-	Version   int             `json:"version"`
-	Telemetry TelemetryConfig `json:"telemetry"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	Version               int             `json:"version"`
+	Telemetry             TelemetryConfig `json:"telemetry"`
+	CreatedAt             time.Time       `json:"created_at"`
+	UpdatedAt             time.Time       `json:"updated_at"`
+	DefaultPlanExportPath string          `json:"default_plan_export_path"`
+	LastOpenedPlanPath    string          `json:"last_opened_plan_path,omitempty"`
 }
 
 type TelemetryConfig struct {
@@ -41,24 +45,30 @@ type TelemetryConfig struct {
 }
 
 type RecentImport struct {
-	SourceLabel  string    `json:"source_label,omitempty"`
-	SourcePath   string    `json:"source_path,omitempty"`
-	Platform     string    `json:"platform,omitempty"`
-	ImportedAt   time.Time `json:"imported_at"`
-	Demo         bool      `json:"demo"`
-	ItemCount    int       `json:"item_count"`
-	WarningCount int       `json:"warning_count"`
-	SkippedCount int       `json:"skipped_count"`
+	SourceLabel    string    `json:"source_label,omitempty"`
+	SourcePath     string    `json:"source_path,omitempty"`
+	Platform       string    `json:"platform,omitempty"`
+	ImportedAt     time.Time `json:"imported_at"`
+	Demo           bool      `json:"demo"`
+	ItemCount      int       `json:"item_count"`
+	LikeCount      int       `json:"like_count"`
+	CommentCount   int       `json:"comment_count"`
+	FollowingCount int       `json:"following_count"`
+	FollowerCount  int       `json:"follower_count"`
+	WarningCount   int       `json:"warning_count"`
+	SkippedCount   int       `json:"skipped_count"`
 }
 
 type RecentPlan struct {
-	ID           string         `json:"id"`
-	Path         string         `json:"path,omitempty"`
-	Mode         string         `json:"mode,omitempty"`
-	SourceName   string         `json:"source_name,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	ActionCounts map[string]int `json:"action_counts,omitempty"`
-	StatusCounts map[string]int `json:"status_counts,omitempty"`
+	ID            string         `json:"id"`
+	Path          string         `json:"path,omitempty"`
+	Mode          string         `json:"mode,omitempty"`
+	SourceName    string         `json:"source_name,omitempty"`
+	PlanCreatedAt time.Time      `json:"plan_created_at"`
+	LastUsedAt    time.Time      `json:"last_used_at"`
+	LastOperation string         `json:"last_operation,omitempty"`
+	ActionCounts  map[string]int `json:"action_counts,omitempty"`
+	StatusCounts  map[string]int `json:"status_counts,omitempty"`
 }
 
 type AuditEvent struct {
@@ -127,10 +137,31 @@ func (w *Workspace) SaveConfig(config Config) error {
 	if config.Version != ConfigVersion {
 		return fmt.Errorf("unsupported config version %d", config.Version)
 	}
-	if config.UpdatedAt.IsZero() {
-		config.UpdatedAt = time.Now().UTC()
+	if existing, err := w.LoadConfig(); err == nil && !existing.CreatedAt.IsZero() {
+		config.CreatedAt = existing.CreatedAt
 	}
+	if config.CreatedAt.IsZero() {
+		config.CreatedAt = time.Now().UTC()
+	}
+	config.DefaultPlanExportPath = strings.TrimSpace(config.DefaultPlanExportPath)
+	if config.DefaultPlanExportPath == "" {
+		config.DefaultPlanExportPath = DefaultPlanExportPath
+	}
+	config.LastOpenedPlanPath = strings.TrimSpace(config.LastOpenedPlanPath)
+	config.UpdatedAt = time.Now().UTC()
 	return writeJSON(w.path(configFileName), config)
+}
+
+func (w *Workspace) UpdateConfig(update func(*Config)) error {
+	if update == nil {
+		return errors.New("config update is required")
+	}
+	config, err := w.LoadConfig()
+	if err != nil {
+		return err
+	}
+	update(&config)
+	return w.SaveConfig(config)
 }
 
 func (w *Workspace) RecentImports() ([]RecentImport, error) {
@@ -173,8 +204,8 @@ func (w *Workspace) RecentPlans() ([]RecentPlan, error) {
 }
 
 func (w *Workspace) UpsertRecentPlan(entry RecentPlan) error {
-	if entry.CreatedAt.IsZero() {
-		entry.CreatedAt = time.Now().UTC()
+	if entry.LastUsedAt.IsZero() {
+		entry.LastUsedAt = time.Now().UTC()
 	}
 	plans, err := w.RecentPlans()
 	if err != nil {
@@ -288,10 +319,13 @@ func (w *Workspace) path(name string) string {
 }
 
 func defaultConfig() Config {
+	now := time.Now().UTC()
 	return Config{
-		Version:   ConfigVersion,
-		Telemetry: TelemetryConfig{Enabled: false},
-		UpdatedAt: time.Now().UTC(),
+		Version:               ConfigVersion,
+		Telemetry:             TelemetryConfig{Enabled: false},
+		CreatedAt:             now,
+		UpdatedAt:             now,
+		DefaultPlanExportPath: DefaultPlanExportPath,
 	}
 }
 

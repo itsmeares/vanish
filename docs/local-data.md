@@ -26,6 +26,11 @@ Configuration in the app directory is limited to local app settings needed to
 restore the workspace. It must not include platform credentials, cookies,
 tokens, sessions, authorization headers, OAuth grants, or account secrets.
 
+The current config records a version, local creation/update timestamps,
+telemetry disabled by default, the default plan export path, and the last opened
+plan path. It does not implement telemetry, analytics, remote config, login, or
+credential storage.
+
 ## Recent Import History
 
 Recent import history helps users return to prior local review work. History may
@@ -34,7 +39,9 @@ store:
 - The local path selected by the user.
 - Import time.
 - Platform and source type.
-- Item counts and warning counts.
+- Total item count.
+- Per-type counts for likes, comments, following, and followers.
+- Skipped count and warning count.
 - Error summaries.
 
 Recent import history must not store raw parsed items, raw export files, raw
@@ -46,8 +53,10 @@ authorization data.
 Recent plan history helps users reopen dry-run cleanup plans. History may store:
 
 - The local plan path selected by the user.
-- Plan load or export time.
-- Action counts and skipped item counts.
+- The plan's own creation time.
+- The last time Vanish used the plan in recent history.
+- The last local operation, such as `exported` or `loaded`.
+- Action counts and status counts.
 - Platform and plan summary metadata.
 
 Cleanup plan JSON files are still dry-run review artifacts. Vanish does not

@@ -41,19 +41,31 @@ func TestOpenInitializesDefaultsAndTelemetryDisabled(t *testing.T) {
 	if config.Telemetry.Enabled {
 		t.Fatal("telemetry should be disabled by default")
 	}
+	if config.CreatedAt.IsZero() {
+		t.Fatal("default config CreatedAt should be set")
+	}
+	if config.UpdatedAt.IsZero() {
+		t.Fatal("default config UpdatedAt should be set")
+	}
+	if config.DefaultPlanExportPath != DefaultPlanExportPath {
+		t.Fatalf("default plan export path = %q, want %q", config.DefaultPlanExportPath, DefaultPlanExportPath)
+	}
 }
 
-func TestConfigRoundTrip(t *testing.T) {
+func TestConfigRoundTripPreservesCreatedAt(t *testing.T) {
 	w, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
 	}
-	updatedAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
-	want := Config{
-		Version:   ConfigVersion,
-		Telemetry: TelemetryConfig{Enabled: true},
-		UpdatedAt: updatedAt,
+	original, err := w.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
 	}
+	want := original
+	want.Telemetry.Enabled = true
+	want.DefaultPlanExportPath = filepath.Join("plans", "next.json")
+	want.LastOpenedPlanPath = filepath.Join("plans", "loaded.json")
+	want.CreatedAt = original.CreatedAt.Add(24 * time.Hour)
 
 	if err := w.SaveConfig(want); err != nil {
 		t.Fatalf("SaveConfig returned error: %v", err)
@@ -62,8 +74,14 @@ func TestConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig returned error: %v", err)
 	}
-	if got.Version != want.Version || got.Telemetry.Enabled != want.Telemetry.Enabled || !got.UpdatedAt.Equal(updatedAt) {
+	if got.Version != ConfigVersion || !got.Telemetry.Enabled || got.DefaultPlanExportPath != want.DefaultPlanExportPath || got.LastOpenedPlanPath != want.LastOpenedPlanPath {
 		t.Fatalf("config round trip = %#v, want %#v", got, want)
+	}
+	if !got.CreatedAt.Equal(original.CreatedAt) {
+		t.Fatalf("CreatedAt = %s, want preserved %s", got.CreatedAt, original.CreatedAt)
+	}
+	if got.UpdatedAt.IsZero() || got.UpdatedAt.Before(original.UpdatedAt) {
+		t.Fatalf("UpdatedAt = %s, want refreshed after %s", got.UpdatedAt, original.UpdatedAt)
 	}
 }
 
@@ -89,24 +107,32 @@ func TestRecentImportsDedupedAndBounded(t *testing.T) {
 
 	for i := 0; i < MaxRecentImports+5; i++ {
 		entry := RecentImport{
-			SourceLabel:  "export",
-			SourcePath:   filepath.Join("imports", string(rune('a'+i))),
-			Platform:     "instagram",
-			ImportedAt:   time.Date(2026, 6, 28, 0, i, 0, 0, time.UTC),
-			ItemCount:    i,
-			WarningCount: i % 3,
-			SkippedCount: i % 2,
+			SourceLabel:    "export",
+			SourcePath:     filepath.Join("imports", string(rune('a'+i))),
+			Platform:       "instagram",
+			ImportedAt:     time.Date(2026, 6, 28, 0, i, 0, 0, time.UTC),
+			ItemCount:      i,
+			LikeCount:      i + 1,
+			CommentCount:   i + 2,
+			FollowingCount: i + 3,
+			FollowerCount:  i + 4,
+			WarningCount:   i % 3,
+			SkippedCount:   i % 2,
 		}
 		if err := w.UpsertRecentImport(entry); err != nil {
 			t.Fatalf("UpsertRecentImport %d returned error: %v", i, err)
 		}
 	}
 	replacement := RecentImport{
-		SourceLabel: "new label",
-		SourcePath:  filepath.Join("imports", "y"),
-		Platform:    "instagram",
-		ImportedAt:  time.Date(2026, 6, 28, 3, 0, 0, 0, time.UTC),
-		ItemCount:   99,
+		SourceLabel:    "new label",
+		SourcePath:     filepath.Join("imports", "y"),
+		Platform:       "instagram",
+		ImportedAt:     time.Date(2026, 6, 28, 3, 0, 0, 0, time.UTC),
+		ItemCount:      99,
+		LikeCount:      11,
+		CommentCount:   12,
+		FollowingCount: 13,
+		FollowerCount:  14,
 	}
 	if err := w.UpsertRecentImport(replacement); err != nil {
 		t.Fatalf("UpsertRecentImport replacement returned error: %v", err)
@@ -119,13 +145,48 @@ func TestRecentImportsDedupedAndBounded(t *testing.T) {
 	if len(got) != MaxRecentImports {
 		t.Fatalf("recent import count = %d, want %d", len(got), MaxRecentImports)
 	}
-	if got[0].SourceLabel != replacement.SourceLabel || got[0].ItemCount != replacement.ItemCount {
+	if got[0].SourceLabel != replacement.SourceLabel || got[0].ItemCount != replacement.ItemCount || got[0].LikeCount != replacement.LikeCount {
 		t.Fatalf("replacement was not moved to front: %#v", got[0])
 	}
 	for i := 1; i < len(got); i++ {
 		if filepath.Clean(got[i].SourcePath) == filepath.Clean(replacement.SourcePath) {
 			t.Fatalf("duplicate recent import remained at index %d", i)
 		}
+	}
+}
+
+func TestRecentImportRoundTripPreservesPerTypeCounts(t *testing.T) {
+	w, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	want := RecentImport{
+		SourceLabel:    "instagram-export.zip",
+		SourcePath:     filepath.Join("imports", "instagram-export.zip"),
+		Platform:       "instagram",
+		ImportedAt:     time.Date(2026, 6, 28, 7, 0, 0, 0, time.UTC),
+		Demo:           true,
+		ItemCount:      10,
+		LikeCount:      4,
+		CommentCount:   3,
+		FollowingCount: 2,
+		FollowerCount:  1,
+		WarningCount:   5,
+		SkippedCount:   6,
+	}
+	if err := w.UpsertRecentImport(want); err != nil {
+		t.Fatalf("UpsertRecentImport returned error: %v", err)
+	}
+
+	got, err := w.RecentImports()
+	if err != nil {
+		t.Fatalf("RecentImports returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("recent import count = %d, want 1", len(got))
+	}
+	if got[0].LikeCount != want.LikeCount || got[0].CommentCount != want.CommentCount || got[0].FollowingCount != want.FollowingCount || got[0].FollowerCount != want.FollowerCount {
+		t.Fatalf("recent import counts = %#v, want %#v", got[0], want)
 	}
 }
 
@@ -137,26 +198,30 @@ func TestRecentPlansDedupedAndBounded(t *testing.T) {
 
 	for i := 0; i < MaxRecentPlans+4; i++ {
 		entry := RecentPlan{
-			ID:           "plan-" + string(rune('a'+i)),
-			Path:         filepath.Join("plans", string(rune('a'+i))+".json"),
-			Mode:         "dry-run",
-			SourceName:   "instagram-export",
-			CreatedAt:    time.Date(2026, 6, 28, 1, i, 0, 0, time.UTC),
-			ActionCounts: map[string]int{"unlike": i},
-			StatusCounts: map[string]int{"pending": i},
+			ID:            "plan-" + string(rune('a'+i)),
+			Path:          filepath.Join("plans", string(rune('a'+i))+".json"),
+			Mode:          "dry-run",
+			SourceName:    "instagram-export",
+			PlanCreatedAt: time.Date(2026, 6, 28, 1, i, 0, 0, time.UTC),
+			LastUsedAt:    time.Date(2026, 6, 28, 2, i, 0, 0, time.UTC),
+			LastOperation: "exported",
+			ActionCounts:  map[string]int{"unlike": i},
+			StatusCounts:  map[string]int{"pending": i},
 		}
 		if err := w.UpsertRecentPlan(entry); err != nil {
 			t.Fatalf("UpsertRecentPlan %d returned error: %v", i, err)
 		}
 	}
 	replacement := RecentPlan{
-		ID:           "plan-x",
-		Path:         "other-location.json",
-		Mode:         "dry-run",
-		SourceName:   "updated",
-		CreatedAt:    time.Date(2026, 6, 28, 4, 0, 0, 0, time.UTC),
-		ActionCounts: map[string]int{"unfollow": 2},
-		StatusCounts: map[string]int{"done": 2},
+		ID:            "plan-x",
+		Path:          "other-location.json",
+		Mode:          "dry-run",
+		SourceName:    "updated",
+		PlanCreatedAt: time.Date(2026, 6, 28, 4, 0, 0, 0, time.UTC),
+		LastUsedAt:    time.Date(2026, 6, 28, 5, 0, 0, 0, time.UTC),
+		LastOperation: "loaded",
+		ActionCounts:  map[string]int{"unfollow": 2},
+		StatusCounts:  map[string]int{"done": 2},
 	}
 	if err := w.UpsertRecentPlan(replacement); err != nil {
 		t.Fatalf("UpsertRecentPlan replacement returned error: %v", err)
@@ -169,13 +234,45 @@ func TestRecentPlansDedupedAndBounded(t *testing.T) {
 	if len(got) != MaxRecentPlans {
 		t.Fatalf("recent plan count = %d, want %d", len(got), MaxRecentPlans)
 	}
-	if got[0].SourceName != replacement.SourceName || got[0].ActionCounts["unfollow"] != 2 {
+	if got[0].SourceName != replacement.SourceName || got[0].LastOperation != "loaded" || got[0].ActionCounts["unfollow"] != 2 {
 		t.Fatalf("replacement was not moved to front: %#v", got[0])
 	}
 	for i := 1; i < len(got); i++ {
 		if got[i].ID == replacement.ID {
 			t.Fatalf("duplicate recent plan remained at index %d", i)
 		}
+	}
+}
+
+func TestRecentPlanRoundTripPreservesUsageFields(t *testing.T) {
+	w, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	want := RecentPlan{
+		ID:            "plan-1",
+		Path:          filepath.Join("plans", "plan-1.json"),
+		Mode:          "dry-run",
+		SourceName:    "instagram-export",
+		PlanCreatedAt: time.Date(2026, 6, 28, 8, 0, 0, 0, time.UTC),
+		LastUsedAt:    time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC),
+		LastOperation: "exported",
+		ActionCounts:  map[string]int{"unlike": 2},
+		StatusCounts:  map[string]int{"pending": 2},
+	}
+	if err := w.UpsertRecentPlan(want); err != nil {
+		t.Fatalf("UpsertRecentPlan returned error: %v", err)
+	}
+
+	got, err := w.RecentPlans()
+	if err != nil {
+		t.Fatalf("RecentPlans returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("recent plan count = %d, want 1", len(got))
+	}
+	if !got[0].PlanCreatedAt.Equal(want.PlanCreatedAt) || !got[0].LastUsedAt.Equal(want.LastUsedAt) || got[0].LastOperation != want.LastOperation {
+		t.Fatalf("recent plan usage fields = %#v, want %#v", got[0], want)
 	}
 }
 
@@ -252,7 +349,7 @@ func TestWipeRecreatesDefaultsAndPreservesExternalPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
 	}
-	if err := w.UpsertRecentPlan(RecentPlan{ID: "outside", Path: externalPlan, Mode: "dry-run"}); err != nil {
+	if err := w.UpsertRecentPlan(RecentPlan{ID: "outside", Path: externalPlan, Mode: "dry-run", PlanCreatedAt: time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC), LastOperation: "exported"}); err != nil {
 		t.Fatalf("UpsertRecentPlan returned error: %v", err)
 	}
 	if err := w.Wipe(); err != nil {
