@@ -21,6 +21,7 @@ import (
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
+	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/workspace"
 )
 
@@ -28,6 +29,9 @@ type screen int
 
 const (
 	screenHome screen = iota
+	screenPlatformDetail
+	screenInstagramExportGuide
+	screenRedditNotes
 	screenImportPath
 	screenImporting
 	screenImportResult
@@ -49,14 +53,6 @@ const (
 	screenWipeLocalDataConfirm
 	screenKeybindings
 	screenQuitConfirm
-)
-
-const (
-	homeImportZip = iota
-	homeLoadPlan
-	homeDemo
-	homeLocalData
-	homeQuit
 )
 
 const (
@@ -88,14 +84,6 @@ const (
 )
 
 const filterEditNone = -1
-
-var homeMenuItems = []string{
-	"Import Instagram export ZIP",
-	"Load cleanup plan",
-	"Demo import with fake local data",
-	"Local data",
-	"Quit",
-}
 
 var resultMenuItems = []string{
 	"View parsed items",
@@ -200,6 +188,7 @@ const (
 	hitNone hitKind = iota
 	hitTab
 	hitHomeAction
+	hitPlatformAction
 	hitImportPickerRow
 	hitImportResultAction
 	hitParsedItemRow
@@ -249,79 +238,81 @@ type importPickerEntry struct {
 // terminal dimensions, styles, and reusable Bubbles components. Bubble Tea
 // passes this value through Init, Update, and View as the app runs.
 type Model struct {
-	current             screen
-	width               int
-	height              int
-	styles              styles
-	keys                keyMap
-	help                help.Model
-	localWorkspace      *workspace.Workspace
-	planPathInput       textinput.Model
-	filterActorInput    textinput.Model
-	filterTargetInput   textinput.Model
-	filterOlderInput    textinput.Model
-	filterNewerInput    textinput.Model
-	spinner             spinner.Model
-	hoverTarget         hitTarget
-	hitBoxes            []hitBox
-	importPickerDir     string
-	importPickerEntries []importPickerEntry
-	importPickerCursor  int
-	importPickerOffset  int
-	importPickerError   string
-	importSource        string
-	importResult        instagram.ImportResult
-	importErr           error
-	itemFilter          domain.ActivityItemFilter
-	selection           domain.ActivitySelection
-	itemFocus           itemBrowserFocus
-	itemActionCursor    int
-	planResult          instagram.PlanBuildResult
-	loadedPlan          domain.CleanupPlan
-	loadedPlanSummary   domain.CleanupPlanSummary
-	draftFilter         domain.ActivityItemFilter
-	draftOlderDate      string
-	draftNewerDate      string
-	filterError         string
-	selectionMessage    string
-	planExportStatus    string
-	planExportError     string
-	planLoadError       string
-	recentPlanError     string
-	localDataStatus     string
-	localDataWarning    string
-	localConfig         workspace.Config
-	recentImports       []workspace.RecentImport
-	recentPlans         []workspace.RecentPlan
-	auditEvents         []workspace.AuditEvent
-	auditMalformed      int
-	homeCursor          int
-	resultCursor        int
-	itemCursor          int
-	itemOffset          int
-	filterCursor        int
-	filterEditing       int
-	selectionCursor     int
-	selectedCursor      int
-	selectedOffset      int
-	planPreviewCursor   int
-	planListOffset      int
-	loadedPlanCursor    int
-	loadedActionCursor  int
-	loadedActionOffset  int
-	warningCursor       int
-	warningOffset       int
-	localDataCursor     int
-	recentImportCursor  int
-	recentImportOffset  int
-	recentPlanCursor    int
-	recentPlanOffset    int
-	auditCursor         int
-	auditOffset         int
-	wipeLocalDataCursor int
-	helpReturnScreen    screen
-	quitReturnScreen    screen
-	quitCursor          int
+	current              screen
+	width                int
+	height               int
+	styles               styles
+	keys                 keyMap
+	help                 help.Model
+	localWorkspace       *workspace.Workspace
+	planPathInput        textinput.Model
+	filterActorInput     textinput.Model
+	filterTargetInput    textinput.Model
+	filterOlderInput     textinput.Model
+	filterNewerInput     textinput.Model
+	spinner              spinner.Model
+	hoverTarget          hitTarget
+	hitBoxes             []hitBox
+	importPickerDir      string
+	importPickerEntries  []importPickerEntry
+	importPickerCursor   int
+	importPickerOffset   int
+	importPickerError    string
+	importSource         string
+	importResult         instagram.ImportResult
+	importErr            error
+	itemFilter           domain.ActivityItemFilter
+	selection            domain.ActivitySelection
+	itemFocus            itemBrowserFocus
+	itemActionCursor     int
+	planResult           instagram.PlanBuildResult
+	loadedPlan           domain.CleanupPlan
+	loadedPlanSummary    domain.CleanupPlanSummary
+	draftFilter          domain.ActivityItemFilter
+	draftOlderDate       string
+	draftNewerDate       string
+	filterError          string
+	selectionMessage     string
+	planExportStatus     string
+	planExportError      string
+	planLoadError        string
+	recentPlanError      string
+	localDataStatus      string
+	localDataWarning     string
+	localConfig          workspace.Config
+	recentImports        []workspace.RecentImport
+	recentPlans          []workspace.RecentPlan
+	auditEvents          []workspace.AuditEvent
+	auditMalformed       int
+	homeCursor           int
+	selectedPlatformID   platform.PlatformID
+	platformActionCursor int
+	resultCursor         int
+	itemCursor           int
+	itemOffset           int
+	filterCursor         int
+	filterEditing        int
+	selectionCursor      int
+	selectedCursor       int
+	selectedOffset       int
+	planPreviewCursor    int
+	planListOffset       int
+	loadedPlanCursor     int
+	loadedActionCursor   int
+	loadedActionOffset   int
+	warningCursor        int
+	warningOffset        int
+	localDataCursor      int
+	recentImportCursor   int
+	recentImportOffset   int
+	recentPlanCursor     int
+	recentPlanOffset     int
+	auditCursor          int
+	auditOffset          int
+	wipeLocalDataCursor  int
+	helpReturnScreen     screen
+	quitReturnScreen     screen
+	quitCursor           int
 }
 
 // NewModel builds the initial app state before Bubble Tea starts sending
@@ -338,18 +329,19 @@ func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) 
 	helpModel.Styles = help.DefaultStyles(isDark)
 
 	m := Model{
-		current:           screenHome,
-		styles:            newStyles(isDark),
-		keys:              newKeyMap(),
-		help:              helpModel,
-		localWorkspace:    localWorkspace,
-		planPathInput:     newPlanPathInput(),
-		filterActorInput:  newFilterInput("username"),
-		filterTargetInput: newFilterInput("URL or ID"),
-		filterOlderInput:  newFilterInput("YYYY-MM-DD"),
-		filterNewerInput:  newFilterInput("YYYY-MM-DD"),
-		filterEditing:     filterEditNone,
-		spinner:           spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		current:            screenHome,
+		styles:             newStyles(isDark),
+		keys:               newKeyMap(),
+		help:               helpModel,
+		localWorkspace:     localWorkspace,
+		planPathInput:      newPlanPathInput(),
+		filterActorInput:   newFilterInput("username"),
+		filterTargetInput:  newFilterInput("URL or ID"),
+		filterOlderInput:   newFilterInput("YYYY-MM-DD"),
+		filterNewerInput:   newFilterInput("YYYY-MM-DD"),
+		filterEditing:      filterEditNone,
+		spinner:            spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		selectedPlatformID: platform.PlatformInstagramExport,
 	}
 	if localErr != nil {
 		m.localDataWarning = "Local data unavailable: " + localErr.Error()
@@ -478,6 +470,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.current {
 		case screenHome:
 			return m.updateHome(msg)
+		case screenPlatformDetail:
+			return m.updatePlatformDetail(msg)
+		case screenInstagramExportGuide, screenRedditNotes:
+			return m.updatePlatformStaticScreen(msg)
 		case screenImportPath:
 			return m.updateImportPath(msg)
 		case screenImportResult:
@@ -525,35 +521,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateHome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	platforms := m.platforms()
 	switch {
 	case key.Matches(msg, m.keys.up):
-		m.homeCursor = moveCursor(m.homeCursor, len(homeMenuItems), -1)
+		m.homeCursor = moveCursor(m.homeCursor, len(platforms), -1)
 	case key.Matches(msg, m.keys.down):
-		m.homeCursor = moveCursor(m.homeCursor, len(homeMenuItems), 1)
+		m.homeCursor = moveCursor(m.homeCursor, len(platforms), 1)
 	case key.Matches(msg, m.keys.selectItem):
-		switch m.homeCursor {
-		case homeImportZip:
-			m.current = screenImportPath
-			if strings.TrimSpace(m.importPickerDir) == "" {
-				m.openImportPicker(initialImportPickerDir())
-			}
-		case homeLoadPlan:
-			m.resetLoadedPlanState()
-			m.planPathInput.SetValue(m.loadPlanPathValue())
-			m.current = screenPlanLoadPath
-			return m, m.planPathInput.Focus()
-		case homeDemo:
-			m = m.resetImportState()
-			m.current = screenImporting
-			m.importSource = "demo instagram export"
-			return m, tea.Batch(startSpinnerCmd(m.spinner), demoImportCmd())
-		case homeLocalData:
-			m.openLocalDataOverview()
-		case homeQuit:
-			m.openQuitConfirm()
-		}
+		m.openPlatformDetail(m.homeCursor)
 	}
 
+	return m, nil
+}
+
+func (m Model) updatePlatformDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	current := m.selectedPlatform()
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.platformActionCursor = moveCursor(m.platformActionCursor, len(current.Actions), -1)
+	case key.Matches(msg, m.keys.down):
+		m.platformActionCursor = moveCursor(m.platformActionCursor, len(current.Actions), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenHome
+	case key.Matches(msg, m.keys.selectItem):
+		return m.activatePlatformAction()
+	}
+	return m, nil
+}
+
+func (m Model) updatePlatformStaticScreen(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.back) {
+		m.current = screenPlatformDetail
+	}
 	return m, nil
 }
 
@@ -1068,6 +1067,11 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.homeCursor = target.Index
 			return m.updateHome(selectKeyPress())
 		}
+	case screenPlatformDetail:
+		if target.Kind == hitPlatformAction {
+			m.platformActionCursor = target.Index
+			return m.updatePlatformDetail(selectKeyPress())
+		}
 	case screenImportPath:
 		if target.Kind == hitImportPickerRow {
 			m.importPickerCursor = target.Index
@@ -1298,6 +1302,12 @@ func (m Model) renderContent() string {
 	switch m.current {
 	case screenHome:
 		content = m.homeView()
+	case screenPlatformDetail:
+		content = m.platformDetailView()
+	case screenInstagramExportGuide:
+		content = m.instagramExportGuideView()
+	case screenRedditNotes:
+		content = m.redditNotesView()
 	case screenImportPath:
 		content = m.importPathView()
 	case screenImporting:
@@ -1348,77 +1358,158 @@ func (m Model) renderContent() string {
 
 func (m Model) homeView() string {
 	spec := layoutSpec(m.width, m.height)
-	menu := append([]string{""}, m.menuRows(homeMenuItems, m.homeCursor, spec.sidebarWidth, hitHomeAction)...)
+	platforms := m.platforms()
+	menu := append([]string{""}, m.menuRows(platformLabels(platforms), m.homeCursor, spec.sidebarWidth, hitHomeAction)...)
 	detailTitle, detailLines := m.homeDetail(spec.detailWidth)
 
 	body := m.twoPane(
 		spec,
-		"Start", "Choose a local workflow", menu,
+		"Platforms", "Choose a platform", menu,
 		detailTitle, "", detailLines,
 	)
 	return m.appShell("Home", body, m.footer(footerHome))
 }
 
 func (m Model) homeDetail(width int) (string, []string) {
-	switch m.homeCursor {
-	case homeImportZip:
-		return "Import Instagram export ZIP", []string{
-			m.styles.body.Render("Choose a local Instagram export ZIP."),
-			m.styles.body.Render("Parse it into reviewable items."),
-			"",
-			m.styles.body.Render("Next: review, filter, select, and generate a dry-run plan."),
-		}
-	case homeDemo:
-		return "Demo Import", []string{
-			m.styles.body.Render("Load fake local Instagram data."),
-			"",
-			m.styles.body.Render("24 demo items"),
-			m.styles.body.Render("6 likes · 6 comments"),
-			m.styles.body.Render("6 following · 6 followers"),
-			m.styles.body.Render("2 skipped files · 2 warnings"),
-			"",
-			m.styles.body.Render("Next: try review, selection, and plan generation."),
-		}
-	case homeLoadPlan:
-		lines := []string{
-			m.styles.body.Render("Open an existing local dry-run plan JSON."),
-			m.styles.body.Render("Validate the file and inspect its actions."),
-		}
-		if path := strings.TrimSpace(m.localConfig.LastOpenedPlanPath); path != "" {
-			lines = append(lines, "", m.styles.body.Render("Last opened: "+truncateMiddle(path, maxInt(12, width-18))))
-		}
-		return "Load cleanup plan", lines
-	case homeLocalData:
-		lines := []string{
-			m.styles.body.Render("View recent imports, plans, and audit events."),
-			m.styles.body.Render("Manage local metadata."),
-			"",
-		}
-		lines = append(lines, m.keyValueRows([]keyValue{
-			{Key: "Recent imports", Value: compactCount(len(m.recentImports))},
-			{Key: "Recent plans", Value: compactCount(len(m.recentPlans))},
-			{Key: "Audit events", Value: compactCount(len(m.auditEvents))},
-		})...)
-		if m.auditMalformed > 0 {
-			lines = append(lines, m.notice("warning", fmt.Sprintf("Malformed audit lines: %d", m.auditMalformed)))
-		}
-		if strings.TrimSpace(m.localDataWarning) != "" {
-			lines = append(lines, "", m.notice("warning", m.localDataWarning))
-		}
-		return "Local data", lines
-	case homeQuit:
-		return "Quit", []string{
-			m.styles.body.Render("Exit Vanish."),
-			m.styles.body.Render("A confirmation is shown first."),
-		}
-	default:
-		return "Import Instagram export ZIP", []string{
-			m.styles.body.Render("Choose a local Instagram export ZIP."),
-			m.styles.body.Render("Parse it into reviewable items."),
-			"",
-			m.styles.body.Render("Next: review, filter, select, and generate a dry-run plan."),
+	platforms := m.platforms()
+	if len(platforms) == 0 {
+		return "No platforms", []string{m.emptyState("No platforms are registered.")}
+	}
+	current := platforms[clampCursor(m.homeCursor, len(platforms))]
+	lines := []string{
+		m.styles.body.Render(current.Summary),
+		"",
+	}
+	lines = append(lines, m.keyValueRows([]keyValue{
+		{Key: "Status", Value: string(current.Status)},
+	})...)
+	lines = append(lines, "", m.styles.separator.Render("Capabilities"))
+	for _, capability := range current.Capabilities {
+		lines = append(lines, m.styles.body.Render(platformCapabilityLine(capability, maxInt(12, width-4))))
+	}
+	lines = append(lines, "", m.styles.muted.Render("Enter opens actions and details."))
+	return current.Name, lines
+}
+
+func (m Model) platformDetailView() string {
+	current := m.selectedPlatform()
+	if current.ID == "" {
+		return m.singlePaneFooter("Platform", "", []string{m.emptyState("No platform selected.")}, m.footer(footerEmpty))
+	}
+	lines := m.platformDetailLines(current)
+	return m.singlePaneFooter(current.Name, "Platform detail", lines, m.footer(footerActionMenu))
+}
+
+func (m Model) platformDetailLines(current platform.Platform) []string {
+	actionLabels, disabled := platformActionRows(current.Actions)
+	lines := []string{m.styles.separator.Render("Actions")}
+	lines = append(lines, m.menuRowsWithDisabled(actionLabels, disabled, m.platformActionCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
+	if len(current.Actions) > 0 {
+		action := current.Actions[clampCursor(m.platformActionCursor, len(current.Actions))]
+		if action.Disabled && strings.TrimSpace(action.Reason) != "" {
+			lines = append(lines, m.notice("warning", action.Reason))
 		}
 	}
+
+	lines = append(lines, "", m.styles.separator.Render("Status"))
+	lines = append(lines, m.styles.body.Render(fmt.Sprintf("%s - %s", current.Status, current.Summary)))
+
+	lines = append(lines, "", m.styles.separator.Render("Capabilities"))
+	for _, capability := range current.Capabilities {
+		lines = append(lines, m.styles.body.Render(platformCapabilityLine(capability, layoutSpec(m.width, m.height).contentWidth-4)))
+	}
+
+	lines = append(lines, "", m.styles.separator.Render("Notes / Guide"))
+	if len(current.Notes) > 0 {
+		lines = append(lines, m.styles.body.Render(current.Notes[0]))
+	}
+	return lines
+}
+
+func (m Model) instagramExportGuideView() string {
+	lines := []string{
+		m.styles.separator.Render("How to get your Instagram export"),
+		m.styles.body.Render("1. Open Instagram Accounts Center."),
+		m.styles.body.Render("2. Go to Your information and permissions."),
+		m.styles.body.Render("3. Choose Download your information."),
+		m.styles.body.Render("4. Select your Instagram account."),
+		m.styles.body.Render("5. Request download in JSON format."),
+		m.styles.body.Render("6. Download the ZIP when Instagram prepares it."),
+		m.styles.body.Render("7. Import that ZIP in Vanish."),
+		"",
+		m.styles.body.Render("Instagram may rename these menus. Look for Download your information or a similar data export option."),
+		"",
+		m.styles.body.Render("Vanish reads the local ZIP only."),
+		m.styles.body.Render("Vanish does not contact Instagram."),
+		m.styles.body.Render("Vanish does not apply account changes."),
+	}
+	return m.singlePaneFooter("Instagram Export Guide", "Static local guide", lines, m.footer(footerEmpty))
+}
+
+func (m Model) redditNotesView() string {
+	lines := []string{
+		m.styles.body.Render("Official API planner planned for v0.5."),
+		m.styles.body.Render("Reddit support is planned only in v0.4."),
+		m.styles.body.Render("There is no Reddit client, OAuth flow, token storage, API call, browser automation, or scraping path."),
+		m.styles.body.Render("The disabled account and scan rows are placeholders so planned boundaries are visible."),
+		"",
+		m.styles.separator.Render("Implementation notes"),
+	}
+	for _, note := range reddit.Platform().Notes {
+		lines = append(lines, m.styles.body.Render(note))
+	}
+	return m.singlePaneFooter("Reddit Notes", "Planned integration", lines, m.footer(footerEmpty))
+}
+
+func (m Model) platforms() []platform.Platform {
+	return platform.NewRegistry(
+		instagram.Platform(),
+		reddit.Platform(),
+	).List()
+}
+
+func (m Model) selectedPlatform() platform.Platform {
+	registry := platform.NewRegistry(
+		instagram.Platform(),
+		reddit.Platform(),
+	)
+	if current, ok := registry.Get(m.selectedPlatformID); ok {
+		return current
+	}
+	platforms := registry.List()
+	if len(platforms) == 0 {
+		return platform.Platform{}
+	}
+	current := platforms[clampCursor(m.homeCursor, len(platforms))]
+	return current
+}
+
+func platformLabels(platforms []platform.Platform) []string {
+	labels := make([]string, 0, len(platforms))
+	for _, current := range platforms {
+		labels = append(labels, current.Name)
+	}
+	return labels
+}
+
+func platformActionRows(actions []platform.PlatformAction) ([]string, map[int]bool) {
+	rows := make([]string, 0, len(actions))
+	disabled := make(map[int]bool)
+	for i, action := range actions {
+		rows = append(rows, action.Label)
+		if action.Disabled {
+			disabled[i] = true
+		}
+	}
+	if len(disabled) == 0 {
+		disabled = nil
+	}
+	return rows, disabled
+}
+
+func platformCapabilityLine(capability platform.Capability, width int) string {
+	line := fmt.Sprintf("%s: %s - %s", capability.Label, capability.Support, capability.Description)
+	return truncateEnd(line, maxInt(8, width))
 }
 
 func (m Model) importPathView() string {
@@ -2135,6 +2226,56 @@ func (m *Model) openQuitConfirm() {
 func (m *Model) openKeybindings() {
 	m.helpReturnScreen = m.current
 	m.current = screenKeybindings
+}
+
+func (m *Model) openPlatformDetail(index int) {
+	platforms := m.platforms()
+	if len(platforms) == 0 {
+		return
+	}
+	m.homeCursor = clampCursor(index, len(platforms))
+	selected := platforms[m.homeCursor]
+	m.selectedPlatformID = selected.ID
+	m.platformActionCursor = 0
+	m.current = screenPlatformDetail
+}
+
+func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
+	current := m.selectedPlatform()
+	if len(current.Actions) == 0 {
+		return m, nil
+	}
+	m.platformActionCursor = clampCursor(m.platformActionCursor, len(current.Actions))
+	action := current.Actions[m.platformActionCursor]
+	if action.Disabled {
+		return m, nil
+	}
+
+	switch action.ID {
+	case platform.ActionChooseExportZIP:
+		m.current = screenImportPath
+		if strings.TrimSpace(m.importPickerDir) == "" {
+			m.openImportPicker(initialImportPickerDir())
+		}
+	case platform.ActionExportGuide:
+		m.selectedPlatformID = platform.PlatformInstagramExport
+		m.current = screenInstagramExportGuide
+	case platform.ActionViewRecentImports:
+		m.recentImportCursor = clampCursor(m.recentImportCursor, len(m.recentImports))
+		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+		m.current = screenRecentImports
+	case platform.ActionDemoImport:
+		m = m.resetImportState()
+		m.current = screenImporting
+		m.importSource = "demo instagram export"
+		return m, tea.Batch(startSpinnerCmd(m.spinner), demoImportCmd())
+	case platform.ActionViewIntegrationNote:
+		m.selectedPlatformID = platform.PlatformReddit
+		m.current = screenRedditNotes
+	case platform.ActionBack:
+		m.current = screenHome
+	}
+	return m, nil
 }
 
 func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
@@ -3756,7 +3897,11 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 	boxes := tabHitBoxes(content)
 	switch m.current {
 	case screenHome:
-		boxes = append(boxes, rowHitBoxes(content, hitHomeAction, 0, homeMenuItems)...)
+		boxes = append(boxes, rowHitBoxes(content, hitHomeAction, 0, platformLabels(m.platforms()))...)
+	case screenPlatformDetail:
+		current := m.selectedPlatform()
+		actionRows, _ := platformActionRows(current.Actions)
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
 	case screenImportPath:
 		boxes = append(boxes, rowHitBoxes(content, hitImportPickerRow, m.importPickerOffset, importPickerRows(m.importPickerEntries))...)
 	case screenImportResult:

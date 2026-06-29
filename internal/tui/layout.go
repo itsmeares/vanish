@@ -369,11 +369,16 @@ func (m Model) footer(text string) string {
 }
 
 func (m Model) menuRows(items []string, cursor, width int, kind hitKind) []string {
+	return m.menuRowsWithDisabled(items, nil, cursor, width, kind)
+}
+
+func (m Model) menuRowsWithDisabled(items []string, disabled map[int]bool, cursor, width int, kind hitKind) []string {
 	lines := make([]string, 0, len(items))
 	for i, item := range items {
 		lines = append(lines, m.controlRowState(item, rowState{
 			Selected: i == cursor,
 			Hovered:  m.hoverTarget.Kind == kind && m.hoverTarget.Index == i,
+			Disabled: disabled != nil && disabled[i],
 		}, width, ""))
 	}
 	return lines

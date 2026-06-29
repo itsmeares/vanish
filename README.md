@@ -4,11 +4,12 @@ Vanish is an open-source, local-first terminal app for reviewing social media
 activity and building safe cleanup plans.
 
 Current status: **v0.1.0-alpha**. The app is useful for local review and dry-run
-planning, but it does not delete anything yet.
+planning, but it does not delete platform content or apply account changes.
 
-The v0.2 local workspace work is documented here, but v0.2 has not been
-released. The same alpha limits still apply: Vanish remains local-only,
-dry-run-only, and does not log in to platforms or apply cleanup actions.
+The v0.2 local workspace and v0.4 multi-platform foundation are documented
+here, but those versions have not been released. The same alpha limits still
+apply: Vanish remains local-only, dry-run-only, and does not log in to
+platforms or apply cleanup actions.
 
 ![Vanish home screen](docs/assets/home.svg)
 
@@ -20,6 +21,7 @@ dry-run-only, and does not log in to platforms or apply cleanup actions.
 
 - A local terminal UI for reviewing exported social activity.
 - A dry-run planner for cleanup actions you may want to take later.
+- A small platform registry that labels prototype and planned support honestly.
 - A privacy-focused alternative to tools that require account access too early.
 - Open source and designed around inspectable local files.
 
@@ -28,7 +30,8 @@ dry-run-only, and does not log in to platforms or apply cleanup actions.
 - Vanish does not make you invisible on the internet.
 - Vanish does not log in to Instagram.
 - Vanish does not use browser automation, scraping, private APIs, or cloud jobs.
-- Vanish does not delete, unlike, unfollow, or apply changes in this alpha.
+- Vanish does not delete platform content, unlike, unfollow, or apply account
+  changes in this alpha.
 
 ## Local-First Safety
 
@@ -39,7 +42,8 @@ dry-run-only, and does not log in to platforms or apply cleanup actions.
 - Local Instagram export ZIPs are read from disk only.
 - Cleanup plans are dry-run JSON files you can inspect before doing anything else.
 
-See [docs/safety.md](docs/safety.md) for the longer safety model.
+See [docs/safety.md](docs/safety.md) for the longer safety model and
+[docs/platforms.md](docs/platforms.md) for platform status.
 
 ## Local Data Behavior
 
@@ -92,8 +96,8 @@ model.
 
 ## Supported Today
 
-- Instagram export ZIP import.
-- Demo import with fake local data.
+- Instagram Export prototype: local ZIP import.
+- Demo import with fake local Instagram data.
 - Parsed item browsing.
 - Filtering by item type, actor, target, and date.
 - Review selection.
@@ -106,8 +110,12 @@ model.
 - Automatic deletion or apply/execution.
 - Instagram login.
 - Browser automation.
-- Reddit, X, YouTube, or other platform integrations.
+- Reddit official API planner. Reddit is visible as planned for v0.5 only in
+  the platform selector.
+- Other platform integrations beyond Instagram Export and planned Reddit.
 - Cloud sync or hosted accounts.
+
+See [docs/platforms.md](docs/platforms.md) for the full platform matrix.
 
 ## Install And Run
 
@@ -141,15 +149,15 @@ generation without using a real export.
 go run ./cmd/vanish
 ```
 
-Then choose **Demo import with fake local data**.
+Then choose **Instagram Export**, then **Demo import with fake local data**.
 
 ## Use A Real Instagram Export ZIP
 
 1. Download your Instagram data export from Instagram.
 2. Keep the ZIP on your local machine.
 3. Run `go run ./cmd/vanish`.
-4. Choose **Import Instagram export ZIP**.
-5. Type the local path to the ZIP.
+4. Choose **Instagram Export**.
+5. Choose **Choose export ZIP**.
 6. Review parsed items, warnings, filters, and selection.
 
 Vanish reads local JSON files from the ZIP. It does not contact Instagram.
@@ -170,7 +178,7 @@ The default output path is `vanish-plan.json`.
 To load a plan:
 
 1. Start Vanish.
-2. Choose **Load cleanup plan**.
+2. Open the **Plans** tab.
 3. Enter the local JSON path.
 4. Review the plan summary and action list.
 

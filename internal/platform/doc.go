@@ -1,7 +1,6 @@
-// Package platform defines the lifecycle future platform integrations should
-// follow.
+// Package platform defines small metadata contracts for platform support shown
+// in the TUI and docs.
 //
 // This package does not log in to any service, scrape websites, call APIs, or
-// delete anything. It only names the contract future Instagram, Reddit, X, and
-// YouTube adapters can satisfy.
+// delete anything. It only names current and planned capabilities.
 package platform
