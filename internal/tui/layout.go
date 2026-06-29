@@ -16,7 +16,21 @@ const (
 	defaultTerminalHeight = 32
 	minTerminalWidth      = 24
 	minTerminalHeight     = 8
+
+	footerHome         = "up/down move · enter/click select · ? help · ctrl+q quit"
+	footerActionMenu   = "up/down move · enter/click select · esc back · ? help · ctrl+q quit"
+	footerParsedItems  = "up/down move · enter/space toggle · pgup/pgdn page · tab focus · f filters · s selection · esc back"
+	footerList         = "up/down move · click highlight · esc back · ? help · ctrl+q quit"
+	footerImportPicker = "up/down move · enter open/import · left/backspace parent · esc back · wheel scroll"
+	footerForm         = "enter submit · esc cancel · backspace edit · ctrl+q quit"
+	footerSaveForm     = "enter save · esc cancel · backspace edit · ctrl+q quit"
+	footerBusy         = "? help · ctrl+q quit"
+	footerConfirm      = "up/down move · enter select · click focus · esc back"
+	footerHelp         = "esc/backspace back · ctrl+q quit"
+	footerEmpty        = "esc back · home/import tabs · ? help · ctrl+q quit"
 )
+
+var tabLabels = []string{"Home", "Import", "Review", "Plans", "Local", "Help"}
 
 type layoutMetrics struct {
 	width        int
@@ -40,6 +54,12 @@ type keyValue struct {
 type fixedColumn struct {
 	Text  string
 	Width int
+}
+
+type rowState struct {
+	Selected bool
+	Hovered  bool
+	Disabled bool
 }
 
 func layoutSpec(width, height int) layoutMetrics {
@@ -93,7 +113,7 @@ func layoutSpec(width, height int) layoutMetrics {
 func (m Model) appShell(section, body, footer string) string {
 	spec := layoutSpec(m.width, m.height)
 	parts := []string{
-		m.shellHeader(section, spec),
+		m.shellHeader(section),
 		m.tabs(spec),
 	}
 	if strings.TrimSpace(body) != "" {
@@ -107,39 +127,54 @@ func (m Model) appShell(section, body, footer string) string {
 	return m.styles.frame.Width(spec.contentWidth).Render(content)
 }
 
-func (m Model) shellHeader(section string, spec layoutMetrics) string {
-	left := m.styles.title.Render("Vanish") + m.styles.muted.Render(" / "+section)
-	badges := m.statusBadges()
-	line := left + "  " + badges
-	if lipgloss.Width(line) <= spec.contentWidth {
-		return line
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, left, badges)
+func (m Model) shellHeader(section string) string {
+	return m.styles.title.Render("Vanish") + m.styles.muted.Render(" / "+section)
 }
 
 func (m Model) tabs(spec layoutMetrics) string {
 	active := m.activeTab()
-	labels := []string{"Home", "Import", "Review", "Plans", "Local", "Help"}
-	tabs := make([]string, 0, len(labels))
-	for _, label := range labels {
+	lines := []string{}
+	lineTabs := []string{}
+	lineWidth := 0
+
+	flush := func() {
+		if len(lineTabs) == 0 {
+			return
+		}
+		lines = append(lines, strings.Join(lineTabs, " "))
+		lineTabs = nil
+		lineWidth = 0
+	}
+
+	for _, label := range tabLabels {
 		style := m.styles.tab
 		if label == active {
 			style = m.styles.activeTab
+		} else if m.hoverTarget.Kind == hitTab && m.hoverTarget.Label == label {
+			style = m.styles.hoveredTab
 		}
-		tabs = append(tabs, style.Render(" "+label+" "))
+		tab := style.Render(label)
+		tabWidth := lipgloss.Width(tab)
+		separatorWidth := 0
+		if len(lineTabs) > 0 {
+			separatorWidth = 1
+		}
+		if len(lineTabs) > 0 && lineWidth+separatorWidth+tabWidth > spec.contentWidth {
+			flush()
+			separatorWidth = 0
+		}
+		lineTabs = append(lineTabs, tab)
+		lineWidth += separatorWidth + tabWidth
 	}
-	line := strings.Join(tabs, " ")
-	if lipgloss.Width(line) > spec.contentWidth {
-		line = strings.Join(tabs[:minInt(4, len(tabs))], " ")
-	}
-	return line
+	flush()
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (m Model) activeTab() string {
 	switch m.current {
 	case screenImportPath, screenImporting, screenImportResult, screenWarnings:
 		return "Import"
-	case screenItemsBrowser, screenFilters, screenSelectionSummary, screenSelectedItems:
+	case screenItemsBrowser, screenReviewEmpty, screenFilters, screenSelectionSummary, screenSelectedItems:
 		return "Review"
 	case screenPlanPreview, screenPlanExportPath, screenPlanLoadPath, screenLoadedPlanSummary, screenLoadedPlanActions:
 		return "Plans"
@@ -153,6 +188,10 @@ func (m Model) activeTab() string {
 }
 
 func (m Model) pane(title, subtitle, body string, width, height int) string {
+	return m.paneFocused(title, subtitle, body, width, height, false)
+}
+
+func (m Model) paneFocused(title, subtitle, body string, width, height int, focused bool) string {
 	width = clampWidth(width)
 	height = maxInt(height, 4)
 	innerWidth := maxInt(10, width-4)
@@ -170,13 +209,21 @@ func (m Model) pane(title, subtitle, body string, width, height int) string {
 		lines = append(lines, bodyLines...)
 	}
 
-	return m.styles.pane.Width(innerWidth).Height(innerHeight).Render(strings.Join(lines, "\n"))
+	style := m.styles.pane
+	if focused {
+		style = m.styles.focusedPane
+	}
+	return style.Width(innerWidth).Height(innerHeight).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) singlePane(section, subtitle string, lines []string, bindings ...key.Binding) string {
+	return m.singlePaneFooter(section, subtitle, lines, m.contextFooter(bindings...))
+}
+
+func (m Model) singlePaneFooter(section, subtitle string, lines []string, footer string) string {
 	spec := layoutSpec(m.width, m.height)
 	body := m.pane(section, subtitle, strings.Join(lines, "\n"), spec.contentWidth, compactPaneHeight(lines, spec.bodyHeight))
-	return m.appShell(section, body, m.contextFooter(bindings...))
+	return m.appShell(section, body, footer)
 }
 
 func compactPaneHeight(lines []string, maxHeight int) int {
@@ -190,19 +237,30 @@ func compactPaneHeight(lines []string, maxHeight int) int {
 	return height
 }
 
+func twoPaneBodyHeight(spec layoutMetrics) int {
+	if spec.narrow {
+		return maxInt(5, spec.bodyHeight/2)
+	}
+	return spec.bodyHeight
+}
+
 func (m Model) twoPane(spec layoutMetrics, leftTitle, leftSubtitle string, leftLines []string, rightTitle, rightSubtitle string, rightLines []string) string {
+	return m.twoPaneFocused(spec, leftTitle, leftSubtitle, leftLines, false, rightTitle, rightSubtitle, rightLines, false)
+}
+
+func (m Model) twoPaneFocused(spec layoutMetrics, leftTitle, leftSubtitle string, leftLines []string, leftFocused bool, rightTitle, rightSubtitle string, rightLines []string, rightFocused bool) string {
 	if spec.narrow {
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
-			m.pane(leftTitle, leftSubtitle, strings.Join(leftLines, "\n"), spec.contentWidth, maxInt(5, spec.bodyHeight/2)),
-			m.pane(rightTitle, rightSubtitle, strings.Join(rightLines, "\n"), spec.contentWidth, maxInt(5, spec.bodyHeight/2)),
+			m.paneFocused(leftTitle, leftSubtitle, strings.Join(leftLines, "\n"), spec.contentWidth, twoPaneBodyHeight(spec), leftFocused),
+			m.paneFocused(rightTitle, rightSubtitle, strings.Join(rightLines, "\n"), spec.contentWidth, twoPaneBodyHeight(spec), rightFocused),
 		)
 	}
 
 	leftWidth, rightWidth := twoPaneWidths(spec, leftTitle)
 
-	left := m.pane(leftTitle, leftSubtitle, strings.Join(leftLines, "\n"), leftWidth, spec.bodyHeight)
-	right := m.pane(rightTitle, rightSubtitle, strings.Join(rightLines, "\n"), rightWidth, spec.bodyHeight)
+	left := m.paneFocused(leftTitle, leftSubtitle, strings.Join(leftLines, "\n"), leftWidth, spec.bodyHeight, leftFocused)
+	right := m.paneFocused(rightTitle, rightSubtitle, strings.Join(rightLines, "\n"), rightWidth, spec.bodyHeight, rightFocused)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", spec.gap), right)
 }
 
@@ -281,27 +339,51 @@ func (m Model) threePane(spec layoutMetrics, leftTitle, leftSubtitle string, lef
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", spec.gap), right)
 }
 
-func (m Model) statusBadges() string {
-	return strings.Join([]string{
-		m.styles.badge.Render("[LOCAL]"),
-		m.styles.badge.Render("[DRY-RUN]"),
-		m.styles.badge.Render("[NO NETWORK]"),
-	}, " ")
-}
-
 func (m Model) contextFooter(bindings ...key.Binding) string {
-	return m.styles.help.Render(m.help.View(screenHelp(bindings)))
+	if len(bindings) == 0 {
+		return ""
+	}
+	return m.footer("up/down move · enter select · esc back · ? help · ctrl+q quit")
 }
 
-func (m Model) menuRows(items []string, cursor, width int) []string {
+func (m Model) footer(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	parts := strings.Split(text, " · ")
+	rendered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		keyText, desc, ok := strings.Cut(part, " ")
+		if !ok {
+			rendered = append(rendered, m.styles.footerKey.Render(keyText))
+			continue
+		}
+		rendered = append(rendered, m.styles.footerKey.Render(keyText)+" "+m.styles.help.Render(desc))
+	}
+	return strings.Join(rendered, m.styles.help.Render(" · "))
+}
+
+func (m Model) menuRows(items []string, cursor, width int, kind hitKind) []string {
 	lines := make([]string, 0, len(items))
 	for i, item := range items {
-		lines = append(lines, m.selectableLine(item, i == cursor, width))
+		lines = append(lines, m.controlRowState(item, rowState{
+			Selected: i == cursor,
+			Hovered:  m.hoverTarget.Kind == kind && m.hoverTarget.Index == i,
+		}, width, ""))
 	}
 	return lines
 }
 
-func (m Model) tableRows(rows []string, cursor, offset, visible, width int) []string {
+func (m Model) tableRows(rows []string, cursor, offset, visible, width int, kind hitKind) []string {
+	return m.tableRowsWithDisabled(rows, nil, cursor, offset, visible, width, kind)
+}
+
+func (m Model) tableRowsWithDisabled(rows []string, disabled map[int]bool, cursor, offset, visible, width int, kind hitKind) []string {
 	if len(rows) == 0 {
 		return []string{}
 	}
@@ -315,7 +397,11 @@ func (m Model) tableRows(rows []string, cursor, offset, visible, width int) []st
 		out = append(out, m.styles.muted.Render("..."))
 	}
 	for i := offset; i < end; i++ {
-		out = append(out, m.selectableLine(rows[i], i == cursor, width))
+		out = append(out, m.controlRowState(rows[i], rowState{
+			Selected: i == cursor,
+			Hovered:  m.hoverTarget.Kind == kind && m.hoverTarget.Index == i,
+			Disabled: disabled != nil && disabled[i],
+		}, width, ""))
 	}
 	if end < len(rows) {
 		out = append(out, m.styles.muted.Render("..."))
@@ -398,20 +484,58 @@ func (m Model) notice(kind, message string) string {
 }
 
 func (m Model) selectableLine(value string, selected bool, width int) string {
-	prefix := "  "
+	return m.controlRow(value, selected, width, "")
+}
+
+func (m Model) selectableLineTarget(value string, selected bool, width int, kind hitKind, index int) string {
+	return m.controlRowState(value, rowState{
+		Selected: selected,
+		Hovered:  m.hoverTarget.Kind == kind && m.hoverTarget.Index == index,
+	}, width, "")
+}
+
+func (m Model) controlRow(value string, selected bool, width int, hint string) string {
+	return m.controlRowState(value, rowState{Selected: selected}, width, hint)
+}
+
+func (m Model) controlRowState(value string, state rowState, width int, hint string) string {
 	style := m.styles.row
-	if selected {
-		prefix = "> "
+	switch {
+	case state.Selected:
 		style = m.styles.selected
+	case state.Disabled:
+		style = m.styles.disabledRow
+	case state.Hovered:
+		style = m.styles.hoveredRow
 	}
-	valueWidth := maxInt(4, width-lipgloss.Width(prefix)-4)
-	return style.Render(prefix + truncateEnd(value, valueWidth))
+	innerWidth := maxInt(4, width-4)
+	content := rowContent(value, hint, innerWidth)
+	return style.Width(innerWidth).Render(content)
+}
+
+func rowContent(value, hint string, width int) string {
+	value = strings.TrimSpace(value)
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return truncateEnd(value, width)
+	}
+	hintWidth := lipgloss.Width(hint)
+	if hintWidth+2 >= width {
+		return truncateEnd(value, width)
+	}
+	valueWidth := maxInt(1, width-hintWidth-1)
+	left := truncateEnd(value, valueWidth)
+	gap := maxInt(1, width-lipgloss.Width(left)-hintWidth)
+	return left + strings.Repeat(" ", gap) + hint
 }
 
 func twoPaneWidths(spec layoutMetrics, leftTitle string) (int, int) {
 	leftWidth := maxInt(36, spec.contentWidth*58/100)
 	if leftTitle == "Actions" {
 		leftWidth = spec.sidebarWidth
+	}
+	if leftTitle == "Start" {
+		leftWidth = maxInt(30, spec.contentWidth*34/100)
 	}
 	if leftWidth > spec.contentWidth-spec.gap-24 {
 		leftWidth = spec.contentWidth - spec.gap - 24
