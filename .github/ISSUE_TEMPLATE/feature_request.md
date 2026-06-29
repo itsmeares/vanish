@@ -1,29 +1,60 @@
 ---
 name: Feature request
-about: Suggest an improvement for Vanish
-title: "[Feature]: "
+about: Suggest a Vanish feature or improvement
+title: "feat: "
 labels: enhancement
 assignees: ""
 ---
 
 ## Problem
 
-What user problem should this solve?
+<!-- What user problem should this solve? -->
 
-## Proposal
+## Proposed solution
 
-What should Vanish do?
+<!-- What should Vanish do? -->
 
-## Safety and privacy
+## User flow
 
-Does this require network access, login/session handling, platform automation,
-or storing additional data?
+1. 
+2. 
+3. 
 
-## Scope
+## Platform
 
-- In scope:
-- Out of scope:
+- [ ] Instagram Export
+- [ ] Reddit
+- [ ] X / Twitter
+- [ ] Local workspace / audit
+- [ ] TUI / UX
+- [ ] Docs
+- [ ] Other:
 
-## Alternatives
+## Capability area
 
-List any simpler or safer alternatives.
+- [ ] Scan / import
+- [ ] Review / filter / selection
+- [ ] Dry-run plan generation
+- [ ] Plan export / load
+- [ ] Apply / execution
+- [ ] Audit
+- [ ] Platform metadata / capabilities
+- [ ] Repo hygiene / CI
+
+## Safety boundaries
+
+- [ ] No credential, cookie, token, session, or OAuth storage unless explicitly designed
+- [ ] No browser automation, scraping, private API usage, or anti-bot bypass
+- [ ] No apply/delete/execution behavior unless explicitly scoped
+- [ ] No raw private messages or sensitive export contents stored
+- [ ] Local-first behavior is preserved
+
+## Acceptance criteria
+
+- [ ] 
+- [ ] 
+- [ ] 
+
+## Notes
+
+<!-- Links, examples, screenshots, or extra context. -->
