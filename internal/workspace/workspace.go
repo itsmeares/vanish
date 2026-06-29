@@ -38,10 +38,20 @@ type Config struct {
 	UpdatedAt             time.Time       `json:"updated_at"`
 	DefaultPlanExportPath string          `json:"default_plan_export_path"`
 	LastOpenedPlanPath    string          `json:"last_opened_plan_path,omitempty"`
+	Reddit                *RedditConfig   `json:"reddit,omitempty"`
 }
 
 type TelemetryConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+type RedditConfig struct {
+	Username         string     `json:"username,omitempty"`
+	OAuthConnectedAt *time.Time `json:"oauth_connected_at,omitempty"`
+	Scopes           []string   `json:"scopes,omitempty"`
+	TokenStorageMode string     `json:"token_storage_mode,omitempty"`
+	CredentialStore  string     `json:"credential_store,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 }
 
 type RecentImport struct {
@@ -161,6 +171,7 @@ func (w *Workspace) SaveConfig(config Config) error {
 		config.DefaultPlanExportPath = DefaultPlanExportPath
 	}
 	config.LastOpenedPlanPath = strings.TrimSpace(config.LastOpenedPlanPath)
+	config.Reddit = sanitizeRedditConfig(config.Reddit)
 	config.UpdatedAt = time.Now().UTC()
 	return writeJSON(w.path(configFileName), config)
 }
@@ -336,6 +347,38 @@ func defaultConfig() Config {
 		UpdatedAt:             now,
 		DefaultPlanExportPath: DefaultPlanExportPath,
 	}
+}
+
+func sanitizeRedditConfig(config *RedditConfig) *RedditConfig {
+	if config == nil {
+		return nil
+	}
+	config.Username = strings.TrimSpace(config.Username)
+	config.TokenStorageMode = strings.TrimSpace(config.TokenStorageMode)
+	config.CredentialStore = strings.TrimSpace(config.CredentialStore)
+	if len(config.Scopes) > 0 {
+		scopes := make([]string, 0, len(config.Scopes))
+		for _, scope := range config.Scopes {
+			scope = strings.TrimSpace(scope)
+			if scope != "" {
+				scopes = append(scopes, scope)
+			}
+		}
+		config.Scopes = scopes
+	}
+	if config.empty() {
+		return nil
+	}
+	return config
+}
+
+func (config RedditConfig) empty() bool {
+	return config.Username == "" &&
+		config.OAuthConnectedAt == nil &&
+		len(config.Scopes) == 0 &&
+		config.TokenStorageMode == "" &&
+		config.CredentialStore == "" &&
+		config.ExpiresAt == nil
 }
 
 func ensureJSONFile(path string, value any) error {
