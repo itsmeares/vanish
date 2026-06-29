@@ -14,6 +14,7 @@ import (
 
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
+	"github.com/itsmeares/vanish/internal/platform"
 	"github.com/itsmeares/vanish/internal/workspace"
 )
 
@@ -34,13 +35,14 @@ func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 	for _, want := range []string{
 		"Vanish",
 		"/ Home",
-		"Import Instagram export ZIP",
-		"Load cleanup plan",
-		"Demo import with fake local data",
-		"Local data",
-		"Quit",
-		"Choose a local Instagram export ZIP.",
-		"Next: review, filter, select, and generate a dry-run plan.",
+		"Platforms",
+		"Choose a platform",
+		"Instagram Export",
+		"Reddit",
+		"Import a local Instagram export ZIP",
+		"Status: prototype",
+		"Local ZIP scan: prototype",
+		"Enter opens actions and details.",
 		footerHome,
 	} {
 		if !strings.Contains(plain, want) {
@@ -57,7 +59,8 @@ func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 		"No login, browser automation, deletion, or network requests.",
 		"i  Import Instagram export ZIP",
 		"d  Demo import with fake local data",
-		"Enter",
+		"X/Twitter",
+		"Load cleanup plan",
 	} {
 		if strings.Contains(plain, unwanted) {
 			t.Fatalf("expected %q to be absent, got:\n%s", unwanted, view)
@@ -114,25 +117,25 @@ func TestTabAndSelectedRowStylesUseBackgrounds(t *testing.T) {
 	}
 }
 
-func TestHomeDetailChangesWithCursor(t *testing.T) {
+func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 	m := NewModel()
-	importView := m.View().Content
-	if !strings.Contains(importView, "Import Instagram export ZIP") || !strings.Contains(importView, "Choose a local Instagram export ZIP.") {
-		t.Fatalf("expected import detail, got:\n%s", importView)
+	instagramView := m.View().Content
+	if !strings.Contains(instagramView, "Instagram Export") || !strings.Contains(instagramView, "Import a local Instagram export ZIP") {
+		t.Fatalf("expected Instagram platform detail, got:\n%s", instagramView)
 	}
-	if strings.Contains(importView, "Command Center") || strings.Contains(importView, "Getting Started") {
-		t.Fatalf("expected static home copy to be removed, got:\n%s", importView)
+	if strings.Contains(instagramView, "Command Center") || strings.Contains(instagramView, "Getting Started") {
+		t.Fatalf("expected static home copy to be removed, got:\n%s", instagramView)
 	}
 
-	m.homeCursor = homeDemo
-	demoView := m.View().Content
-	for _, want := range []string{"Demo Import", "Load fake local Instagram data.", "24 demo items", "6 likes · 6 comments", "6 following · 6 followers", "2 skipped files · 2 warnings"} {
-		if !strings.Contains(demoView, want) {
-			t.Fatalf("expected demo detail to contain %q, got:\n%s", want, demoView)
+	m.homeCursor = 1
+	redditView := m.View().Content
+	for _, want := range []string{"Reddit", "reserved v0.4 platform slot", "Status: planned", "Reddit archive scan: planned"} {
+		if !strings.Contains(redditView, want) {
+			t.Fatalf("expected Reddit detail to contain %q, got:\n%s", want, redditView)
 		}
 	}
-	if strings.Contains(demoView, "Choose a local Instagram export ZIP.") {
-		t.Fatalf("expected home detail to change with cursor, got:\n%s", demoView)
+	if strings.Contains(redditView, "Import a local Instagram export ZIP") {
+		t.Fatalf("expected home detail to change with cursor, got:\n%s", redditView)
 	}
 }
 
@@ -150,37 +153,36 @@ func TestFooterStylesKeysAndKeepsReadableText(t *testing.T) {
 	}
 }
 
-func TestHomeLoadPlanDetailShowsLastOpenedWhenConfigured(t *testing.T) {
+func TestHomeEnterOpensPlatformDetail(t *testing.T) {
 	m := NewModel()
-	m.homeCursor = homeLoadPlan
-	view := m.View().Content
-	if strings.Contains(view, "Last opened:") {
-		t.Fatalf("expected no last-opened path without config, got:\n%s", view)
-	}
-
-	m.localConfig.LastOpenedPlanPath = filepath.Join("C:\\", "very", "long", "path", "vanish-plan.json")
-	view = m.View().Content
-	if !strings.Contains(view, "Load cleanup plan") || !strings.Contains(view, "Open an existing local dry-run plan JSON.") || !strings.Contains(view, "Last opened:") {
-		t.Fatalf("expected load-plan detail with last opened path, got:\n%s", view)
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformInstagramExport {
+		t.Fatalf("expected enter to open Instagram platform detail, screen=%v id=%q", next.current, next.selectedPlatformID)
 	}
 }
 
-func TestHomeLocalDataDetailShowsCompactCountsAndWarning(t *testing.T) {
+func TestPlatformDetailRendersSectionsInFixedOrder(t *testing.T) {
 	m := NewModel()
-	m.homeCursor = homeLocalData
-	m.localDataWarning = "Local data warning: load recent plans: malformed JSON"
-	view := m.View().Content
-	for _, want := range []string{
-		"Local data",
-		"View recent imports, plans, and audit events.",
-		"Recent imports: 0",
-		"Recent plans: 0",
-		"Audit events: 0",
-		"Local data warning",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("expected local-data detail to contain %q, got:\n%s", want, view)
-		}
+	m.openPlatformDetail(0)
+	plain := stripANSI(m.View().Content)
+	actions := strings.Index(plain, "Actions")
+	status := strings.Index(plain, "Status")
+	capabilities := strings.Index(plain, "Capabilities")
+	notes := strings.Index(plain, "Notes / Guide")
+	if actions < 0 || status < 0 || capabilities < 0 || notes < 0 {
+		t.Fatalf("expected all platform sections, got:\n%s", plain)
+	}
+	if !(actions < status && status < capabilities && capabilities < notes) {
+		t.Fatalf("expected Actions, Status, Capabilities, Notes / Guide order, got:\n%s", plain)
+	}
+}
+
+func TestPlatformDetailBackReturnsHome(t *testing.T) {
+	m := NewModel()
+	m.openPlatformDetail(0)
+	next := updateModel(t, m, keyPress("esc"))
+	if next.current != screenHome {
+		t.Fatalf("expected esc to return home, got %v", next.current)
 	}
 }
 
@@ -188,53 +190,121 @@ func TestHomeMenuNavigationUsesArrowAndJK(t *testing.T) {
 	m := NewModel()
 
 	next := updateModel(t, m, keyPress("down"))
-	if next.homeCursor != homeLoadPlan {
-		t.Fatalf("expected down to select load plan, got %d", next.homeCursor)
+	if next.homeCursor != 1 {
+		t.Fatalf("expected down to select Reddit, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("j"))
-	if next.homeCursor != homeDemo {
-		t.Fatalf("expected j to select demo, got %d", next.homeCursor)
-	}
-
-	next = updateModel(t, next, keyPress("j"))
-	if next.homeCursor != homeLocalData {
-		t.Fatalf("expected j to select local data, got %d", next.homeCursor)
-	}
-
-	next = updateModel(t, next, keyPress("j"))
-	if next.homeCursor != homeQuit {
-		t.Fatalf("expected j to select quit, got %d", next.homeCursor)
-	}
-
-	next = updateModel(t, next, keyPress("j"))
-	if next.homeCursor != homeQuit {
+	if next.homeCursor != 1 {
 		t.Fatalf("expected cursor to stay at bottom, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("up"))
-	if next.homeCursor != homeLocalData {
-		t.Fatalf("expected up to select local data, got %d", next.homeCursor)
-	}
-
-	next = updateModel(t, next, keyPress("up"))
-	if next.homeCursor != homeDemo {
-		t.Fatalf("expected up to select demo, got %d", next.homeCursor)
+	if next.homeCursor != 0 {
+		t.Fatalf("expected up to select Instagram Export, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("k"))
-	if next.homeCursor != homeLoadPlan {
-		t.Fatalf("expected k to select load plan, got %d", next.homeCursor)
-	}
-
-	next = updateModel(t, next, keyPress("k"))
-	if next.homeCursor != homeImportZip {
-		t.Fatalf("expected k to select import, got %d", next.homeCursor)
-	}
-
-	next = updateModel(t, next, keyPress("k"))
-	if next.homeCursor != homeImportZip {
+	if next.homeCursor != 0 {
 		t.Fatalf("expected cursor to stay at top, got %d", next.homeCursor)
+	}
+}
+
+func TestInstagramPlatformActionsRouteToExistingScreens(t *testing.T) {
+	cases := []struct {
+		name       string
+		actionID   string
+		wantScreen screen
+		wantCmd    bool
+	}{
+		{name: "choose export ZIP", actionID: platform.ActionChooseExportZIP, wantScreen: screenImportPath},
+		{name: "export guide", actionID: platform.ActionExportGuide, wantScreen: screenInstagramExportGuide},
+		{name: "view recent imports", actionID: platform.ActionViewRecentImports, wantScreen: screenRecentImports},
+		{name: "demo import", actionID: platform.ActionDemoImport, wantScreen: screenImporting, wantCmd: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel()
+			m.openPlatformDetail(0)
+			m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), tc.actionID)
+
+			updated, cmd := m.Update(keyPress("enter"))
+			if tc.wantCmd && cmd == nil {
+				t.Fatalf("expected action %q to return command", tc.actionID)
+			}
+			if !tc.wantCmd && cmd != nil {
+				t.Fatalf("expected action %q not to return command", tc.actionID)
+			}
+			next := requireModel(t, updated)
+			if next.current != tc.wantScreen {
+				t.Fatalf("expected action %q to route to %v, got %v", tc.actionID, tc.wantScreen, next.current)
+			}
+			if tc.actionID == platform.ActionDemoImport && next.importSource != "demo instagram export" {
+				t.Fatalf("expected demo import source, got %q", next.importSource)
+			}
+		})
+	}
+}
+
+func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
+	m := NewModel()
+	m.openPlatformDetail(0)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionExportGuide)
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenInstagramExportGuide {
+		t.Fatalf("expected guide screen, got %v", next.current)
+	}
+	if !strings.Contains(next.View().Content, "Menu names change") {
+		t.Fatalf("expected Instagram menu-name caveat, got:\n%s", next.View().Content)
+	}
+
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformInstagramExport {
+		t.Fatalf("expected back to Instagram platform detail, screen=%v id=%q", next.current, next.selectedPlatformID)
+	}
+}
+
+func TestRedditPlannedActionsStayNoopAndShowReason(t *testing.T) {
+	for _, actionID := range []string{platform.ActionConnectAccount, platform.ActionScanActivity} {
+		t.Run(actionID, func(t *testing.T) {
+			m := NewModel()
+			m.openPlatformDetail(1)
+			m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), actionID)
+			view := m.View().Content
+			if !strings.Contains(view, "Planned only") {
+				t.Fatalf("expected disabled action reason, got:\n%s", view)
+			}
+
+			updated, cmd := m.Update(keyPress("enter"))
+			if cmd != nil {
+				t.Fatalf("expected disabled Reddit action not to return a command")
+			}
+			next := requireModel(t, updated)
+			if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
+				t.Fatalf("expected disabled Reddit action to stay on detail, screen=%v id=%q", next.current, next.selectedPlatformID)
+			}
+		})
+	}
+}
+
+func TestRedditNotesActionAndBack(t *testing.T) {
+	m := NewModel()
+	m.openPlatformDetail(1)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionViewIntegrationNote)
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenRedditNotes {
+		t.Fatalf("expected Reddit notes screen, got %v", next.current)
+	}
+	for _, want := range []string{"planned only", "OAuth flow", "No Reddit OAuth"} {
+		if !strings.Contains(next.View().Content, want) {
+			t.Fatalf("expected Reddit notes to contain %q, got:\n%s", want, next.View().Content)
+		}
+	}
+
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
+		t.Fatalf("expected back to Reddit platform detail, screen=%v id=%q", next.current, next.selectedPlatformID)
 	}
 }
 
@@ -321,17 +391,17 @@ func TestPlansTabPrefersLoadedPlanThenGeneratedPreview(t *testing.T) {
 
 func TestMouseClickHomeMenuRowActivatesOnSingleClick(t *testing.T) {
 	m := NewModel()
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeLoadPlan, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
 
 	next := updateModel(t, m, mouseClick(box.X, box.Y))
-	if next.current != screenPlanLoadPath {
-		t.Fatalf("expected single click on load plan to activate, got %v", next.current)
+	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
+		t.Fatalf("expected single click on Reddit to open detail, screen=%v id=%q", next.current, next.selectedPlatformID)
 	}
 }
 
 func TestMouseClickOutsideMenuRowBoundsDoesNotActivate(t *testing.T) {
 	m := NewModel()
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeLoadPlan, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
 
 	next := updateModel(t, m, mouseClick(box.X+box.Width+1, box.Y))
 	if next.current != screenHome {
@@ -344,7 +414,7 @@ func TestHomeHitBoxesMapVisibleRowsWithFrameOffsets(t *testing.T) {
 	boxes := hitBoxesForTest(t, m)
 	homeTab := requireHitBox(t, boxes, hitTab, -1, "Home")
 
-	for index, label := range homeMenuItems {
+	for index, label := range platformLabels(m.platforms()) {
 		box := requireHitBox(t, boxes, hitHomeAction, index, "")
 		if box.Y <= homeTab.Y {
 			t.Fatalf("expected home row %q to include header/tab offset, tab y=%d row y=%d", label, homeTab.Y, box.Y)
@@ -362,35 +432,36 @@ func TestHomeHitBoxesMapVisibleRowsWithFrameOffsets(t *testing.T) {
 
 func TestMouseHoverHomeRowUsesRenderedHitBox(t *testing.T) {
 	m := NewModel()
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeDemo, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
 
 	next := updateModel(t, m, mouseMotion(box.X, box.Y))
-	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != homeDemo {
-		t.Fatalf("expected hover target for demo row, got %#v", next.hoverTarget)
+	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != 1 {
+		t.Fatalf("expected hover target for Reddit row, got %#v", next.hoverTarget)
 	}
-	if next.homeCursor != homeImportZip {
+	if next.homeCursor != 0 {
 		t.Fatalf("expected hover not to move home cursor, got %d", next.homeCursor)
 	}
 }
 
 func TestMouseHitBoxesStillMatchRowsAfterResize(t *testing.T) {
 	m := updateModel(t, NewModel(), tea.WindowSizeMsg{Width: 90, Height: 18})
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeLocalData, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
 
 	next := updateModel(t, m, mouseMotion(box.X, box.Y))
-	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != homeLocalData {
-		t.Fatalf("expected resized hover target for local data row, got %#v", next.hoverTarget)
+	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != 1 {
+		t.Fatalf("expected resized hover target for Reddit row, got %#v", next.hoverTarget)
 	}
 
 	next = updateModel(t, m, mouseClick(box.X, box.Y))
-	if next.current != screenLocalDataOverview {
-		t.Fatalf("expected resized click on local data row to activate, got %v", next.current)
+	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
+		t.Fatalf("expected resized click on Reddit row to activate, screen=%v id=%q", next.current, next.selectedPlatformID)
 	}
 }
 
 func TestEnterOnDemoStartsDemoImport(t *testing.T) {
 	m := NewModel()
-	m.homeCursor = homeDemo
+	m.openPlatformDetail(0)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionDemoImport)
 
 	updated, cmd := m.Update(keyPress("enter"))
 	if cmd == nil {
@@ -512,20 +583,6 @@ func TestQuitConfirmationRendersCompactlyAtTallSize(t *testing.T) {
 	}
 	if lines := strings.Count(view, "\n") + 1; lines > 20 {
 		t.Fatalf("expected quit confirmation to stay compact, got %d lines:\n%s", lines, view)
-	}
-}
-
-func TestHomeQuitMenuOpensConfirmation(t *testing.T) {
-	m := NewModel()
-	m.homeCursor = homeQuit
-
-	updated, cmd := m.Update(keyPress("enter"))
-	if cmd != nil {
-		t.Fatalf("expected home quit menu not to quit immediately")
-	}
-	next := requireModel(t, updated)
-	if next.current != screenQuitConfirm {
-		t.Fatalf("expected home quit menu to open confirmation, got %v", next.current)
 	}
 }
 
@@ -801,6 +858,8 @@ func TestImportPickerNavigatesAndStartsZip(t *testing.T) {
 
 	m := NewModel()
 	m.openImportPicker(root)
+	m.openPlatformDetail(0)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionChooseExportZIP)
 	next := updateModel(t, m, keyPress("enter"))
 	if next.current != screenImportPath {
 		t.Fatalf("expected import picker screen, got %v", next.current)
@@ -872,6 +931,8 @@ func TestImportPickerMouseClickAndWheel(t *testing.T) {
 
 	m := NewModel()
 	m.openImportPicker(root)
+	m.openPlatformDetail(0)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionChooseExportZIP)
 	next := updateModel(t, m, keyPress("enter"))
 	next = updateModel(t, next, tea.WindowSizeMsg{Width: 100, Height: 24})
 
@@ -892,10 +953,7 @@ func TestImportPickerMouseClickAndWheel(t *testing.T) {
 }
 
 func TestPlanLoadPathShowsFriendlyMissingFileError(t *testing.T) {
-	m := NewModel()
-	m.homeCursor = homeLoadPlan
-
-	next := updateModel(t, m, keyPress("enter"))
+	next := openPlanLoadPath(t, NewModel())
 	if next.current != screenPlanLoadPath {
 		t.Fatalf("expected plan load path screen, got %v", next.current)
 	}
@@ -925,9 +983,7 @@ func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
 	plan := fakeCleanupPlan()
 	path := writeTUIPlan(t, plan)
 
-	m := NewModel()
-	m.homeCursor = homeLoadPlan
-	next := updateModel(t, m, keyPress("enter"))
+	next := openPlanLoadPath(t, NewModel())
 	next.planPathInput.SetValue(path)
 	updated, cmd := next.Update(keyPress("enter"))
 	if cmd == nil {
@@ -1007,9 +1063,7 @@ func TestLoadedPlanQuitConfirmation(t *testing.T) {
 	plan := fakeCleanupPlan()
 	path := writeTUIPlan(t, plan)
 
-	m := NewModel()
-	m.homeCursor = homeLoadPlan
-	next := updateModel(t, m, keyPress("enter"))
+	next := openPlanLoadPath(t, NewModel())
 	next.planPathInput.SetValue(path)
 	updated, cmd := next.Update(keyPress("enter"))
 	next = requireModel(t, updated)
@@ -1751,8 +1805,7 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	requireAuditEvent(t, w, "plan_exported")
 
 	reloaded := NewModelWithWorkspace(w, nil)
-	reloaded.homeCursor = homeLoadPlan
-	reloaded = updateModel(t, reloaded, keyPress("enter"))
+	reloaded = openPlanLoadPath(t, reloaded)
 	reloaded.planPathInput.SetValue(outputPath)
 	updated, cmd = reloaded.Update(keyPress("enter"))
 	if cmd == nil {
@@ -2011,7 +2064,7 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 		{name: "home", model: NewModel()},
 		{name: "help", model: updateModel(t, NewModel(), keyPress("?"))},
 		{name: "quit", model: updateModel(t, NewModel(), keyPress("ctrl+q"))},
-		{name: "import path", model: updateModel(t, NewModel(), keyPress("enter"))},
+		{name: "import path", model: clickTab(t, NewModel(), "Import")},
 		{name: "importing", model: importing},
 		{name: "import result", model: imported},
 		{name: "items", model: items},
@@ -2022,9 +2075,7 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 		{name: "plan preview", model: preview},
 		{name: "plan export", model: exportPath},
 		{name: "plan load", model: func() Model {
-			m := NewModel()
-			m.homeCursor = homeLoadPlan
-			return updateModel(t, m, keyPress("enter"))
+			return openPlanLoadPath(t, NewModel())
 		}()},
 		{name: "loaded summary", model: loadedSummary},
 		{name: "loaded actions", model: loadedActions},
@@ -2164,10 +2215,19 @@ func importedModel(t *testing.T, result instagram.ImportResult) Model {
 func openLocalDataOverview(t *testing.T, model Model) Model {
 	t.Helper()
 
-	model.homeCursor = homeLocalData
-	next := updateModel(t, model, keyPress("enter"))
+	next := clickTab(t, model, "Local")
 	if next.current != screenLocalDataOverview {
 		t.Fatalf("expected local data overview, got %v", next.current)
+	}
+	return next
+}
+
+func openPlanLoadPath(t *testing.T, model Model) Model {
+	t.Helper()
+
+	next := clickTab(t, model, "Plans")
+	if next.current != screenPlanLoadPath {
+		t.Fatalf("expected plan load path, got %v", next.current)
 	}
 	return next
 }
@@ -2247,6 +2307,18 @@ func requireAuditEvent(t *testing.T, w *workspace.Workspace, eventType string) w
 	}
 	t.Fatalf("expected audit event %q, got %#v", eventType, audit.Events)
 	return workspace.AuditEvent{}
+}
+
+func platformActionIndex(t *testing.T, current platform.Platform, actionID string) int {
+	t.Helper()
+
+	for i, action := range current.Actions {
+		if action.ID == actionID {
+			return i
+		}
+	}
+	t.Fatalf("expected platform %q to have action %q", current.ID, actionID)
+	return 0
 }
 
 func applyTypeFilter(t *testing.T, model Model, row int) Model {
