@@ -71,6 +71,19 @@ type RecentPlan struct {
 	StatusCounts  map[string]int `json:"status_counts,omitempty"`
 }
 
+type recentPlanFileEntry struct {
+	ID            string         `json:"id"`
+	Path          string         `json:"path,omitempty"`
+	Mode          string         `json:"mode,omitempty"`
+	SourceName    string         `json:"source_name,omitempty"`
+	CreatedAt     time.Time      `json:"created_at,omitempty"`
+	PlanCreatedAt time.Time      `json:"plan_created_at"`
+	LastUsedAt    time.Time      `json:"last_used_at"`
+	LastOperation string         `json:"last_operation,omitempty"`
+	ActionCounts  map[string]int `json:"action_counts,omitempty"`
+	StatusCounts  map[string]int `json:"status_counts,omitempty"`
+}
+
 type AuditEvent struct {
 	Type      string         `json:"type"`
 	Timestamp time.Time      `json:"timestamp"`
@@ -196,11 +209,7 @@ func (w *Workspace) UpsertRecentImport(entry RecentImport) error {
 }
 
 func (w *Workspace) RecentPlans() ([]RecentPlan, error) {
-	var plans []RecentPlan
-	if err := readJSON(w.path(recentPlansFileName), &plans); err != nil {
-		return nil, err
-	}
-	return plans, nil
+	return readRecentPlans(w.path(recentPlansFileName))
 }
 
 func (w *Workspace) UpsertRecentPlan(entry RecentPlan) error {
@@ -362,6 +371,48 @@ func readJSON(path string, target any) error {
 		return errors.New("json file contains multiple values")
 	}
 	return nil
+}
+
+func readRecentPlans(path string) ([]RecentPlan, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var entries []recentPlanFileEntry
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&entries); err != nil {
+		return nil, err
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, errors.New("json file contains multiple values")
+	}
+
+	plans := make([]RecentPlan, 0, len(entries))
+	for _, entry := range entries {
+		planCreatedAt := entry.PlanCreatedAt
+		if planCreatedAt.IsZero() {
+			planCreatedAt = entry.CreatedAt
+		}
+		lastUsedAt := entry.LastUsedAt
+		if lastUsedAt.IsZero() {
+			lastUsedAt = entry.CreatedAt
+		}
+		plans = append(plans, RecentPlan{
+			ID:            entry.ID,
+			Path:          entry.Path,
+			Mode:          entry.Mode,
+			SourceName:    entry.SourceName,
+			PlanCreatedAt: planCreatedAt,
+			LastUsedAt:    lastUsedAt,
+			LastOperation: entry.LastOperation,
+			ActionCounts:  entry.ActionCounts,
+			StatusCounts:  entry.StatusCounts,
+		})
+	}
+	return plans, nil
 }
 
 func writeJSON(path string, value any) error {

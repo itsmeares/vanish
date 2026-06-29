@@ -2,6 +2,8 @@ package tui
 
 import (
 	"errors"
+	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,30 +20,166 @@ import (
 func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 	m := NewModel()
 	view := m.View().Content
+	plain := stripANSI(view)
 
-	if !strings.Contains(view, "Vanish") {
-		t.Fatalf("expected initial view to contain app name")
+	if !strings.Contains(plain, "Vanish") || !strings.Contains(plain, "Home") {
+		t.Fatalf("expected initial view to contain app name and section")
+	}
+	if m.View().MouseMode != tea.MouseModeAllMotion {
+		t.Fatalf("expected mouse all motion mode")
+	}
+	if !m.View().AltScreen {
+		t.Fatalf("expected alternate screen mode")
 	}
 	for _, want := range []string{
-		"[LOCAL]",
-		"[DRY-RUN]",
-		"[NO NETWORK]",
+		"Vanish",
+		"/ Home",
 		"Import Instagram export ZIP",
 		"Load cleanup plan",
 		"Demo import with fake local data",
 		"Local data",
 		"Quit",
+		"Choose a local Instagram export ZIP.",
+		"Next: review, filter, select, and generate a dry-run plan.",
+		footerHome,
 	} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(plain, want) {
 			t.Fatalf("expected initial view to show %q, got:\n%s", want, view)
 		}
 	}
 	for _, unwanted := range []string{
+		"[LOCAL]",
+		"[DRY-RUN]",
+		"[NO NETWORK]",
+		"Command Center",
+		"Getting Started",
+		"Local-only review of files you choose.",
+		"No login, browser automation, deletion, or network requests.",
 		"i  Import Instagram export ZIP",
 		"d  Demo import with fake local data",
+		"Enter",
 	} {
-		if strings.Contains(view, unwanted) {
-			t.Fatalf("expected shortcut row %q to be removed, got:\n%s", unwanted, view)
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("expected %q to be absent, got:\n%s", unwanted, view)
+		}
+	}
+	if strings.Contains(plain, "Local State") {
+		t.Fatalf("expected old Local State pane to be removed, got:\n%s", view)
+	}
+}
+
+func TestHeaderOmitsGlobalSafetyBadges(t *testing.T) {
+	m := NewModel()
+	view := m.View().Content
+	if !strings.Contains(view, "Vanish") || !strings.Contains(view, "/ Home") {
+		t.Fatalf("expected section header, got:\n%s", view)
+	}
+	for _, badge := range []string{"[LOCAL]", "[DRY-RUN]", "[NO NETWORK]"} {
+		if strings.Contains(view, badge) {
+			t.Fatalf("expected header not to contain %q, got:\n%s", badge, view)
+		}
+	}
+}
+
+func TestTabAndSelectedRowStylesUseBackgrounds(t *testing.T) {
+	m := NewModel()
+	if m.styles.activeTab.GetBackground() == nil {
+		t.Fatalf("expected active tab style to have a background")
+	}
+	if colorKey(m.styles.activeTab.GetBackground()) == colorKey(m.styles.tab.GetBackground()) {
+		t.Fatalf("expected active and inactive tabs to have distinguishable backgrounds")
+	}
+	if m.styles.selected.GetBackground() == nil {
+		t.Fatalf("expected selected row style to have a background")
+	}
+	if m.styles.hoveredRow.GetBackground() == nil {
+		t.Fatalf("expected hovered row style to have a background")
+	}
+	if colorKey(m.styles.hoveredRow.GetBackground()) == colorKey(m.styles.selected.GetBackground()) {
+		t.Fatalf("expected hover and selected row styles to differ")
+	}
+	if m.styles.disabledRow.GetForeground() == nil {
+		t.Fatalf("expected disabled row style to be muted")
+	}
+	if m.styles.hoveredTab.GetBackground() == nil {
+		t.Fatalf("expected hovered tab style to have a background")
+	}
+
+	row := m.selectableLine("Import Instagram export ZIP", true, 48)
+	if strings.Contains(row, ">") {
+		t.Fatalf("expected selected row not to rely on > marker, got %q", row)
+	}
+	if !strings.Contains(row, "Import Instagram export ZIP") {
+		t.Fatalf("expected selected row to keep label, got %q", row)
+	}
+}
+
+func TestHomeDetailChangesWithCursor(t *testing.T) {
+	m := NewModel()
+	importView := m.View().Content
+	if !strings.Contains(importView, "Import Instagram export ZIP") || !strings.Contains(importView, "Choose a local Instagram export ZIP.") {
+		t.Fatalf("expected import detail, got:\n%s", importView)
+	}
+	if strings.Contains(importView, "Command Center") || strings.Contains(importView, "Getting Started") {
+		t.Fatalf("expected static home copy to be removed, got:\n%s", importView)
+	}
+
+	m.homeCursor = homeDemo
+	demoView := m.View().Content
+	for _, want := range []string{"Demo Import", "Load fake local Instagram data.", "24 demo items", "6 likes · 6 comments", "6 following · 6 followers", "2 skipped files · 2 warnings"} {
+		if !strings.Contains(demoView, want) {
+			t.Fatalf("expected demo detail to contain %q, got:\n%s", want, demoView)
+		}
+	}
+	if strings.Contains(demoView, "Choose a local Instagram export ZIP.") {
+		t.Fatalf("expected home detail to change with cursor, got:\n%s", demoView)
+	}
+}
+
+func TestFooterStylesKeysAndKeepsReadableText(t *testing.T) {
+	m := NewModel()
+	footer := m.footer(footerHome)
+	if !strings.Contains(stripANSI(footer), footerHome) {
+		t.Fatalf("expected footer text to survive styling, got %q", footer)
+	}
+	if !strings.Contains(footer, "\x1b[") {
+		t.Fatalf("expected footer key styling to add ANSI, got %q", footer)
+	}
+	if m.styles.footerKey.GetForeground() == nil {
+		t.Fatalf("expected footer key style to define a foreground")
+	}
+}
+
+func TestHomeLoadPlanDetailShowsLastOpenedWhenConfigured(t *testing.T) {
+	m := NewModel()
+	m.homeCursor = homeLoadPlan
+	view := m.View().Content
+	if strings.Contains(view, "Last opened:") {
+		t.Fatalf("expected no last-opened path without config, got:\n%s", view)
+	}
+
+	m.localConfig.LastOpenedPlanPath = filepath.Join("C:\\", "very", "long", "path", "vanish-plan.json")
+	view = m.View().Content
+	if !strings.Contains(view, "Load cleanup plan") || !strings.Contains(view, "Open an existing local dry-run plan JSON.") || !strings.Contains(view, "Last opened:") {
+		t.Fatalf("expected load-plan detail with last opened path, got:\n%s", view)
+	}
+}
+
+func TestHomeLocalDataDetailShowsCompactCountsAndWarning(t *testing.T) {
+	m := NewModel()
+	m.homeCursor = homeLocalData
+	m.localDataWarning = "Local data warning: load recent plans: malformed JSON"
+	view := m.View().Content
+	for _, want := range []string{
+		"Local data",
+		"View recent imports, plans, and audit events.",
+		"Recent imports: 0",
+		"Recent plans: 0",
+		"Audit events: 0",
+		"Local data warning",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected local-data detail to contain %q, got:\n%s", want, view)
 		}
 	}
 }
@@ -97,6 +235,156 @@ func TestHomeMenuNavigationUsesArrowAndJK(t *testing.T) {
 	next = updateModel(t, next, keyPress("k"))
 	if next.homeCursor != homeImportZip {
 		t.Fatalf("expected cursor to stay at top, got %d", next.homeCursor)
+	}
+}
+
+func TestTabClicksRouteToSafeScreens(t *testing.T) {
+	imported := importedModel(t, fakeImportResult())
+
+	next := clickTab(t, imported, "Home")
+	if next.current != screenHome {
+		t.Fatalf("expected Home tab to route home, got %v", next.current)
+	}
+
+	next = clickTab(t, next, "Local")
+	if next.current != screenLocalDataOverview {
+		t.Fatalf("expected Local tab to route to local data overview, got %v", next.current)
+	}
+
+	next = clickTab(t, next, "Help")
+	if next.current != screenKeybindings {
+		t.Fatalf("expected Help tab to route to help, got %v", next.current)
+	}
+
+	next = clickTab(t, imported, "Import")
+	if next.current != screenImportResult {
+		t.Fatalf("expected active Import tab to no-op, got %v", next.current)
+	}
+	if len(next.importResult.Items) == 0 {
+		t.Fatalf("expected active tab no-op to preserve imported data")
+	}
+
+	next = clickTab(t, NewModel(), "Import")
+	if next.current != screenImportPath {
+		t.Fatalf("expected inactive Import tab to route to import picker, got %v", next.current)
+	}
+	next = clickTab(t, next, "Home")
+	if next.current != screenHome {
+		t.Fatalf("expected Home tab from Import to route home, got %v", next.current)
+	}
+
+	next = clickTab(t, imported, "Review")
+	if next.current != screenItemsBrowser {
+		t.Fatalf("expected Review tab with import data to route to parsed items, got %v", next.current)
+	}
+
+	next = clickTab(t, NewModel(), "Review")
+	if next.current != screenReviewEmpty || !strings.Contains(next.View().Content, "No parsed items yet") {
+		t.Fatalf("expected Review tab without import data to show empty state, screen=%v view:\n%s", next.current, next.View().Content)
+	}
+
+	next = clickTab(t, NewModel(), "Plans")
+	if next.current != screenPlanLoadPath {
+		t.Fatalf("expected Plans tab without plans to route to load plan, got %v", next.current)
+	}
+}
+
+func TestTabHitBoxesMapVisibleTabs(t *testing.T) {
+	m := NewModel()
+	boxes := hitBoxesForTest(t, m)
+
+	for _, label := range tabLabels {
+		box := requireHitBox(t, boxes, hitTab, -1, label)
+		target := hitTargetAt(boxes, box.X, box.Y)
+		if target.Kind != hitTab || target.Label != label {
+			t.Fatalf("expected %q tab at (%d,%d), got %#v", label, box.X, box.Y, target)
+		}
+	}
+}
+
+func TestPlansTabPrefersLoadedPlanThenGeneratedPreview(t *testing.T) {
+	loaded := NewModel()
+	loaded.loadedPlan = fakeCleanupPlan()
+	loaded.loadedPlanSummary = domain.SummarizeCleanupPlan(loaded.loadedPlan)
+	next := clickTab(t, loaded, "Plans")
+	if next.current != screenLoadedPlanSummary {
+		t.Fatalf("expected Plans tab to prefer loaded plan summary, got %v", next.current)
+	}
+
+	preview := planPreviewModel(t)
+	preview.current = screenHome
+	next = clickTab(t, preview, "Plans")
+	if next.current != screenPlanPreview {
+		t.Fatalf("expected Plans tab to route to generated preview, got %v", next.current)
+	}
+}
+
+func TestMouseClickHomeMenuRowActivatesOnSingleClick(t *testing.T) {
+	m := NewModel()
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeLoadPlan, "")
+
+	next := updateModel(t, m, mouseClick(box.X, box.Y))
+	if next.current != screenPlanLoadPath {
+		t.Fatalf("expected single click on load plan to activate, got %v", next.current)
+	}
+}
+
+func TestMouseClickOutsideMenuRowBoundsDoesNotActivate(t *testing.T) {
+	m := NewModel()
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeLoadPlan, "")
+
+	next := updateModel(t, m, mouseClick(box.X+box.Width+1, box.Y))
+	if next.current != screenHome {
+		t.Fatalf("expected out-of-row click to no-op, got %v", next.current)
+	}
+}
+
+func TestHomeHitBoxesMapVisibleRowsWithFrameOffsets(t *testing.T) {
+	m := NewModel()
+	boxes := hitBoxesForTest(t, m)
+	homeTab := requireHitBox(t, boxes, hitTab, -1, "Home")
+
+	for index, label := range homeMenuItems {
+		box := requireHitBox(t, boxes, hitHomeAction, index, "")
+		if box.Y <= homeTab.Y {
+			t.Fatalf("expected home row %q to include header/tab offset, tab y=%d row y=%d", label, homeTab.Y, box.Y)
+		}
+		line := renderedLineAt(m.View().Content, box.Y)
+		if !strings.Contains(stripANSI(firstPaneSegment(line)), label) {
+			t.Fatalf("expected hit box for row %d to point at %q, got line %q", index, label, stripANSI(line))
+		}
+		target := hitTargetAt(boxes, box.X, box.Y)
+		if target.Kind != hitHomeAction || target.Index != index {
+			t.Fatalf("expected row %d at (%d,%d), got %#v", index, box.X, box.Y, target)
+		}
+	}
+}
+
+func TestMouseHoverHomeRowUsesRenderedHitBox(t *testing.T) {
+	m := NewModel()
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeDemo, "")
+
+	next := updateModel(t, m, mouseMotion(box.X, box.Y))
+	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != homeDemo {
+		t.Fatalf("expected hover target for demo row, got %#v", next.hoverTarget)
+	}
+	if next.homeCursor != homeImportZip {
+		t.Fatalf("expected hover not to move home cursor, got %d", next.homeCursor)
+	}
+}
+
+func TestMouseHitBoxesStillMatchRowsAfterResize(t *testing.T) {
+	m := updateModel(t, NewModel(), tea.WindowSizeMsg{Width: 90, Height: 18})
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, homeLocalData, "")
+
+	next := updateModel(t, m, mouseMotion(box.X, box.Y))
+	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != homeLocalData {
+		t.Fatalf("expected resized hover target for local data row, got %#v", next.hoverTarget)
+	}
+
+	next = updateModel(t, m, mouseClick(box.X, box.Y))
+	if next.current != screenLocalDataOverview {
+		t.Fatalf("expected resized click on local data row to activate, got %v", next.current)
 	}
 }
 
@@ -173,8 +461,14 @@ func TestQuestionMarkOpensHelpScreen(t *testing.T) {
 	for _, want := range []string{
 		"Vanish",
 		"Help",
+		"Navigation",
+		"Lists",
+		"Selection",
+		"Forms",
+		"Plans",
+		"Notes",
 		"Up/Down or j/k: move",
-		"Backspace: back when no text input is focused",
+		"Esc/Backspace: back when no text input is focused",
 		"Ctrl+Q or Ctrl+C: quit confirmation",
 	} {
 		if !strings.Contains(view, want) {
@@ -203,6 +497,21 @@ func TestQuitConfirmationEscReturnsToPreviousScreen(t *testing.T) {
 	next = updateModel(t, next, keyPress("esc"))
 	if next.current != screenItemsBrowser {
 		t.Fatalf("expected esc to return to previous screen, got %v", next.current)
+	}
+}
+
+func TestQuitConfirmationRendersCompactlyAtTallSize(t *testing.T) {
+	next := updateModel(t, NewModel(), keyPress("ctrl+q"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 160, Height: 60})
+
+	view := next.View().Content
+	for _, want := range []string{"Quit Vanish?", "Quit Vanish", "Cancel"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected quit confirmation to contain %q, got:\n%s", want, view)
+		}
+	}
+	if lines := strings.Count(view, "\n") + 1; lines > 20 {
+		t.Fatalf("expected quit confirmation to stay compact, got %d lines:\n%s", lines, view)
 	}
 }
 
@@ -475,32 +784,110 @@ func TestWipeLocalDataDefaultsToCancelAndPreservesExternalPlan(t *testing.T) {
 	}
 }
 
-func TestImportPathScreenAcceptsTypedPathAndEscReturnsHome(t *testing.T) {
-	m := NewModel()
+func TestImportPickerNavigatesAndStartsZip(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "nested")
+	if err := os.Mkdir(subdir, 0o700); err != nil {
+		t.Fatalf("create nested dir: %v", err)
+	}
+	zipPath := filepath.Join(root, "instagram-export.zip")
+	if err := os.WriteFile(zipPath, []byte("not a real zip"), 0o600); err != nil {
+		t.Fatalf("write zip placeholder: %v", err)
+	}
+	textPath := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(textPath, []byte("notes"), 0o600); err != nil {
+		t.Fatalf("write text file: %v", err)
+	}
 
+	m := NewModel()
+	m.openImportPicker(root)
 	next := updateModel(t, m, keyPress("enter"))
 	if next.current != screenImportPath {
-		t.Fatalf("expected import path screen, got %v", next.current)
+		t.Fatalf("expected import picker screen, got %v", next.current)
+	}
+	plain := stripANSI(next.View().Content)
+	for _, want := range []string{"Import ZIP", "Local file picker", "dir", "nested", "zip", "instagram-export.zip", "file", "notes.txt", footerImportPicker} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected import picker to contain %q, got:\n%s", want, next.View().Content)
+		}
 	}
 
-	for _, keyName := range []string{"a", "b", "c"} {
-		next = updateModel(t, next, keyPress(keyName))
+	next.importPickerCursor = 3
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd != nil {
+		t.Fatalf("expected disabled non-ZIP file not to start import")
 	}
-	if next.pathInput.Value() != "abc" {
-		t.Fatalf("expected typed path to be captured, got %q", next.pathInput.Value())
+	next = requireModel(t, updated)
+	if next.current != screenImportPath || next.importSource != "" {
+		t.Fatalf("expected disabled file to leave picker unchanged, screen=%v source=%q", next.current, next.importSource)
+	}
+
+	next.importPickerCursor = 1
+	next = updateModel(t, next, keyPress("enter"))
+	if next.importPickerDir != subdir {
+		t.Fatalf("expected enter on directory to open %q, got %q", subdir, next.importPickerDir)
+	}
+
+	next = updateModel(t, next, keyPress("left"))
+	if next.importPickerDir != root {
+		t.Fatalf("expected left to open parent %q, got %q", root, next.importPickerDir)
+	}
+
+	next.importPickerCursor = 1
+	next = updateModel(t, next, keyPress("enter"))
+	if next.importPickerDir != subdir {
+		t.Fatalf("expected enter on directory to reopen %q, got %q", subdir, next.importPickerDir)
 	}
 
 	next = updateModel(t, next, keyPress("backspace"))
-	if next.current != screenImportPath {
-		t.Fatalf("expected backspace inside import path input to stay on input screen, got %v", next.current)
-	}
-	if next.pathInput.Value() != "ab" {
-		t.Fatalf("expected backspace to edit path input, got %q", next.pathInput.Value())
+	if next.importPickerDir != root {
+		t.Fatalf("expected backspace to open parent %q, got %q", root, next.importPickerDir)
 	}
 
+	next.importPickerCursor = 2
+	updated, cmd = next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected enter on ZIP to start import command")
+	}
+	next = requireModel(t, updated)
+	if next.current != screenImporting || next.importSource != zipPath {
+		t.Fatalf("expected ZIP import to start, screen=%v source=%q", next.current, next.importSource)
+	}
+
+	next = updateModel(t, m, keyPress("enter"))
 	next = updateModel(t, next, keyPress("esc"))
 	if next.current != screenHome {
 		t.Fatalf("expected esc to return home, got %v", next.current)
+	}
+}
+
+func TestImportPickerMouseClickAndWheel(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 8; i++ {
+		path := filepath.Join(root, fmt.Sprintf("export-%02d.zip", i))
+		if err := os.WriteFile(path, []byte("zip"), 0o600); err != nil {
+			t.Fatalf("write zip placeholder: %v", err)
+		}
+	}
+
+	m := NewModel()
+	m.openImportPicker(root)
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 100, Height: 24})
+
+	next = updateModel(t, next, mouseWheel(4, tea.MouseWheelDown))
+	if next.importPickerCursor != 1 {
+		t.Fatalf("expected picker wheel to move cursor, got %d", next.importPickerCursor)
+	}
+
+	y := lineIndexContaining(t, next.View().Content, "export-02.zip")
+	updated, cmd := next.Update(mouseClick(4, y))
+	if cmd == nil {
+		t.Fatalf("expected click on ZIP row to start import")
+	}
+	next = requireModel(t, updated)
+	if next.current != screenImporting || !strings.HasSuffix(next.importSource, "export-02.zip") {
+		t.Fatalf("expected clicked ZIP to start import, screen=%v source=%q", next.current, next.importSource)
 	}
 }
 
@@ -556,14 +943,15 @@ func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
 	for _, want := range []string{
 		"Loaded Cleanup Plan",
 		"Plan ID: plan-loaded",
-		"Format version: 1",
 		"Platform: instagram",
-		"Source name: instagram-export",
+		"Source: instagram-export",
 		"Mode: dry-run",
 		"Total actions: 3",
+		"Action Counts",
 		"delete_comment: 1",
 		"unfollow: 1",
 		"unlike: 1",
+		"Status Counts",
 		"pending: 1",
 		"done: 1",
 		"skipped: 1",
@@ -582,7 +970,9 @@ func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
 	view = next.View().Content
 	for _, want := range []string{
 		"Plan Actions",
-		"unlike | pending | https://instagram.example/p/1",
+		"unlike",
+		"pending",
+		"/p/1",
 		"Type: unlike",
 		"Status: pending",
 		"Target URL: https://instagram.example/p/1",
@@ -593,6 +983,10 @@ func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected actions browser to contain %q, got:\n%s", want, view)
 		}
+	}
+	actionRow := lineContaining(t, view, "unlike", "pending")
+	if strings.Contains(actionRow, "https://") {
+		t.Fatalf("expected compact action row not to expose full URL, got %q", actionRow)
 	}
 
 	next = updateModel(t, next, keyPress("j"))
@@ -654,8 +1048,16 @@ func TestImportResultViewShowsSummaryCountsAndActions(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Import Complete",
-		"Parsed: 4 total | Likes: 1 | Comments: 1 | Following: 1 | Followers: 1",
-		"Skipped or unknown: 1 | Warnings: 1",
+		"Source",
+		"Parsed Items",
+		"Total: 4",
+		"Likes: 1",
+		"Comments: 1",
+		"Following: 1",
+		"Followers: 1",
+		"Import Notes",
+		"Skipped or unknown: 1",
+		"Warnings: 1",
 		"View parsed items",
 		"View warnings",
 		"Review selection",
@@ -677,13 +1079,23 @@ func TestImportResultActionsOpenItemsAndWarnings(t *testing.T) {
 	itemView := next.View().Content
 	for _, want := range []string{
 		"Parsed Items",
-		"like | demo_artist | https://www.instagram.com/p/demo_like/ | 2024-03-09T16:00:00Z",
-		"ID: item-like",
-		"Safe text hash: sha256:abcdef",
+		"[ ] like",
+		"demo_artist",
+		"/p/demo_like",
+		"Type: like",
+		"Actor: demo_artist",
+		"Target: /p/demo_like/",
+		"Date: 2024-03-09",
+		"Toggle selected",
+		"Review selection",
 	} {
 		if !strings.Contains(itemView, want) {
 			t.Fatalf("expected items browser to contain %q, got:\n%s", want, itemView)
 		}
+	}
+	itemRow := lineContaining(t, itemView, "[ ]", "demo_artist")
+	if strings.Contains(itemRow, "https://") {
+		t.Fatalf("expected compact item row not to expose full URL, got %q", itemRow)
 	}
 	if strings.Contains(itemView, "raw private comment") {
 		t.Fatalf("expected items browser not to render raw text preview, got:\n%s", itemView)
@@ -763,9 +1175,23 @@ func TestItemsBrowserShowsVisibleAndTotalCount(t *testing.T) {
 
 	next := updateModel(t, m, keyPress("enter"))
 	view := next.View().Content
+	plain := stripANSI(view)
 
-	if !strings.Contains(view, "Visible: 2 / 2 | Selected: 0 | Filters: off") {
-		t.Fatalf("expected visible and total count, got:\n%s", view)
+	for _, want := range []string{
+		"Showing 1-2 of 2 · Matching 2/2 · Selected 0 · Filters off",
+		"Page 1/1",
+		"Selection",
+		"Actions",
+		"Toggle selected",
+		"Review selection",
+		"Generate dry-run plan",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected parsed items cockpit to contain %q, got:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(plain, footerParsedItems) {
+		t.Fatalf("expected parsed items footer, got:\n%s", view)
 	}
 }
 
@@ -774,7 +1200,7 @@ func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
 	next := updateModel(t, m, keyPress("enter"))
 
 	view := next.View().Content
-	if !strings.Contains(view, "[ ] like | demo_artist") {
+	if !strings.Contains(view, "[ ] like") || !strings.Contains(view, "demo_artist") {
 		t.Fatalf("expected unselected item row, got:\n%s", view)
 	}
 
@@ -783,7 +1209,7 @@ func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
 	if next.selection.Len() != 1 {
 		t.Fatalf("expected one selected item, got %d", next.selection.Len())
 	}
-	for _, want := range []string{"[x] like | demo_artist", "Visible: 2 / 2 | Selected: 1 | Filters: off"} {
+	for _, want := range []string{"[x] like", "demo_artist", "Showing 1-2 of 2 · Matching 2/2 · Selected 1 · Filters off", "Selected: 1"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected view to contain %q, got:\n%s", want, view)
 		}
@@ -807,6 +1233,184 @@ func TestItemsBrowserToggleWithEnter(t *testing.T) {
 	next = updateModel(t, next, keyPress("enter"))
 	if next.selection.Len() != 0 {
 		t.Fatalf("expected second enter to deselect highlighted item, got %d", next.selection.Len())
+	}
+}
+
+func TestItemsBrowserFillsAvailablePaneAndShowsPageRange(t *testing.T) {
+	m := importedModel(t, fakeImportResultWithManyItems(24))
+	next := updateModel(t, m, keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 120, Height: 32})
+
+	viewport := next.parsedItemsViewport()
+	if viewport.VisibleRows <= 10 {
+		t.Fatalf("expected parsed item viewport to use pane height, got %d rows", viewport.VisibleRows)
+	}
+	boxes := hitBoxesForTest(t, next)
+	rowBoxes := 0
+	for _, box := range boxes {
+		if box.Target.Kind == hitParsedItemRow {
+			rowBoxes++
+		}
+	}
+	if rowBoxes != viewport.End-viewport.Offset {
+		t.Fatalf("expected %d row hit boxes, got %d", viewport.End-viewport.Offset, rowBoxes)
+	}
+
+	plain := stripANSI(next.View().Content)
+	for _, want := range []string{
+		fmt.Sprintf("Showing 1-%d of 24", viewport.End),
+		"Matching 24/24",
+		"Page 1/",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected viewport status to contain %q, got:\n%s", want, next.View().Content)
+		}
+	}
+}
+
+func TestItemsBrowserPageKeysMoveByRenderedViewport(t *testing.T) {
+	next := updateModel(t, importedModel(t, fakeImportResultWithManyItems(24)), keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 120, Height: 24})
+	pageSize := next.parsedItemsViewport().VisibleRows
+
+	next = updateModel(t, next, keyPress("pgdown"))
+	if next.itemCursor != pageSize {
+		t.Fatalf("expected pgdown to move by page size %d, got cursor %d", pageSize, next.itemCursor)
+	}
+	if next.parsedItemsViewport().Page < 2 {
+		t.Fatalf("expected pgdown to advance page indicator, got %#v", next.parsedItemsViewport())
+	}
+
+	next = updateModel(t, next, keyPress("pgup"))
+	if next.itemCursor != 0 || next.itemOffset != 0 {
+		t.Fatalf("expected pgup to return to first page, cursor=%d offset=%d", next.itemCursor, next.itemOffset)
+	}
+}
+
+func TestItemsBrowserTabFocusActionsToggleAndReview(t *testing.T) {
+	next := updateModel(t, importedModel(t, fakeImportResult()), keyPress("enter"))
+
+	next = updateModel(t, next, keyPress("tab"))
+	if next.itemFocus != itemFocusActions || next.itemActionCursor != parsedActionToggle {
+		t.Fatalf("expected tab to focus actions at toggle, focus=%d cursor=%d", next.itemFocus, next.itemActionCursor)
+	}
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.selection.Len() != 1 || !next.selection.Contains("item-like") {
+		t.Fatalf("expected action enter to toggle highlighted item, selection=%d", next.selection.Len())
+	}
+
+	next = updateModel(t, next, keyPress("down"))
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenSelectionSummary {
+		t.Fatalf("expected review selection action to open summary, got %v", next.current)
+	}
+}
+
+func TestItemsBrowserGenerateActionReusesPlanFlow(t *testing.T) {
+	next := updateModel(t, importedModel(t, fakeImportResult()), keyPress("enter"))
+	next = updateModel(t, next, keyPress(" "))
+	next = updateModel(t, next, keyPress("tab"))
+	next = updateModel(t, next, keyPress("down"))
+	next = updateModel(t, next, keyPress("down"))
+	if next.itemActionCursor != parsedActionGeneratePlan {
+		t.Fatalf("expected generate action to be focusable after selection, got %d", next.itemActionCursor)
+	}
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenPlanPreview || !next.hasPlanPreview() {
+		t.Fatalf("expected generate action to open plan preview, screen=%v", next.current)
+	}
+}
+
+func TestItemsBrowserMouseClickActionUsesRightPaneHitBox(t *testing.T) {
+	next := updateModel(t, importedModel(t, fakeImportResult()), keyPress("enter"))
+	box := requireHitBox(t, hitBoxesForTest(t, next), hitParsedAction, parsedActionReviewSelection, "")
+
+	next = updateModel(t, next, mouseClick(box.X, box.Y))
+	if next.current != screenSelectionSummary {
+		t.Fatalf("expected right-pane review action click to open summary, got %v", next.current)
+	}
+}
+
+func TestMouseClickParsedItemHighlightsThenTogglesFocusedRow(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+	y := lineIndexContaining(t, next.View().Content, "comment", "demo_bakery")
+
+	next = updateModel(t, next, mouseClick(4, y))
+	if next.itemCursor != 1 || next.selection.Len() != 0 {
+		t.Fatalf("expected first click to highlight second row only, cursor=%d selection=%d", next.itemCursor, next.selection.Len())
+	}
+
+	y = lineIndexContaining(t, next.View().Content, "comment", "demo_bakery")
+	next = updateModel(t, next, mouseClick(4, y))
+	if !next.selection.Contains("item-comment") {
+		t.Fatalf("expected second click on highlighted row to toggle selection")
+	}
+}
+
+func TestMouseHoverDoesNotChangeSelectionOrCursor(t *testing.T) {
+	m := importedModel(t, fakeImportResult())
+	next := updateModel(t, m, keyPress("enter"))
+	y := lineIndexContaining(t, next.View().Content, "comment", "demo_bakery")
+
+	next = updateModel(t, next, mouseMotion(4, y))
+	if next.itemCursor != 0 {
+		t.Fatalf("expected hover not to move item cursor, got %d", next.itemCursor)
+	}
+	if next.selection.Len() != 0 {
+		t.Fatalf("expected hover not to change selection, got %d", next.selection.Len())
+	}
+	if next.hoverTarget.Kind != hitParsedItemRow || next.hoverTarget.Index != 1 {
+		t.Fatalf("expected hover target for second parsed row, got %#v", next.hoverTarget)
+	}
+}
+
+func TestMouseWheelMovesScrollableParsedItemList(t *testing.T) {
+	result := fakeImportResult()
+	result.Items = nil
+	for i := 0; i < 12; i++ {
+		occurred := time.Date(2026, 6, 1+i, 12, 0, 0, 0, time.UTC)
+		result.Items = append(result.Items, domain.ActivityItem{
+			ID:         fmt.Sprintf("item-%02d", i),
+			Platform:   domain.PlatformInstagram,
+			Type:       domain.ItemTypeLike,
+			Actor:      fmt.Sprintf("demo_%02d", i),
+			TargetURL:  fmt.Sprintf("https://www.instagram.com/p/demo_%02d/", i),
+			TargetID:   fmt.Sprintf("target-%02d", i),
+			OccurredAt: &occurred,
+		})
+	}
+	result.Summary.Total = len(result.Items)
+	result.Summary.Likes = len(result.Items)
+
+	next := updateModel(t, importedModel(t, result), keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 80, Height: 12})
+
+	for range 6 {
+		next = updateModel(t, next, mouseWheel(4, tea.MouseWheelDown))
+	}
+	if next.itemCursor != 6 {
+		t.Fatalf("expected wheel down to move cursor to 6, got %d", next.itemCursor)
+	}
+	if next.itemOffset <= 0 {
+		t.Fatalf("expected scroll offset to advance, got %d", next.itemOffset)
+	}
+
+	for range 20 {
+		next = updateModel(t, next, mouseWheel(4, tea.MouseWheelDown))
+	}
+	if next.itemCursor != len(result.Items)-1 {
+		t.Fatalf("expected wheel down to clamp at bottom, got %d", next.itemCursor)
+	}
+	if next.itemOffset < 0 || next.itemOffset >= len(result.Items) {
+		t.Fatalf("expected offset bounds to be preserved, got %d", next.itemOffset)
+	}
+
+	next = updateModel(t, next, mouseWheel(4, tea.MouseWheelUp))
+	if next.itemCursor != len(result.Items)-2 {
+		t.Fatalf("expected wheel up to move one row, got %d", next.itemCursor)
 	}
 }
 
@@ -871,7 +1475,7 @@ func TestSelectionPersistsWhenFiltersChangeAndClear(t *testing.T) {
 	if !next.selection.Contains("item-like") {
 		t.Fatalf("expected selection to persist after filter changed")
 	}
-	if !strings.Contains(next.View().Content, "Visible: 1 / 4 | Selected: 1 | Filters: active") {
+	if !strings.Contains(next.View().Content, "Showing 1-1 of 1 · Matching 1/4 · Selected 1 · Filters active") {
 		t.Fatalf("expected selected count to persist, got:\n%s", next.View().Content)
 	}
 
@@ -879,7 +1483,7 @@ func TestSelectionPersistsWhenFiltersChangeAndClear(t *testing.T) {
 	if !next.selection.Contains("item-like") {
 		t.Fatalf("expected selection to persist after filters clear")
 	}
-	if !strings.Contains(next.View().Content, "Visible: 4 / 4 | Selected: 1 | Filters: off") {
+	if !strings.Contains(next.View().Content, "Showing 1-4 of 4 · Matching 4/4 · Selected 1 · Filters off") {
 		t.Fatalf("expected selected count after clear filters, got:\n%s", next.View().Content)
 	}
 }
@@ -910,12 +1514,20 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Selection Summary",
+		"Selection Dashboard",
+		"Selection Totals",
 		"Total selected: 4",
 		"Visible items: 4",
-		"Selected likes: 1",
-		"Selected comments: 1",
-		"Selected following: 1",
-		"Selected followers: 1",
+		"All parsed items: 4",
+		"Selected Type Counts",
+		"Likes: 1",
+		"Comments: 1",
+		"Following: 1",
+		"Followers: 1",
+		"Current Filters",
+		"Filters: off",
+		"Next Suggested Action",
+		"Generate a dry-run plan.",
 		"Generate dry-run plan",
 		"View selected items",
 		"Select all visible items",
@@ -933,7 +1545,7 @@ func TestSelectionSummaryShowsCountsAndClearSelection(t *testing.T) {
 	if next.current != screenSelectedItems {
 		t.Fatalf("expected selected items screen, got %v", next.current)
 	}
-	if !strings.Contains(next.View().Content, "Selected Items") || !strings.Contains(next.View().Content, "[x] like | demo_artist") {
+	if !strings.Contains(next.View().Content, "Selected Items") || !strings.Contains(next.View().Content, "[x] like") || !strings.Contains(next.View().Content, "demo_artist") {
 		t.Fatalf("expected selected items list, got:\n%s", next.View().Content)
 	}
 
@@ -1001,23 +1613,36 @@ func TestPlanPreviewShowsCountsAndUnsupportedFollowers(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Dry-Run Plan Preview",
-		"Plan mode: dry-run",
-		"Source platform: instagram",
+		"Plan",
+		"Mode: dry-run",
+		"Platform: instagram",
 		"Selected items: 4",
+		"Action Counts",
 		"Supported actions: 3",
-		"Unsupported/skipped selected items: 1",
-		"Action counts: unlike 1, delete_comment 1, unfollow 1",
-		"unlike | item-like | https://www.instagram.com/p/demo_like/",
-		"delete_comment | item-comment | demo_bakery",
-		"unfollow | item-following | https://www.instagram.com/demo_following/",
-		"skipped | item-follower",
-		"unsupported follower",
+		"Unlike: 1",
+		"Delete comment: 1",
+		"Unfollow: 1",
+		"Skipped",
+		"Unsupported selected items: 1",
+		"unlike",
+		"pending",
+		"/p/demo_like",
+		"delete_comment",
+		"demo_bakery",
+		"unfollow",
+		"/demo_following",
+		"skipped",
+		"item-follower",
 		"Export JSON",
 		"Back",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected plan preview to contain %q, got:\n%s", want, view)
 		}
+	}
+	previewRow := lineContaining(t, view, "unlike", "/p/demo_like")
+	if strings.Contains(previewRow, "https://") {
+		t.Fatalf("expected plan preview row not to expose full URL, got %q", previewRow)
 	}
 }
 
@@ -1267,15 +1892,16 @@ func TestApplyingTypeFilterUpdatesItemsBrowser(t *testing.T) {
 		t.Fatalf("expected items browser, got %v", next.current)
 	}
 	for _, want := range []string{
-		"Visible: 1 / 4 | Selected: 0 | Filters: active",
+		"Showing 1-1 of 1 · Matching 1/4 · Selected 0 · Filters active",
 		"Filters active",
-		"like | demo_artist",
+		"[ ] like",
+		"demo_artist",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected filtered items view to contain %q, got:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "comment | demo_bakery") {
+	if strings.Contains(view, "[ ] comment") || strings.Contains(view, "demo_bakery") {
 		t.Fatalf("expected comment to be filtered out, got:\n%s", view)
 	}
 }
@@ -1340,6 +1966,93 @@ func TestImportResultViewShowsFailure(t *testing.T) {
 	view := next.View().Content
 	if !strings.Contains(view, "Import Failed") || !strings.Contains(view, "not found") {
 		t.Fatalf("expected failure view, got:\n%s", view)
+	}
+}
+
+func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
+	imported := importedModel(t, fakeImportResultWithRelationships())
+	items := updateModel(t, imported, keyPress("enter"))
+	filters := updateModel(t, items, keyPress("f"))
+	selected := updateModel(t, updateModel(t, items, keyPress("a")), keyPress("s"))
+	selected.selectionCursor = selectionViewSelected
+	selectedItems := updateModel(t, selected, keyPress("enter"))
+	preview := planPreviewModel(t)
+	exportPath := updateModel(t, preview, keyPress("enter"))
+	plan := fakeCleanupPlan()
+	loadedSummary := NewModel()
+	loadedSummary.current = screenLoadedPlanSummary
+	loadedSummary.loadedPlan = plan
+	loadedSummary.loadedPlanSummary = domain.SummarizeCleanupPlan(plan)
+	loadedActions := loadedSummary
+	loadedActions.current = screenLoadedPlanActions
+	warnings := imported
+	warnings.current = screenWarnings
+	reviewEmpty := NewModel()
+	reviewEmpty.current = screenReviewEmpty
+	localData := NewModel()
+	localData.current = screenLocalDataOverview
+	recentImports := localData
+	recentImports.current = screenRecentImports
+	recentPlans := localData
+	recentPlans.current = screenRecentPlans
+	auditLog := localData
+	auditLog.current = screenAuditLog
+	wipeConfirm := localData
+	wipeConfirm.current = screenWipeLocalDataConfirm
+	wipeConfirm.wipeLocalDataCursor = wipeLocalDataCancel
+	importing := NewModel()
+	importing.current = screenImporting
+	importing.importSource = "demo instagram export"
+
+	cases := []struct {
+		name  string
+		model Model
+	}{
+		{name: "home", model: NewModel()},
+		{name: "help", model: updateModel(t, NewModel(), keyPress("?"))},
+		{name: "quit", model: updateModel(t, NewModel(), keyPress("ctrl+q"))},
+		{name: "import path", model: updateModel(t, NewModel(), keyPress("enter"))},
+		{name: "importing", model: importing},
+		{name: "import result", model: imported},
+		{name: "items", model: items},
+		{name: "review empty", model: reviewEmpty},
+		{name: "filters", model: filters},
+		{name: "selection summary", model: selected},
+		{name: "selected items", model: selectedItems},
+		{name: "plan preview", model: preview},
+		{name: "plan export", model: exportPath},
+		{name: "plan load", model: func() Model {
+			m := NewModel()
+			m.homeCursor = homeLoadPlan
+			return updateModel(t, m, keyPress("enter"))
+		}()},
+		{name: "loaded summary", model: loadedSummary},
+		{name: "loaded actions", model: loadedActions},
+		{name: "warnings", model: warnings},
+		{name: "local data", model: localData},
+		{name: "recent imports", model: recentImports},
+		{name: "recent plans", model: recentPlans},
+		{name: "audit log", model: auditLog},
+		{name: "wipe confirm", model: wipeConfirm},
+	}
+	sizes := []tea.WindowSizeMsg{
+		{Width: 24, Height: 8},
+		{Width: 132, Height: 36},
+	}
+
+	for _, size := range sizes {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				next := updateModel(t, tc.model, size)
+				view := next.View().Content
+				if strings.TrimSpace(view) == "" {
+					t.Fatalf("expected non-empty view at %dx%d", size.Width, size.Height)
+				}
+				if !strings.Contains(view, "Vanish") {
+					t.Fatalf("expected shell header at %dx%d, got:\n%s", size.Width, size.Height, view)
+				}
+			})
+		}
 	}
 }
 
@@ -1411,6 +2124,30 @@ func fakeImportResultWithRelationships() instagram.ImportResult {
 	result.Summary.Total = len(result.Items)
 	result.Summary.Following = 1
 	result.Summary.Followers = 1
+	return result
+}
+
+func fakeImportResultWithManyItems(count int) instagram.ImportResult {
+	result := fakeImportResult()
+	result.Items = nil
+	for i := 0; i < count; i++ {
+		occurred := time.Date(2024, 3, 1+i, 16, 0, 0, 0, time.UTC)
+		result.Items = append(result.Items, domain.ActivityItem{
+			ID:         fmt.Sprintf("item-%02d", i),
+			Platform:   domain.PlatformInstagram,
+			Type:       domain.ItemTypeLike,
+			Actor:      fmt.Sprintf("demo_%02d", i),
+			TargetURL:  fmt.Sprintf("https://www.instagram.com/p/demo_%02d/", i),
+			TargetID:   fmt.Sprintf("demo_%02d", i),
+			OccurredAt: &occurred,
+			Source:     domain.SourceMetadata{FileName: "liked_posts.json"},
+		})
+	}
+	result.Summary.Total = len(result.Items)
+	result.Summary.Likes = len(result.Items)
+	result.Summary.Comments = 0
+	result.Summary.Following = 0
+	result.Summary.Followers = 0
 	return result
 }
 
@@ -1562,12 +2299,20 @@ func keyPress(text string) tea.KeyPressMsg {
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyUp})
 	case "down":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyDown})
+	case "left":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft})
 	case "enter":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
 	case "esc":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc})
 	case "backspace":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace})
+	case "tab":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyTab})
+	case "pgup":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp})
+	case "pgdown":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown})
 	case " ":
 		return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace})
 	case "ctrl+c":
@@ -1583,6 +2328,99 @@ func keyPress(text string) tea.KeyPressMsg {
 	}
 
 	return tea.KeyPressMsg(key)
+}
+
+func mouseClick(x, y int) tea.MouseClickMsg {
+	return tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft}
+}
+
+func mouseWheel(y int, button tea.MouseButton) tea.MouseWheelMsg {
+	return tea.MouseWheelMsg{X: 4, Y: y, Button: button}
+}
+
+func mouseMotion(x, y int) tea.MouseMotionMsg {
+	return tea.MouseMotionMsg{X: x, Y: y}
+}
+
+func clickTab(t *testing.T, model Model, label string) Model {
+	t.Helper()
+
+	box := requireHitBox(t, hitBoxesForTest(t, model), hitTab, -1, label)
+	return updateModel(t, model, mouseClick(box.X, box.Y))
+}
+
+func hitBoxesForTest(t *testing.T, model Model) []hitBox {
+	t.Helper()
+
+	_, boxes := model.renderView()
+	if len(boxes) == 0 {
+		t.Fatalf("expected rendered view to expose hit boxes")
+	}
+	return boxes
+}
+
+func requireHitBox(t *testing.T, boxes []hitBox, kind hitKind, index int, label string) hitBox {
+	t.Helper()
+
+	for _, box := range boxes {
+		if box.Target.Kind != kind {
+			continue
+		}
+		if label != "" {
+			if box.Target.Label == label {
+				return box
+			}
+			continue
+		}
+		if box.Target.Index == index {
+			return box
+		}
+	}
+	t.Fatalf("expected hit box kind=%d index=%d label=%q in %#v", kind, index, label, boxes)
+	return hitBox{}
+}
+
+func lineIndexContaining(t *testing.T, content string, parts ...string) int {
+	t.Helper()
+
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if lineHasParts(line, parts...) {
+			return i
+		}
+	}
+	t.Fatalf("expected a rendered line containing %v, got:\n%s", parts, content)
+	return -1
+}
+
+func lineContaining(t *testing.T, content string, parts ...string) string {
+	t.Helper()
+
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if lineHasParts(line, parts...) {
+			return line
+		}
+	}
+	t.Fatalf("expected a rendered line containing %v, got:\n%s", parts, content)
+	return ""
+}
+
+func lineHasParts(line string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(line, part) {
+			return false
+		}
+	}
+	return true
+}
+
+func colorKey(c color.Color) string {
+	if c == nil {
+		return ""
+	}
+	r, g, b, a := c.RGBA()
+	return fmt.Sprintf("%d/%d/%d/%d", r, g, b, a)
 }
 
 func requireModel(t *testing.T, model tea.Model) Model {

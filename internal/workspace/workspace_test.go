@@ -3,6 +3,7 @@ package workspace
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -273,6 +274,53 @@ func TestRecentPlanRoundTripPreservesUsageFields(t *testing.T) {
 	}
 	if !got[0].PlanCreatedAt.Equal(want.PlanCreatedAt) || !got[0].LastUsedAt.Equal(want.LastUsedAt) || got[0].LastOperation != want.LastOperation {
 		t.Fatalf("recent plan usage fields = %#v, want %#v", got[0], want)
+	}
+
+	data, err := os.ReadFile(filepath.Join(w.Dir(), recentPlansFileName))
+	if err != nil {
+		t.Fatalf("read recent plans file: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, `"created_at"`) {
+		t.Fatalf("new recent plan schema should not write legacy created_at, got:\n%s", text)
+	}
+	if !strings.Contains(text, `"plan_created_at"`) || !strings.Contains(text, `"last_used_at"`) {
+		t.Fatalf("new recent plan schema missing usage fields, got:\n%s", text)
+	}
+}
+
+func TestRecentPlansLegacyCreatedAtCompatibility(t *testing.T) {
+	w, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	createdAt := time.Date(2026, 6, 27, 10, 30, 0, 0, time.UTC)
+	content := `[{
+		"id": "legacy-plan",
+		"path": "plans/legacy.json",
+		"mode": "dry-run",
+		"source_name": "instagram-export",
+		"created_at": "` + createdAt.Format(time.RFC3339) + `",
+		"last_operation": "loaded",
+		"action_counts": {"unlike": 2},
+		"status_counts": {"pending": 2}
+	}]`
+	if err := os.WriteFile(filepath.Join(w.Dir(), recentPlansFileName), []byte(content), 0o600); err != nil {
+		t.Fatalf("write legacy recent plans: %v", err)
+	}
+
+	got, err := w.RecentPlans()
+	if err != nil {
+		t.Fatalf("RecentPlans returned error for legacy created_at: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("recent plan count = %d, want 1", len(got))
+	}
+	if !got[0].PlanCreatedAt.Equal(createdAt) || !got[0].LastUsedAt.Equal(createdAt) {
+		t.Fatalf("legacy created_at did not migrate into usage fields: %#v", got[0])
+	}
+	if got[0].ActionCounts["unlike"] != 2 || got[0].StatusCounts["pending"] != 2 {
+		t.Fatalf("legacy counts not preserved: %#v", got[0])
 	}
 }
 
