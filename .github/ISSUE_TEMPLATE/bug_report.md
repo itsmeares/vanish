@@ -1,37 +1,47 @@
 ---
 name: Bug report
-about: Report something that is broken in Vanish
-title: "[Bug]: "
+about: Report something broken in Vanish
+title: "bug: "
 labels: bug
 assignees: ""
 ---
 
-## What happened?
+## Summary
 
-Describe the bug.
-
-## Expected behavior
-
-Describe what you expected.
-
-## Steps to reproduce
-
-1.
-2.
-3.
+<!-- What is broken? -->
 
 ## Environment
 
 - OS:
 - Terminal:
-- Go version:
-- Vanish version or commit:
+- Vanish version / commit:
+- Run command:
 
-## Safety note
+## Steps to reproduce
 
-Do not attach raw Instagram exports, passwords, cookies, tokens, sessions, or
-private messages. Use fake data or a redacted shape if data is needed.
+1. 
+2. 
+3. 
 
-## Logs or screenshots
+## Expected behavior
 
-Paste relevant non-sensitive output here.
+<!-- What did you expect to happen? -->
+
+## Actual behavior
+
+<!-- What happened instead? -->
+
+## Screenshots / logs
+
+<!-- Paste logs or attach screenshots if useful. Do not include private exports, tokens, cookies, or credentials. -->
+
+## Scope / safety check
+
+- [ ] This does not include private Instagram/Reddit export contents
+- [ ] This does not include credentials, cookies, tokens, sessions, or OAuth data
+- [ ] This does not include raw private messages
+- [ ] This does not request hidden network, scraping, browser automation, or account deletion behavior
+
+## Notes
+
+<!-- Anything else useful? -->
