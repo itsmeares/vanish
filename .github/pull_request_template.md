@@ -10,7 +10,7 @@
 - [ ] Fix
 - [ ] Docs
 - [ ] Refactor
-- [ ] Chore / repo hygiene
+- [ ] Chore
 
 ## Validation
 
