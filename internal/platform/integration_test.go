@@ -58,20 +58,20 @@ func TestInstagramPlatformCapabilitiesAndActions(t *testing.T) {
 	}
 }
 
-func TestRedditPlatformPlannedAndDisabledActions(t *testing.T) {
+func TestRedditPlatformPrototypeAndDisabledActions(t *testing.T) {
 	current := reddit.Platform()
-	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPlanned {
+	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPrototype {
 		t.Fatalf("unexpected Reddit platform identity: %#v", current)
 	}
 
 	wantCapabilities := map[string]platform.CapabilitySupport{
-		"Scan own comments/posts": platform.SupportPlanned,
+		"Scan own comments/posts": platform.SupportPrototype,
 		"Scan saved items":        platform.SupportPlanned,
 		"Scan votes":              platform.SupportPlanned,
-		"Generate dry-run plans":  platform.SupportPlanned,
+		"Generate dry-run plans":  platform.SupportPrototype,
 		"Apply cleanup":           platform.SupportLater,
-		"OAuth":                   platform.SupportPlanned,
-		"Network/API access":      platform.SupportNo,
+		"OAuth":                   platform.SupportPrototype,
+		"Network/API access":      platform.SupportPrototype,
 	}
 	assertCapabilities(t, current.Capabilities, wantCapabilities)
 

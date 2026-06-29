@@ -38,7 +38,8 @@ platforms or apply cleanup actions.
 - No cloud backend.
 - No telemetry by default.
 - No credentials collected.
-- No passwords, cookies, tokens, sessions, or raw private messages in plan files.
+- No passwords, cookies, sessions, authorization headers, or raw private
+  messages in plan files.
 - Local Instagram export ZIPs are read from disk only.
 - Cleanup plans are dry-run JSON files you can inspect before doing anything else.
 
@@ -63,8 +64,10 @@ The app directory stores:
   loads, and wipes.
 
 The app directory does not store raw parsed items, raw exports, raw comments,
-credentials, cookies, tokens, sessions, or authorization data. Imported export
-ZIPs and exported plans remain normal local files at the paths you choose.
+credentials, cookies, sessions, or authorization data. Reddit refresh tokens,
+when used, go through the configured secret store rather than normal config.
+Imported export ZIPs and exported plans remain normal local files at the paths
+you choose.
 
 Default app directory locations:
 
@@ -110,9 +113,11 @@ model.
 - Automatic deletion or apply/execution.
 - Instagram login.
 - Browser automation.
-- Reddit official API planner. Reddit is visible as planned for v0.5 only in
-  the platform selector.
-- Other platform integrations beyond Instagram Export and planned Reddit.
+- Reddit official API planner. Reddit has a prototype foundation for v0.5:
+  installed-app OAuth, secure refresh-token storage, official API client
+  support, own comments/posts scan, and local dry-run planning. The TUI
+  connect/scan workflow is not wired yet.
+- Other platform integrations beyond Instagram Export and Reddit.
 - Cloud sync or hosted accounts.
 
 See [docs/platforms.md](docs/platforms.md) for the full platform matrix.

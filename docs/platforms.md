@@ -1,7 +1,7 @@
 # Platform Support
 
-Vanish v0.4 uses a small platform registry so the TUI can show current and
-planned support honestly.
+Vanish uses a small platform registry so the TUI can show current and planned
+support honestly.
 
 ## Status Labels
 
@@ -23,7 +23,7 @@ planned support honestly.
 | Platform | Status | Comments/posts | Saved items | Votes | Dry-run plans | Apply cleanup | OAuth | Network/API access |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Instagram Export | prototype | n/a | n/a | n/a | prototype | no | no | no |
-| Reddit | planned | planned | planned | planned | planned | later | planned | not implemented in v0.4 |
+| Reddit | prototype | prototype | planned | planned | prototype | later | prototype | prototype |
 
 ## Instagram Export
 
@@ -36,28 +36,37 @@ delete platform content, or apply account changes.
 
 ## Reddit
 
-Official API planner planned for v0.5.
+Official API planner prototype targets v0.5.
 
-Reddit is planned only in v0.4. The TUI shows integration notes and disabled
-placeholder actions, but there is no Reddit OAuth, token storage, API client,
-network call, browser automation, scraping path, importer, or planner.
+Reddit now has foundation code for installed-app OAuth, secure refresh-token
+storage, official API requests, own comments/posts scanning, and local dry-run
+planning. The TUI connect and scan actions remain disabled until the interactive
+workflow is wired.
 
-Planned v0.5 directions:
+Implemented prototype foundations:
 
-- Scan own comments/posts.
+- Use installed-app OAuth with `identity history` scopes.
+- Store refresh tokens through the Vanish secret store, not normal config.
+- Scan own comments and submitted posts through Reddit's official API.
+- Normalize supported activity into Vanish activity items.
+- Generate local dry-run plans with Reddit-specific planned actions.
+
+Deferred directions:
+
 - Scan saved items.
-- Scan votes.
-- Generate dry-run plans.
-- Use OAuth for official API access.
+- Scan vote history.
+- Wire TUI connect/scan flows.
 
-Apply cleanup is later. It is not part of the v0.4 placeholder and should not
-be implied to work today.
+Apply cleanup is later. It is not part of the v0.5 planner prototype and should
+not be implied to work today.
 
 ## Safety Boundaries
 
 - Vanish reads local files you choose.
 - Vanish stores only local app metadata and dry-run plan files.
-- Vanish does not collect credentials, cookies, tokens, sessions, OAuth grants,
+- Vanish stores OAuth refresh tokens only through the configured secret store.
+  Normal config stores only non-secret metadata.
+- Vanish does not collect passwords, cookies, pasted sessions, private API data,
   or authorization headers.
 - Vanish does not delete platform content or apply account changes.
 - Local data wipe only clears Vanish-managed local app metadata in the active

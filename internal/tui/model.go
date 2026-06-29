@@ -1448,17 +1448,17 @@ func (m Model) instagramExportGuideView() string {
 
 func (m Model) redditNotesView() string {
 	lines := []string{
-		m.styles.body.Render("Official API planner planned for v0.5."),
-		m.styles.body.Render("Reddit support is planned only in v0.4."),
-		m.styles.body.Render("There is no Reddit client, OAuth flow, token storage, API call, browser automation, or scraping path."),
-		m.styles.body.Render("The disabled account and scan rows are placeholders so planned boundaries are visible."),
+		m.styles.body.Render("Official API planner prototype targets v0.5."),
+		m.styles.body.Render("OAuth/API, own comments/posts scan, and dry-run planning foundations exist."),
+		m.styles.body.Render("The disabled account and scan rows mean the TUI workflow is not wired yet."),
+		m.styles.body.Render("No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists."),
 		"",
 		m.styles.separator.Render("Implementation notes"),
 	}
 	for _, note := range reddit.Platform().Notes {
 		lines = append(lines, m.styles.body.Render(note))
 	}
-	return m.singlePaneFooter("Reddit Notes", "Planned integration", lines, m.footer(footerEmpty))
+	return m.singlePaneFooter("Reddit Notes", "Prototype foundation", lines, m.footer(footerEmpty))
 }
 
 func (m Model) platforms() []platform.Platform {

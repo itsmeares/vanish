@@ -6,28 +6,28 @@ func Platform() platform.Platform {
 	return platform.Platform{
 		ID:      platform.PlatformReddit,
 		Name:    "Reddit",
-		Status:  platform.StatusPlanned,
-		Summary: "Official API planner planned for v0.5. v0.4 shows direction only; nothing connects to Reddit yet.",
+		Status:  platform.StatusPrototype,
+		Summary: "Official API planner prototype for v0.5. OAuth/API, own comments/posts scan, and dry-run planning foundations exist; TUI connect/scan workflow is not wired yet.",
 		Capabilities: []platform.Capability{
 			{
 				Label:       "Scan own comments/posts",
-				Support:     platform.SupportPlanned,
-				Description: "Planned for v0.5 through Reddit's official API; not implemented in v0.4.",
+				Support:     platform.SupportPrototype,
+				Description: "Prototype scanner uses Reddit's official API for the connected user's own comments and submitted posts.",
 			},
 			{
 				Label:       "Scan saved items",
 				Support:     platform.SupportPlanned,
-				Description: "Planned for v0.5; no saved-item scan exists in v0.4.",
+				Description: "Deferred until saved-item support and cleanup mapping are kept narrow and clear.",
 			},
 			{
 				Label:       "Scan votes",
 				Support:     platform.SupportPlanned,
-				Description: "Planned for v0.5; no vote scan exists in v0.4.",
+				Description: "Deferred until vote-history support and cleanup mapping are kept narrow and clear.",
 			},
 			{
 				Label:       "Generate dry-run plans",
-				Support:     platform.SupportPlanned,
-				Description: "Planned for reviewed Reddit items; no Reddit planner exists in v0.4.",
+				Support:     platform.SupportPrototype,
+				Description: "Prototype planner generates local dry-run actions for selected Reddit comments and posts only.",
 			},
 			{
 				Label:       "Apply cleanup",
@@ -36,13 +36,13 @@ func Platform() platform.Platform {
 			},
 			{
 				Label:       "OAuth",
-				Support:     platform.SupportPlanned,
-				Description: "Planned for a future official API flow; v0.4 stores no OAuth app, token, session, cookie, or credential.",
+				Support:     platform.SupportPrototype,
+				Description: "Installed-app OAuth foundation exists with secure refresh-token storage; no embedded browser, password, cookie, or session paste.",
 			},
 			{
 				Label:       "Network/API access",
-				Support:     platform.SupportNo,
-				Description: "Not implemented in v0.4; no Reddit API client, network calls, scraping, or browser automation exists.",
+				Support:     platform.SupportPrototype,
+				Description: "Official Reddit OAuth/API client foundation exists behind narrow safety checks; no scraping or browser automation.",
 			},
 		},
 		Actions: []platform.PlatformAction{
@@ -51,20 +51,22 @@ func Platform() platform.Platform {
 				ID:       platform.ActionConnectAccount,
 				Label:    "Connect Reddit account",
 				Disabled: true,
-				Reason:   "Planned for v0.5. v0.4 has no Reddit OAuth, tokens, sessions, or API calls.",
+				Reason:   "OAuth foundation exists, but the TUI connect workflow is not wired in this chunk.",
 			},
 			{
 				ID:       platform.ActionScanActivity,
 				Label:    "Scan Reddit activity",
 				Disabled: true,
-				Reason:   "Planned for v0.5. v0.4 has no Reddit API client, scan, or network request path.",
+				Reason:   "Scanner foundation exists, but the TUI scan workflow is not wired in this chunk.",
 			},
 			{ID: platform.ActionBack, Label: "Back"},
 		},
 		Notes: []string{
-			"Official API planner planned for v0.5.",
-			"No Reddit OAuth, API, token, session, browser automation, or scraping code exists in v0.4.",
-			"Disabled actions mark future direction only; Reddit does not work today.",
+			"Official API planner prototype targets v0.5.",
+			"Current scanner supports own comments and submitted posts through Reddit's official API.",
+			"Saved items and vote history stay deferred until support and cleanup mapping are clean.",
+			"No Reddit content mutations, scraping, browser automation, password collection, cookie paste, or session paste exists.",
+			"Disabled TUI actions mean the interactive connect/scan flow is still a later chunk.",
 		},
 	}
 }

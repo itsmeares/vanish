@@ -131,15 +131,15 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 	redditView := m.View().Content
 	for _, want := range []string{
 		"Reddit",
-		"Official API planner planned for v0.5",
-		"Status: planned",
-		"Scan own comments/posts: planned",
+		"Official API planner prototype for v0.5",
+		"Status: prototype",
+		"Scan own comments/posts: prototype",
 		"Scan saved items: planned",
 		"Scan votes: planned",
-		"Generate dry-run plans: planned",
-		"OAuth: planned",
-		"Network/API access: no",
-		"Not implemented in v0.4",
+		"Generate dry-run plans: prototype",
+		"OAuth: prototype",
+		"Network/API access: prototype",
+		"TUI connect/scan workflow is",
 	} {
 		if !strings.Contains(redditView, want) {
 			t.Fatalf("expected Reddit detail to contain %q, got:\n%s", want, redditView)
@@ -291,14 +291,14 @@ func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestRedditPlannedActionsStayNoopAndShowReason(t *testing.T) {
+func TestRedditDisabledActionsStayNoopAndShowReason(t *testing.T) {
 	for _, actionID := range []string{platform.ActionConnectAccount, platform.ActionScanActivity} {
 		t.Run(actionID, func(t *testing.T) {
 			m := NewModel()
 			m.openPlatformDetail(1)
 			m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), actionID)
 			view := m.View().Content
-			if !strings.Contains(view, "Planned for v0.5") {
+			if !strings.Contains(view, "workflow is not wired") {
 				t.Fatalf("expected disabled action reason, got:\n%s", view)
 			}
 
@@ -323,10 +323,10 @@ func TestRedditNotesActionAndBack(t *testing.T) {
 		t.Fatalf("expected Reddit notes screen, got %v", next.current)
 	}
 	for _, want := range []string{
-		"Official API planner planned for v0.5",
-		"planned only in v0.4",
-		"There is no Reddit client, OAuth flow, token storage, API call, browser automation, or scraping path.",
-		"No Reddit OAuth, API, token, session, browser automation, or scraping code exists in v0.4.",
+		"Official API planner prototype targets v0.5",
+		"own comments/posts scan",
+		"TUI workflow is not wired yet",
+		"No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists.",
 	} {
 		if !strings.Contains(next.View().Content, want) {
 			t.Fatalf("expected Reddit notes to contain %q, got:\n%s", want, next.View().Content)

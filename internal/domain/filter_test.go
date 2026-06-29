@@ -23,6 +23,22 @@ func TestFilterActivityItemsByOneType(t *testing.T) {
 	requireIDs(t, filtered, "like-1")
 }
 
+func TestFilterActivityItemsByPostType(t *testing.T) {
+	items := append(filterTestItems(), ActivityItem{
+		ID:        "post-1",
+		Platform:  PlatformReddit,
+		Type:      ItemTypePost,
+		TargetURL: "https://www.reddit.com/r/test/comments/post",
+		TargetID:  "t3_post",
+	})
+
+	filtered := FilterActivityItems(items, ActivityItemFilter{
+		IncludeTypes: map[ActivityFilterType]bool{ActivityFilterPost: true},
+	})
+
+	requireIDs(t, filtered, "post-1")
+}
+
 func TestFilterActivityItemsByMultipleTypes(t *testing.T) {
 	filtered := FilterActivityItems(filterTestItems(), ActivityItemFilter{
 		IncludeTypes: map[ActivityFilterType]bool{

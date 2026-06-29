@@ -37,6 +37,9 @@ const (
 	ActionDeletePost    ActionType = "delete_post"
 	ActionUnsave        ActionType = "unsave"
 	ActionUndoRepost    ActionType = "undo_repost"
+
+	ActionRedditDeleteComment ActionType = "reddit_delete_comment"
+	ActionRedditDeletePost    ActionType = "reddit_delete_post"
 )
 
 // ActionStatus tracks progress for future resume/apply/audit flows.
