@@ -110,8 +110,8 @@ model.
 - Automatic deletion or apply/execution.
 - Instagram login.
 - Browser automation.
-- Reddit import, account connection, or scanning. Reddit is visible as planned
-  only in the platform selector.
+- Reddit official API planner. Reddit is visible as planned for v0.5 only in
+  the platform selector.
 - Other platform integrations beyond Instagram Export and planned Reddit.
 - Cloud sync or hosted accounts.
 

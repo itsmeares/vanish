@@ -129,7 +129,18 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 
 	m.homeCursor = 1
 	redditView := m.View().Content
-	for _, want := range []string{"Reddit", "reserved v0.4 platform slot", "Status: planned", "Reddit archive scan: planned"} {
+	for _, want := range []string{
+		"Reddit",
+		"Official API planner planned for v0.5",
+		"Status: planned",
+		"Scan own comments/posts: planned",
+		"Scan saved items: planned",
+		"Scan votes: planned",
+		"Generate dry-run plans: planned",
+		"OAuth: planned",
+		"Network/API access: no",
+		"Not implemented in v0.4",
+	} {
 		if !strings.Contains(redditView, want) {
 			t.Fatalf("expected Reddit detail to contain %q, got:\n%s", want, redditView)
 		}
@@ -255,8 +266,23 @@ func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	if next.current != screenInstagramExportGuide {
 		t.Fatalf("expected guide screen, got %v", next.current)
 	}
-	if !strings.Contains(next.View().Content, "Menu names change") {
-		t.Fatalf("expected Instagram menu-name caveat, got:\n%s", next.View().Content)
+	for _, want := range []string{
+		"How to get your Instagram export",
+		"1. Open Instagram Accounts Center.",
+		"2. Go to Your information and permissions.",
+		"3. Choose Download your information.",
+		"4. Select your Instagram account.",
+		"5. Request download in JSON format.",
+		"6. Download the ZIP when Instagram prepares it.",
+		"7. Import that ZIP in Vanish.",
+		"Instagram may rename these menus.",
+		"Vanish reads the local ZIP only.",
+		"Vanish does not contact Instagram.",
+		"Vanish does not apply account changes.",
+	} {
+		if !strings.Contains(next.View().Content, want) {
+			t.Fatalf("expected Instagram guide to contain %q, got:\n%s", want, next.View().Content)
+		}
 	}
 
 	next = updateModel(t, next, keyPress("esc"))
@@ -272,7 +298,7 @@ func TestRedditPlannedActionsStayNoopAndShowReason(t *testing.T) {
 			m.openPlatformDetail(1)
 			m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), actionID)
 			view := m.View().Content
-			if !strings.Contains(view, "Planned only") {
+			if !strings.Contains(view, "Planned for v0.5") {
 				t.Fatalf("expected disabled action reason, got:\n%s", view)
 			}
 
@@ -296,7 +322,12 @@ func TestRedditNotesActionAndBack(t *testing.T) {
 	if next.current != screenRedditNotes {
 		t.Fatalf("expected Reddit notes screen, got %v", next.current)
 	}
-	for _, want := range []string{"planned only", "OAuth flow", "No Reddit OAuth"} {
+	for _, want := range []string{
+		"Official API planner planned for v0.5",
+		"planned only in v0.4",
+		"There is no Reddit client, OAuth flow, token storage, API call, browser automation, or scraping path.",
+		"No Reddit OAuth, API, token, session, browser automation, or scraping code exists in v0.4.",
+	} {
 		if !strings.Contains(next.View().Content, want) {
 			t.Fatalf("expected Reddit notes to contain %q, got:\n%s", want, next.View().Content)
 		}

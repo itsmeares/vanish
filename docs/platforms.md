@@ -20,10 +20,10 @@ planned support honestly.
 
 ## Matrix
 
-| Platform | Status | Local scan | Review | Dry-run plan | Apply / execution | Login / account auth | Network / API access |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Instagram Export | prototype | prototype local ZIP scan | yes | prototype | no | no | no |
-| Reddit | planned | planned | planned | later | no | no | no |
+| Platform | Status | Comments/posts | Saved items | Votes | Dry-run plans | Apply cleanup | OAuth | Network/API access |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Instagram Export | prototype | n/a | n/a | n/a | prototype | no | no | no |
+| Reddit | planned | planned | planned | planned | planned | later | planned | not implemented in v0.4 |
 
 ## Instagram Export
 
@@ -36,9 +36,22 @@ delete platform content, or apply account changes.
 
 ## Reddit
 
-Reddit is planned only. The v0.4 TUI shows integration notes and disabled
-placeholder actions, but there is no Reddit client, OAuth flow, token storage,
-API call, browser automation, scraping path, importer, or planner.
+Official API planner planned for v0.5.
+
+Reddit is planned only in v0.4. The TUI shows integration notes and disabled
+placeholder actions, but there is no Reddit OAuth, token storage, API client,
+network call, browser automation, scraping path, importer, or planner.
+
+Planned v0.5 directions:
+
+- Scan own comments/posts.
+- Scan saved items.
+- Scan votes.
+- Generate dry-run plans.
+- Use OAuth for official API access.
+
+Apply cleanup is later. It is not part of the v0.4 placeholder and should not
+be implied to work today.
 
 ## Safety Boundaries
 

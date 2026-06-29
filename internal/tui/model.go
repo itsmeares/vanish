@@ -1428,18 +1428,27 @@ func (m Model) platformDetailLines(current platform.Platform) []string {
 
 func (m Model) instagramExportGuideView() string {
 	lines := []string{
-		m.styles.body.Render("Download an Instagram export ZIP from Instagram's account data export area."),
-		m.styles.body.Render("Menu names change; if the exact label differs, choose the option that creates a downloadable data export."),
-		m.styles.body.Render("Choose JSON if Instagram offers a format choice, then download the ZIP to this machine."),
-		m.styles.body.Render("Back in Vanish, use Choose export ZIP and select that local ZIP file."),
+		m.styles.separator.Render("How to get your Instagram export"),
+		m.styles.body.Render("1. Open Instagram Accounts Center."),
+		m.styles.body.Render("2. Go to Your information and permissions."),
+		m.styles.body.Render("3. Choose Download your information."),
+		m.styles.body.Render("4. Select your Instagram account."),
+		m.styles.body.Render("5. Request download in JSON format."),
+		m.styles.body.Render("6. Download the ZIP when Instagram prepares it."),
+		m.styles.body.Render("7. Import that ZIP in Vanish."),
 		"",
-		m.notice("warning", "Vanish reads the local ZIP only. It does not contact Instagram or apply account changes."),
+		m.styles.body.Render("Instagram may rename these menus. Look for Download your information or a similar data export option."),
+		"",
+		m.styles.body.Render("Vanish reads the local ZIP only."),
+		m.styles.body.Render("Vanish does not contact Instagram."),
+		m.styles.body.Render("Vanish does not apply account changes."),
 	}
 	return m.singlePaneFooter("Instagram Export Guide", "Static local guide", lines, m.footer(footerEmpty))
 }
 
 func (m Model) redditNotesView() string {
 	lines := []string{
+		m.styles.body.Render("Official API planner planned for v0.5."),
 		m.styles.body.Render("Reddit support is planned only in v0.4."),
 		m.styles.body.Render("There is no Reddit client, OAuth flow, token storage, API call, browser automation, or scraping path."),
 		m.styles.body.Render("The disabled account and scan rows are placeholders so planned boundaries are visible."),

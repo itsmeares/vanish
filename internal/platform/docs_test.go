@@ -12,8 +12,12 @@ func TestPlatformDocsStateCurrentSupportAndBoundaries(t *testing.T) {
 	for _, want := range []string{
 		"| Instagram Export | prototype |",
 		"| Reddit | planned |",
-		"Apply / execution",
-		"no | no | no",
+		"Official API planner planned for v0.5.",
+		"Scan own comments/posts",
+		"Scan saved items",
+		"Scan votes",
+		"Use OAuth for official API access.",
+		"not implemented in v0.4",
 		"does not delete platform content or apply account changes",
 	} {
 		if !strings.Contains(text, want) {
@@ -27,8 +31,8 @@ func TestReadmeLinksPlatformDocsAndAvoidsOverstatingSupport(t *testing.T) {
 	for _, want := range []string{
 		"[docs/platforms.md](docs/platforms.md)",
 		"Instagram Export prototype",
-		"Reddit import, account connection, or scanning",
-		"only in the platform selector",
+		"Reddit official API planner",
+		"planned for v0.5 only",
 		"does not delete platform content or apply account changes",
 	} {
 		if !strings.Contains(text, want) {

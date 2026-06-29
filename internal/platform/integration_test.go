@@ -65,12 +65,13 @@ func TestRedditPlatformPlannedAndDisabledActions(t *testing.T) {
 	}
 
 	wantCapabilities := map[string]platform.CapabilitySupport{
-		"Reddit archive scan":  platform.SupportPlanned,
-		"Review":               platform.SupportPlanned,
-		"Dry-run plan":         platform.SupportLater,
-		"Apply / execution":    platform.SupportNo,
-		"Login / account auth": platform.SupportNo,
-		"Network / API access": platform.SupportNo,
+		"Scan own comments/posts": platform.SupportPlanned,
+		"Scan saved items":        platform.SupportPlanned,
+		"Scan votes":              platform.SupportPlanned,
+		"Generate dry-run plans":  platform.SupportPlanned,
+		"Apply cleanup":           platform.SupportLater,
+		"OAuth":                   platform.SupportPlanned,
+		"Network/API access":      platform.SupportNo,
 	}
 	assertCapabilities(t, current.Capabilities, wantCapabilities)
 
