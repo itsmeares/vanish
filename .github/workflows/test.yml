@@ -1,0 +1,57 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "gofmt needed:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build ./cmd/vanish
+
+      - name: Check diff whitespace
+        run: git diff --check
+
+      - name: Safety grep
+        shell: bash
+        run: |
+          if grep -R -n -E '\b(net/http|http\.Get|http\.Post|NewRequest|chromedp|selenium|playwright|agouti|rod|webdriver)\b' \
+            --include='*.go' \
+            --exclude='*_test.go' \
+            .; then
+            echo "Forbidden network/browser automation symbol found."
+            exit 1
+          fi
+
+          echo "No forbidden network/browser automation symbols found."
