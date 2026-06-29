@@ -1,0 +1,39 @@
+# Go build/test artifacts
+/bin/
+/dist/
+/build/
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Local binaries
+/vanish
+/vanish.exe
+
+# Generated Vanish plans / local app data
+/vanish-plan.json
+/vanish-plan-*.json
+/.vanish/
+/vanish-data/
+
+# Local social exports / private user data
+*.zip
+/exports/
+/instagram-export*/
+/reddit-export*/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor temp files
+*.swp
+*.swo
+*~
