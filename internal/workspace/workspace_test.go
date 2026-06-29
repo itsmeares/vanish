@@ -168,8 +168,9 @@ func TestRecentImportsDedupedAndBounded(t *testing.T) {
 			ItemCount:      i,
 			LikeCount:      i + 1,
 			CommentCount:   i + 2,
-			FollowingCount: i + 3,
-			FollowerCount:  i + 4,
+			PostCount:      i + 3,
+			FollowingCount: i + 4,
+			FollowerCount:  i + 5,
 			WarningCount:   i % 3,
 			SkippedCount:   i % 2,
 		}
@@ -185,8 +186,9 @@ func TestRecentImportsDedupedAndBounded(t *testing.T) {
 		ItemCount:      99,
 		LikeCount:      11,
 		CommentCount:   12,
-		FollowingCount: 13,
-		FollowerCount:  14,
+		PostCount:      13,
+		FollowingCount: 14,
+		FollowerCount:  15,
 	}
 	if err := w.UpsertRecentImport(replacement); err != nil {
 		t.Fatalf("UpsertRecentImport replacement returned error: %v", err)
@@ -223,7 +225,8 @@ func TestRecentImportRoundTripPreservesPerTypeCounts(t *testing.T) {
 		ItemCount:      10,
 		LikeCount:      4,
 		CommentCount:   3,
-		FollowingCount: 2,
+		PostCount:      1,
+		FollowingCount: 1,
 		FollowerCount:  1,
 		WarningCount:   5,
 		SkippedCount:   6,
@@ -239,7 +242,7 @@ func TestRecentImportRoundTripPreservesPerTypeCounts(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("recent import count = %d, want 1", len(got))
 	}
-	if got[0].LikeCount != want.LikeCount || got[0].CommentCount != want.CommentCount || got[0].FollowingCount != want.FollowingCount || got[0].FollowerCount != want.FollowerCount {
+	if got[0].LikeCount != want.LikeCount || got[0].CommentCount != want.CommentCount || got[0].PostCount != want.PostCount || got[0].FollowingCount != want.FollowingCount || got[0].FollowerCount != want.FollowerCount {
 		t.Fatalf("recent import counts = %#v, want %#v", got[0], want)
 	}
 }

@@ -63,6 +63,7 @@ type RecentImport struct {
 	ItemCount      int       `json:"item_count"`
 	LikeCount      int       `json:"like_count"`
 	CommentCount   int       `json:"comment_count"`
+	PostCount      int       `json:"post_count"`
 	FollowingCount int       `json:"following_count"`
 	FollowerCount  int       `json:"follower_count"`
 	WarningCount   int       `json:"warning_count"`

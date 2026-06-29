@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
 	"github.com/itsmeares/vanish/internal/reddit"
+	"github.com/itsmeares/vanish/internal/secretstore"
 	"github.com/itsmeares/vanish/internal/workspace"
 )
 
@@ -32,6 +34,9 @@ const (
 	screenPlatformDetail
 	screenInstagramExportGuide
 	screenRedditNotes
+	screenRedditConnect
+	screenRedditAuthCode
+	screenRedditBusy
 	screenImportPath
 	screenImporting
 	screenImportResult
@@ -65,6 +70,7 @@ const (
 const (
 	filterRowLike = iota
 	filterRowComment
+	filterRowPost
 	filterRowFollowing
 	filterRowFollower
 	filterRowActor
@@ -90,6 +96,24 @@ var resultMenuItems = []string{
 	"View warnings",
 	"Review selection",
 	"Back home",
+}
+
+const (
+	redditConnectEnterCode = iota
+	redditConnectScan
+	redditConnectAllowFileFallback
+	redditConnectForgetLocal
+	redditConnectRevoke
+	redditConnectBack
+)
+
+var redditConnectMenuItems = []string{
+	"Enter returned code",
+	"Scan supported activity",
+	"Allow local token file fallback",
+	"Forget local metadata",
+	"Disconnect and revoke access",
+	"Back",
 }
 
 const (
@@ -246,6 +270,7 @@ type Model struct {
 	help                 help.Model
 	localWorkspace       *workspace.Workspace
 	planPathInput        textinput.Model
+	redditCodeInput      textinput.Model
 	filterActorInput     textinput.Model
 	filterTargetInput    textinput.Model
 	filterOlderInput     textinput.Model
@@ -259,13 +284,14 @@ type Model struct {
 	importPickerOffset   int
 	importPickerError    string
 	importSource         string
-	importResult         instagram.ImportResult
+	importPlatform       domain.PlatformName
+	importResult         activityResult
 	importErr            error
 	itemFilter           domain.ActivityItemFilter
 	selection            domain.ActivitySelection
 	itemFocus            itemBrowserFocus
 	itemActionCursor     int
-	planResult           instagram.PlanBuildResult
+	planResult           planBuildResult
 	loadedPlan           domain.CleanupPlan
 	loadedPlanSummary    domain.CleanupPlanSummary
 	draftFilter          domain.ActivityItemFilter
@@ -287,6 +313,14 @@ type Model struct {
 	homeCursor           int
 	selectedPlatformID   platform.PlatformID
 	platformActionCursor int
+	redditConnectCursor  int
+	redditFileFallback   bool
+	redditAuthState      string
+	redditAuthURL        string
+	redditStatus         string
+	redditError          string
+	redditBusyTitle      string
+	redditBusyDetail     string
 	resultCursor         int
 	itemCursor           int
 	itemOffset           int
@@ -335,6 +369,7 @@ func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) 
 		help:               helpModel,
 		localWorkspace:     localWorkspace,
 		planPathInput:      newPlanPathInput(),
+		redditCodeInput:    newRedditCodeInput(),
 		filterActorInput:   newFilterInput("username"),
 		filterTargetInput:  newFilterInput("URL or ID"),
 		filterOlderInput:   newFilterInput("YYYY-MM-DD"),
@@ -374,6 +409,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		m.planPathInput.SetWidth(inputWidth(msg.Width))
+		m.redditCodeInput.SetWidth(inputWidth(msg.Width))
 		m.setFilterInputWidths(inputWidth(msg.Width))
 		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.parsedItemsViewport().VisibleRows)
 		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
@@ -385,9 +421,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.importPickerOffset = ensureOffset(m.importPickerCursor, m.importPickerOffset, len(m.importPickerEntries), m.importPickerListHeight())
 
 	case importFinishedMsg:
-		m.importResult = msg.result
+		m.importResult = activityResultFromAny(msg.result)
 		m.importErr = msg.err
 		m.importSource = msg.source
+		m.importPlatform = msg.platform
+		if m.importPlatform == "" {
+			m.importPlatform = domain.PlatformInstagram
+		}
 		m.resultCursor = 0
 		m.itemCursor = 0
 		m.itemOffset = 0
@@ -403,8 +443,82 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordImportFinished(msg)
 		m.current = screenImportResult
 
+	case redditConnectFinishedMsg:
+		m.redditBusyTitle = ""
+		m.redditBusyDetail = ""
+		if msg.err != nil {
+			m.redditError = friendlyRedditError(msg.err)
+			m.redditStatus = ""
+			m.current = screenRedditConnect
+			return m, nil
+		}
+		m.redditError = ""
+		m.redditStatus = fmt.Sprintf("Connected as u/%s.", msg.username)
+		m.redditCodeInput.SetValue("")
+		m.redditCodeInput.Blur()
+		m.updateConfig("save Reddit connection metadata", func(config *workspace.Config) {
+			config.Reddit = msg.metadata
+		})
+		m.refreshLocalData()
+		m.current = screenRedditConnect
+		return m, nil
+
+	case redditScanFinishedMsg:
+		m.redditBusyTitle = ""
+		m.redditBusyDetail = ""
+		if msg.err != nil {
+			m.redditError = friendlyRedditError(msg.err)
+			m.redditStatus = ""
+			m.current = screenRedditConnect
+			return m, nil
+		}
+		if msg.metadata != nil {
+			m.updateConfig("update Reddit connection metadata", func(config *workspace.Config) {
+				config.Reddit = msg.metadata
+			})
+		}
+		m.refreshLocalData()
+		activity := activityResultFromReddit(msg.result)
+		m.importResult = activity
+		m.importErr = nil
+		m.importSource = redditSourceLabel()
+		m.importPlatform = domain.PlatformReddit
+		m.resultCursor = 0
+		m.itemCursor = 0
+		m.itemOffset = 0
+		m.selection = domain.ActivitySelection{}
+		m.selectionCursor = 0
+		m.selectionMessage = ""
+		m.resetPlanState()
+		m.selectedCursor = 0
+		m.selectedOffset = 0
+		m.warningCursor = 0
+		m.warningOffset = 0
+		m.clearFilterState()
+		m.recordActivityFinished(activity, nil, redditSourceLabel(), domain.PlatformReddit)
+		m.current = screenImportResult
+		return m, nil
+
+	case redditDisconnectFinishedMsg:
+		m.redditBusyTitle = ""
+		m.redditBusyDetail = ""
+		if msg.err != nil {
+			m.redditError = friendlyRedditError(msg.err)
+			m.redditStatus = ""
+			m.current = screenRedditConnect
+			return m, nil
+		}
+		m.updateConfig("clear Reddit metadata", func(config *workspace.Config) {
+			config.Reddit = nil
+		})
+		m.refreshLocalData()
+		m.redditError = ""
+		m.redditStatus = msg.message
+		m.current = screenRedditConnect
+		return m, nil
+
 	case spinner.TickMsg:
-		if m.current == screenImporting {
+		if m.current == screenImporting || m.current == screenRedditBusy {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -474,6 +588,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePlatformDetail(msg)
 		case screenInstagramExportGuide, screenRedditNotes:
 			return m.updatePlatformStaticScreen(msg)
+		case screenRedditConnect:
+			return m.updateRedditConnect(msg)
+		case screenRedditAuthCode:
+			return m.updateRedditAuthCode(msg)
 		case screenImportPath:
 			return m.updateImportPath(msg)
 		case screenImportResult:
@@ -554,6 +672,69 @@ func (m Model) updatePlatformStaticScreen(msg tea.KeyPressMsg) (tea.Model, tea.C
 		m.current = screenPlatformDetail
 	}
 	return m, nil
+}
+
+func (m Model) updateRedditConnect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	actions, disabled := m.redditConnectActions()
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.redditConnectCursor = moveCursor(m.redditConnectCursor, len(actions), -1)
+	case key.Matches(msg, m.keys.down):
+		m.redditConnectCursor = moveCursor(m.redditConnectCursor, len(actions), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenPlatformDetail
+	case key.Matches(msg, m.keys.selectItem):
+		index := clampCursor(m.redditConnectCursor, len(actions))
+		if disabled[index] {
+			return m, nil
+		}
+		switch index {
+		case redditConnectEnterCode:
+			if m.ensureRedditAuthURL() {
+				m.redditError = ""
+				m.redditCodeInput.SetValue("")
+				m.current = screenRedditAuthCode
+				return m, m.redditCodeInput.Focus()
+			}
+		case redditConnectScan:
+			return m.startRedditScan()
+		case redditConnectAllowFileFallback:
+			m.redditFileFallback = true
+			m.redditStatus = "Local token file fallback allowed for this session if credential store is unavailable."
+			m.redditError = ""
+		case redditConnectForgetLocal:
+			return m.startRedditDisconnect(false)
+		case redditConnectRevoke:
+			return m.startRedditDisconnect(true)
+		case redditConnectBack:
+			m.current = screenPlatformDetail
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateRedditAuthCode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.selectItem):
+		input := strings.TrimSpace(m.redditCodeInput.Value())
+		if input == "" {
+			m.redditError = "Paste the returned Reddit code or redirect URL."
+			return m, nil
+		}
+		m.redditError = ""
+		m.redditBusyTitle = "Connecting Reddit"
+		m.redditBusyDetail = "Exchanging the code and storing the refresh token safely."
+		m.current = screenRedditBusy
+		return m, tea.Batch(startSpinnerCmd(m.spinner), redditConnectCmd(input, m.redditAuthState, m.redditAllowFileFallback(), m.localAppDir()))
+	case key.Matches(msg, m.keys.cancel), key.Matches(msg, m.keys.back):
+		m.redditCodeInput.Blur()
+		m.current = screenRedditConnect
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.redditCodeInput, cmd = m.redditCodeInput.Update(msg)
+		return m, cmd
+	}
 }
 
 func (m Model) updateImportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -702,6 +883,8 @@ func (m Model) updateFilters(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.toggleDraftType(domain.ActivityFilterLike)
 		case filterRowComment:
 			m.toggleDraftType(domain.ActivityFilterComment)
+		case filterRowPost:
+			m.toggleDraftType(domain.ActivityFilterPost)
 		case filterRowFollowing:
 			m.toggleDraftType(domain.ActivityFilterFollowing)
 		case filterRowFollower:
@@ -761,12 +944,13 @@ func (m *Model) generatePlanFromSelection() {
 		m.selectionMessage = "Select at least one item before generating a plan."
 		return
 	}
-	result, err := instagram.BuildCleanupPlan(platform.BuildPlanRequest{
-		Platform:   domain.PlatformInstagram,
-		SourceName: emptyFallback(m.importSource, "instagram export"),
+	req := platform.BuildPlanRequest{
+		Platform:   m.currentActivityPlatform(selected),
+		SourceName: emptyFallback(m.importSource, m.activitySourceFallback()),
 		CreatedAt:  time.Now().UTC(),
 		Items:      selected,
-	})
+	}
+	result, err := m.buildCleanupPlan(req)
 	if err != nil {
 		m.selectionMessage = err.Error()
 		return
@@ -1072,6 +1256,11 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.platformActionCursor = target.Index
 			return m.updatePlatformDetail(selectKeyPress())
 		}
+	case screenRedditConnect:
+		if target.Kind == hitPlatformAction {
+			m.redditConnectCursor = target.Index
+			return m.updateRedditConnect(selectKeyPress())
+		}
 	case screenImportPath:
 		if target.Kind == hitImportPickerRow {
 			m.importPickerCursor = target.Index
@@ -1308,6 +1497,12 @@ func (m Model) renderContent() string {
 		content = m.instagramExportGuideView()
 	case screenRedditNotes:
 		content = m.redditNotesView()
+	case screenRedditConnect:
+		content = m.redditConnectView()
+	case screenRedditAuthCode:
+		content = m.redditAuthCodeView()
+	case screenRedditBusy:
+		content = m.redditBusyView()
 	case screenImportPath:
 		content = m.importPathView()
 	case screenImporting:
@@ -1450,7 +1645,7 @@ func (m Model) redditNotesView() string {
 	lines := []string{
 		m.styles.body.Render("Official API planner prototype targets v0.5."),
 		m.styles.body.Render("OAuth/API, own comments/posts scan, and dry-run planning foundations exist."),
-		m.styles.body.Render("The disabled account and scan rows mean the TUI workflow is not wired yet."),
+		m.styles.body.Render("The TUI can connect with manual OAuth, scan own comments/posts, and build dry-run plans."),
 		m.styles.body.Render("No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists."),
 		"",
 		m.styles.separator.Render("Implementation notes"),
@@ -1459,6 +1654,47 @@ func (m Model) redditNotesView() string {
 		lines = append(lines, m.styles.body.Render(note))
 	}
 	return m.singlePaneFooter("Reddit Notes", "Prototype foundation", lines, m.footer(footerEmpty))
+}
+
+func (m Model) redditConnectView() string {
+	spec := layoutSpec(m.width, m.height)
+	status := m.redditConnectionRows(spec.detailWidth)
+	actions, disabled := m.redditConnectActions()
+	actionLines := m.menuRowsWithDisabled(actions, disabled, m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
+
+	body := m.twoPane(
+		spec,
+		"Reddit", "Connect and scan", actionLines,
+		"Connection", "Official API prototype", status,
+	)
+	return m.appShell("Reddit", body, m.footer(footerActionMenu))
+}
+
+func (m Model) redditAuthCodeView() string {
+	lines := []string{
+		m.styles.body.Render("Open this Reddit authorization URL in your browser:"),
+		m.styles.muted.Render(m.redditAuthURL),
+		"",
+		m.styles.body.Render("Paste the returned code or full redirect URL."),
+		m.redditCodeInput.View(),
+		"",
+		m.styles.muted.Render("Requested scopes: identity history"),
+		m.styles.muted.Render("No password, cookie, session, or browser automation is used."),
+	}
+	if strings.TrimSpace(m.redditError) != "" {
+		lines = append(lines, "", m.notice("error", m.redditError))
+	}
+	return m.singlePaneFooter("Reddit OAuth", "Manual installed-app flow", lines, m.footer(footerForm))
+}
+
+func (m Model) redditBusyView() string {
+	title := emptyFallback(m.redditBusyTitle, "Reddit")
+	detail := emptyFallback(m.redditBusyDetail, "Working with Reddit official API.")
+	lines := []string{
+		m.styles.body.Render(fmt.Sprintf("%s %s", m.spinner.View(), detail)),
+		m.styles.muted.Render("No Reddit content changes are performed."),
+	}
+	return m.singlePaneFooter(title, "Official API prototype", lines, m.footer(footerBusy))
 }
 
 func (m Model) platforms() []platform.Platform {
@@ -1572,12 +1808,12 @@ func (m Model) importResultView() string {
 	if m.importErr != nil {
 		lines := []string{
 			m.notice("error", m.importErr.Error()),
-			m.styles.muted.Render("Check that the path points to a local Instagram export .zip, then try again."),
+			m.styles.muted.Render(m.activityFailureHint()),
 			"",
 			m.styles.muted.Render(truncateMiddle(m.importSource, layoutSpec(m.width, m.height).contentWidth-4)),
 		}
 		lines = append(lines, m.localDataMessages()...)
-		return m.singlePaneFooter("Import Failed", "No data was imported", lines, m.footer(footerEmpty))
+		return m.singlePaneFooter(m.activityFailedTitle(), "No data was imported", lines, m.footer(footerEmpty))
 	}
 
 	spec := layoutSpec(m.width, m.height)
@@ -1591,6 +1827,7 @@ func (m Model) importResultView() string {
 			{Key: "Total", Value: compactCount(summary.Total)},
 			{Key: "Likes", Value: compactCount(summary.Likes)},
 			{Key: "Comments", Value: compactCount(summary.Comments)},
+			{Key: "Posts", Value: compactCount(summary.Posts)},
 			{Key: "Following", Value: compactCount(summary.Following)},
 			{Key: "Followers", Value: compactCount(summary.Followers)},
 		})),
@@ -1603,9 +1840,9 @@ func (m Model) importResultView() string {
 	body := m.twoPane(
 		spec,
 		"Actions", "Next review step", m.menuRows(resultMenuItems, m.resultCursor, spec.sidebarWidth, hitImportResultAction),
-		"Import Complete", "Parsed local export", summaryLines,
+		m.activityCompleteTitle(), m.activityCompleteSubtitle(), summaryLines,
 	)
-	return m.appShell("Import Complete", body, m.footer(footerActionMenu))
+	return m.appShell(m.activityCompleteTitle(), body, m.footer(footerActionMenu))
 }
 
 func (m Model) itemsBrowserView() string {
@@ -1630,7 +1867,7 @@ func (m Model) itemsBrowserView() string {
 			compactCount(m.selection.Len()),
 			filterStatus,
 		)),
-		m.styles.muted.Render(fmt.Sprintf("Page %d/%d · Source: %s", viewport.Page, viewport.Pages, emptyFallback(m.importSource, "instagram export"))),
+		m.styles.muted.Render(fmt.Sprintf("Page %d/%d · Source: %s", viewport.Page, viewport.Pages, emptyFallback(m.importSource, m.activitySourceFallback()))),
 		"",
 	}
 	if m.itemFilter.Active() {
@@ -1649,7 +1886,7 @@ func (m Model) itemsBrowserView() string {
 
 	detailLines := []string{}
 	if len(items) == 0 {
-		detailLines = append(detailLines, m.emptyState("No items match the current filters. Clear filters or import another ZIP."))
+		detailLines = append(detailLines, m.emptyState("No items match the current filters. Clear filters or scan/import another source."))
 	} else {
 		detailLines = append(detailLines, m.detailRows(parsedItemDetailLines(items[cursor]), detailWidth)...)
 	}
@@ -1671,6 +1908,7 @@ func (m Model) parsedItemsCockpitLines(width int) []string {
 		{Key: "Selected", Value: compactCount(counts.Total)},
 		{Key: "Likes", Value: compactCount(counts.Likes)},
 		{Key: "Comments", Value: compactCount(counts.Comments)},
+		{Key: "Posts", Value: compactCount(counts.Posts)},
 		{Key: "Following", Value: compactCount(counts.Following)},
 		{Key: "Followers", Value: compactCount(counts.Followers)},
 	}))...)
@@ -1755,7 +1993,7 @@ func (m Model) activateParsedItemAction() (tea.Model, tea.Cmd) {
 
 func (m Model) reviewEmptyView() string {
 	lines := []string{
-		m.styles.body.Render("Import a local Instagram export ZIP or run Demo Import first."),
+		m.styles.body.Render("Import a local Instagram export ZIP, run Demo Import, or scan Reddit first."),
 		m.styles.muted.Render("Parsed items will appear here for review, filtering, and selection."),
 	}
 	return m.singlePaneFooter("Review", "No parsed items yet", lines, m.footer(footerEmpty))
@@ -1776,6 +2014,7 @@ func (m Model) selectionSummaryView() string {
 		m.section("Selected Type Counts", m.keyValueRows([]keyValue{
 			{Key: "Likes", Value: compactCount(counts.Likes)},
 			{Key: "Comments", Value: compactCount(counts.Comments)},
+			{Key: "Posts", Value: compactCount(counts.Posts)},
 			{Key: "Following", Value: compactCount(counts.Following)},
 			{Key: "Followers", Value: compactCount(counts.Followers)},
 		})),
@@ -1840,12 +2079,10 @@ func (m Model) planPreviewView() string {
 			{Key: "Platform", Value: string(result.Plan.Platform)},
 			{Key: "Selected items", Value: compactCount(result.SelectedCount)},
 		})),
-		m.section("Action Counts", m.keyValueRows([]keyValue{
-			{Key: "Supported actions", Value: compactCount(len(result.Plan.Actions))},
-			{Key: "Unlike", Value: compactCount(result.Counts.Unlike)},
-			{Key: "Delete comment", Value: compactCount(result.Counts.DeleteComment)},
-			{Key: "Unfollow", Value: compactCount(result.Counts.Unfollow)},
-		})),
+		m.section("Action Counts", append(
+			m.keyValueRows([]keyValue{{Key: "Supported actions", Value: compactCount(len(result.Plan.Actions))}}),
+			m.planActionCountRows(result.Counts)...,
+		)),
 		m.section("Skipped", m.keyValueRows([]keyValue{
 			{Key: "Unsupported selected items", Value: compactCount(len(result.Skipped))},
 		})),
@@ -2160,7 +2397,7 @@ func (m Model) keybindingsView() string {
 		m.styles.separator.Render("Plans"),
 		m.styles.body.Render("Generate, preview, export, and load dry-run JSON plans."),
 		m.styles.separator.Render("Notes"),
-		m.styles.body.Render("Import and plan screens use local files only."),
+		m.styles.body.Render("Instagram import uses local files; Reddit uses explicit official API connect only."),
 	}
 	return m.singlePaneFooter("Help", "Keyboard reference", lines, m.footer(footerHelp))
 }
@@ -2178,7 +2415,8 @@ func (m Model) quitConfirmView() string {
 
 func (m Model) resetImportState() Model {
 	m.importSource = ""
-	m.importResult = instagram.ImportResult{}
+	m.importPlatform = domain.PlatformInstagram
+	m.importResult = activityResult{}
 	m.importErr = nil
 	m.resultCursor = 0
 	m.itemCursor = 0
@@ -2198,7 +2436,7 @@ func (m Model) resetImportState() Model {
 }
 
 func (m *Model) resetPlanState() {
-	m.planResult = instagram.PlanBuildResult{}
+	m.planResult = planBuildResult{}
 	m.planPreviewCursor = 0
 	m.planListOffset = 0
 	m.planPathInput.SetValue(m.defaultPlanPathValue())
@@ -2272,6 +2510,14 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 	case platform.ActionViewIntegrationNote:
 		m.selectedPlatformID = platform.PlatformReddit
 		m.current = screenRedditNotes
+	case platform.ActionConnectAccount:
+		m.openRedditConnect("")
+	case platform.ActionScanActivity:
+		if !m.redditConnected() {
+			m.openRedditConnect("Connect Reddit before scanning.")
+			return m, nil
+		}
+		return m.startRedditScan()
 	case platform.ActionBack:
 		m.current = screenHome
 	}
@@ -2340,6 +2586,222 @@ func (m Model) hasPlanPreview() bool {
 	return strings.TrimSpace(m.planResult.Plan.ID) != "" || len(m.planResult.Plan.Actions) > 0 || len(m.planResult.Skipped) > 0
 }
 
+func (m Model) currentActivityPlatform(items []domain.ActivityItem) domain.PlatformName {
+	if len(items) > 0 && items[0].Platform != "" {
+		return items[0].Platform
+	}
+	if m.importPlatform != "" {
+		return m.importPlatform
+	}
+	return domain.PlatformInstagram
+}
+
+func (m Model) buildCleanupPlan(req platform.BuildPlanRequest) (planBuildResult, error) {
+	switch req.Platform {
+	case domain.PlatformReddit:
+		result, err := reddit.BuildCleanupPlan(req)
+		if err != nil {
+			return planBuildResult{}, err
+		}
+		return planResultFromReddit(result), nil
+	default:
+		result, err := instagram.BuildCleanupPlan(req)
+		if err != nil {
+			return planBuildResult{}, err
+		}
+		return planResultFromInstagram(result), nil
+	}
+}
+
+func (m Model) activitySourceFallback() string {
+	if m.importPlatform == domain.PlatformReddit {
+		return redditSourceLabel()
+	}
+	return "instagram export"
+}
+
+func (m Model) activityCompleteTitle() string {
+	if m.importPlatform == domain.PlatformReddit {
+		return "Reddit Scan Complete"
+	}
+	return "Import Complete"
+}
+
+func (m Model) activityCompleteSubtitle() string {
+	if m.importPlatform == domain.PlatformReddit {
+		return "Official API scan"
+	}
+	return "Parsed local export"
+}
+
+func (m Model) activityFailedTitle() string {
+	if m.importPlatform == domain.PlatformReddit {
+		return "Reddit Scan Failed"
+	}
+	return "Import Failed"
+}
+
+func (m Model) activityFailureHint() string {
+	if m.importPlatform == domain.PlatformReddit {
+		return "Check the Reddit connection, client ID, and stored refresh token, then try again."
+	}
+	return "Check that the path points to a local Instagram export .zip, then try again."
+}
+
+func (m Model) redditConnected() bool {
+	return m.localConfig.Reddit != nil && strings.TrimSpace(m.localConfig.Reddit.Username) != ""
+}
+
+func (m Model) redditAllowFileFallback() bool {
+	if m.redditFileFallback {
+		return true
+	}
+	if m.localConfig.Reddit != nil && strings.EqualFold(strings.TrimSpace(m.localConfig.Reddit.TokenStorageMode), string(secretstore.ModeFile)) {
+		return true
+	}
+	return false
+}
+
+func (m Model) localAppDir() string {
+	if m.localWorkspace == nil {
+		return ""
+	}
+	return m.localWorkspace.Dir()
+}
+
+func (m *Model) openRedditConnect(message string) {
+	m.selectedPlatformID = platform.PlatformReddit
+	m.refreshLocalData()
+	initialError := strings.TrimSpace(message)
+	m.redditError = initialError
+	m.redditStatus = ""
+	m.redditConnectCursor = clampCursor(m.redditConnectCursor, len(redditConnectMenuItems))
+	if !m.ensureRedditAuthURL() && initialError != "" && m.redditError != initialError {
+		m.redditError = initialError + " " + m.redditError
+	}
+	m.current = screenRedditConnect
+}
+
+func (m *Model) ensureRedditAuthURL() bool {
+	if strings.TrimSpace(m.redditAuthURL) != "" {
+		return true
+	}
+	clientID, err := reddit.ClientIDFromEnv()
+	if err != nil {
+		m.redditError = "Set VANISH_REDDIT_CLIENT_ID before connecting Reddit."
+		return false
+	}
+	oauth, err := reddit.NewOAuth(reddit.OAuthConfig{ClientID: clientID})
+	if err != nil {
+		m.redditError = friendlyRedditError(err)
+		return false
+	}
+	if strings.TrimSpace(m.redditAuthState) == "" {
+		m.redditAuthState = fmt.Sprintf("vanish-%d", time.Now().UnixNano())
+	}
+	authURL, err := oauth.AuthURL(m.redditAuthState)
+	if err != nil {
+		m.redditError = friendlyRedditError(err)
+		return false
+	}
+	m.redditAuthURL = authURL
+	return true
+}
+
+func (m Model) redditConnectActions() ([]string, map[int]bool) {
+	connected := m.redditConnected()
+	clientIDPresent := strings.TrimSpace(os.Getenv(reddit.ClientIDEnv)) != ""
+	actions := append([]string(nil), redditConnectMenuItems...)
+	if m.redditAllowFileFallback() {
+		actions[redditConnectAllowFileFallback] = "Local token file fallback allowed"
+	}
+	disabled := make(map[int]bool)
+	disabled[redditConnectEnterCode] = !clientIDPresent
+	disabled[redditConnectScan] = !connected
+	disabled[redditConnectForgetLocal] = !connected
+	disabled[redditConnectRevoke] = !connected
+	if m.localWorkspace == nil {
+		disabled[redditConnectAllowFileFallback] = true
+	}
+	for index, value := range disabled {
+		if !value {
+			delete(disabled, index)
+		}
+	}
+	return actions, disabled
+}
+
+func (m Model) redditConnectionRows(width int) []string {
+	lines := []string{}
+	if strings.TrimSpace(m.redditStatus) != "" {
+		lines = append(lines, m.notice("success", m.redditStatus), "")
+	}
+	if strings.TrimSpace(m.redditError) != "" {
+		lines = append(lines, m.notice("error", m.redditError), "")
+	}
+	config := m.localConfig.Reddit
+	if config == nil || strings.TrimSpace(config.Username) == "" {
+		lines = append(lines, m.styles.body.Render("Status: not connected"))
+	} else {
+		lines = append(lines, m.keyValueRows([]keyValue{
+			{Key: "Status", Value: "connected"},
+			{Key: "Username", Value: config.Username},
+			{Key: "Scopes", Value: strings.Join(config.Scopes, " ")},
+			{Key: "Token storage", Value: emptyFallback(config.TokenStorageMode, "-")},
+			{Key: "Expires", Value: formatTimePtr(config.ExpiresAt)},
+		})...)
+	}
+	clientIDStatus := "set"
+	if strings.TrimSpace(os.Getenv(reddit.ClientIDEnv)) == "" {
+		clientIDStatus = "missing"
+	}
+	lines = append(lines, "", m.styles.separator.Render("Safety"))
+	lines = append(lines, m.keyValueRows([]keyValue{
+		{Key: reddit.ClientIDEnv, Value: clientIDStatus},
+		{Key: "Scopes", Value: "identity history"},
+		{Key: "Fallback", Value: enabledLabel(m.redditAllowFileFallback())},
+	})...)
+	lines = append(lines,
+		m.styles.muted.Render("Manual OAuth only; Vanish does not open a browser."),
+		m.styles.muted.Render("Refresh token uses credential store unless fallback is explicitly allowed."),
+		m.styles.muted.Render("Scanner reads own comments/posts only; saved items and votes are deferred."),
+		m.styles.muted.Render(truncateMiddle(m.redditAuthURL, maxInt(24, width-4))),
+	)
+	return lines
+}
+
+func (m Model) startRedditScan() (tea.Model, tea.Cmd) {
+	if !m.redditConnected() {
+		m.openRedditConnect("Connect Reddit before scanning.")
+		return m, nil
+	}
+	config := *m.localConfig.Reddit
+	m.redditError = ""
+	m.redditStatus = ""
+	m.redditBusyTitle = "Scanning Reddit"
+	m.redditBusyDetail = "Reading own comments and submitted posts."
+	m.current = screenRedditBusy
+	return m, tea.Batch(startSpinnerCmd(m.spinner), redditScanCmd(&config, m.redditAllowFileFallback(), m.localAppDir()))
+}
+
+func (m Model) startRedditDisconnect(revoke bool) (tea.Model, tea.Cmd) {
+	if !m.redditConnected() {
+		m.openRedditConnect("No connected Reddit account metadata found.")
+		return m, nil
+	}
+	config := *m.localConfig.Reddit
+	m.redditError = ""
+	m.redditStatus = ""
+	m.redditBusyTitle = "Disconnecting Reddit"
+	if revoke {
+		m.redditBusyDetail = "Revoking OAuth access, then clearing local metadata."
+	} else {
+		m.redditBusyDetail = "Clearing local metadata only."
+	}
+	m.current = screenRedditBusy
+	return m, tea.Batch(startSpinnerCmd(m.spinner), redditDisconnectCmd(&config, revoke, m.redditAllowFileFallback(), m.localAppDir()))
+}
+
 func (m *Model) refreshLocalData() {
 	if m.localWorkspace == nil {
 		m.localConfig = workspace.Config{}
@@ -2388,29 +2850,39 @@ func (m *Model) refreshLocalData() {
 }
 
 func (m *Model) recordImportFinished(msg importFinishedMsg) {
-	if msg.err != nil {
+	result := activityResultFromAny(msg.result)
+	platformName := msg.platform
+	if platformName == "" {
+		platformName = domain.PlatformInstagram
+	}
+	m.recordActivityFinished(result, msg.err, msg.source, platformName)
+}
+
+func (m *Model) recordActivityFinished(result activityResult, err error, source string, platformName domain.PlatformName) {
+	if err != nil {
 		m.appendAudit("import_failed", map[string]any{
-			"source_label": sourceLabel(msg.source),
-			"source_path":  sourcePath(msg.source),
-			"platform":     string(domain.PlatformInstagram),
-			"demo":         isDemoSource(msg.source),
-			"error":        msg.err.Error(),
+			"source_label": sourceLabel(source),
+			"source_path":  sourcePath(source),
+			"platform":     string(platformName),
+			"demo":         isDemoSource(source),
+			"error":        friendlyActivityError(err),
 		})
 		return
 	}
 	entry := workspace.RecentImport{
-		SourceLabel:    sourceLabel(msg.source),
-		SourcePath:     sourcePath(msg.source),
-		Platform:       string(domain.PlatformInstagram),
+		SourceLabel:    sourceLabel(source),
+		SourcePath:     sourcePath(source),
+		Platform:       string(platformName),
 		ImportedAt:     time.Now().UTC(),
-		Demo:           isDemoSource(msg.source),
-		ItemCount:      msg.result.Summary.Total,
-		LikeCount:      msg.result.Summary.Likes,
-		CommentCount:   msg.result.Summary.Comments,
-		FollowingCount: msg.result.Summary.Following,
-		FollowerCount:  msg.result.Summary.Followers,
-		WarningCount:   len(msg.result.Warnings),
-		SkippedCount:   msg.result.Summary.Skipped,
+		Demo:           isDemoSource(source),
+		ItemCount:      result.Summary.Total,
+		LikeCount:      result.Summary.Likes,
+		CommentCount:   result.Summary.Comments,
+		PostCount:      result.Summary.Posts,
+		FollowingCount: result.Summary.Following,
+		FollowerCount:  result.Summary.Followers,
+		WarningCount:   len(result.Warnings),
+		SkippedCount:   result.Summary.Skipped,
 	}
 	if m.localWorkspace != nil {
 		if err := m.localWorkspace.UpsertRecentImport(entry); err != nil {
@@ -2425,6 +2897,7 @@ func (m *Model) recordImportFinished(msg importFinishedMsg) {
 		"item_count":      entry.ItemCount,
 		"like_count":      entry.LikeCount,
 		"comment_count":   entry.CommentCount,
+		"post_count":      entry.PostCount,
 		"following_count": entry.FollowingCount,
 		"follower_count":  entry.FollowerCount,
 		"warning_count":   entry.WarningCount,
@@ -2433,8 +2906,8 @@ func (m *Model) recordImportFinished(msg importFinishedMsg) {
 	m.refreshLocalData()
 }
 
-func (m *Model) recordPlanGenerated(result instagram.PlanBuildResult) {
-	m.appendAudit("plan_generated", map[string]any{
+func (m *Model) recordPlanGenerated(result planBuildResult) {
+	fields := map[string]any{
 		"plan_id":              result.Plan.ID,
 		"mode":                 string(result.Plan.Mode),
 		"source_name":          result.Plan.SourceName,
@@ -2442,10 +2915,12 @@ func (m *Model) recordPlanGenerated(result instagram.PlanBuildResult) {
 		"selected_count":       result.SelectedCount,
 		"action_count":         len(result.Plan.Actions),
 		"skipped_count":        len(result.Skipped),
-		"unlike_count":         result.Counts.Unlike,
-		"delete_comment_count": result.Counts.DeleteComment,
-		"unfollow_count":       result.Counts.Unfollow,
-	})
+		"unlike_count":         result.Counts[domain.ActionUnlike],
+		"delete_comment_count": result.Counts[domain.ActionDeleteComment] + result.Counts[domain.ActionRedditDeleteComment],
+		"delete_post_count":    result.Counts[domain.ActionRedditDeletePost],
+		"unfollow_count":       result.Counts[domain.ActionUnfollow],
+	}
+	m.appendAudit("plan_generated", fields)
 }
 
 func (m *Model) recordPlanExported(path string) {
@@ -2875,9 +3350,58 @@ func newStyles(isDark bool) styles {
 }
 
 type importFinishedMsg struct {
-	result instagram.ImportResult
-	err    error
-	source string
+	result   any
+	err      error
+	source   string
+	platform domain.PlatformName
+}
+
+type activityResult struct {
+	Items    []domain.ActivityItem
+	Summary  activitySummary
+	Warnings []string
+}
+
+type activitySummary struct {
+	Total     int
+	Likes     int
+	Comments  int
+	Posts     int
+	Following int
+	Followers int
+	Skipped   int
+}
+
+type planBuildResult struct {
+	Plan          domain.CleanupPlan
+	SelectedCount int
+	Skipped       []planBuildSkip
+	Counts        map[domain.ActionType]int
+	Message       string
+}
+
+type planBuildSkip struct {
+	SourceActivityItemID string
+	ItemType             domain.ActivityItemType
+	TargetRef            string
+	Reason               string
+}
+
+type redditConnectFinishedMsg struct {
+	username string
+	metadata *workspace.RedditConfig
+	err      error
+}
+
+type redditScanFinishedMsg struct {
+	result   reddit.ScanResult
+	metadata *workspace.RedditConfig
+	err      error
+}
+
+type redditDisconnectFinishedMsg struct {
+	message string
+	err     error
 }
 
 type exportPlanFinishedMsg struct {
@@ -2893,10 +3417,104 @@ type loadPlanFinishedMsg struct {
 	fromRecent bool
 }
 
+func activityResultFromAny(value any) activityResult {
+	switch typed := value.(type) {
+	case activityResult:
+		return typed
+	case instagram.ImportResult:
+		return activityResultFromInstagram(typed)
+	case reddit.ScanResult:
+		return activityResultFromReddit(typed)
+	default:
+		return activityResult{}
+	}
+}
+
+func activityResultFromInstagram(result instagram.ImportResult) activityResult {
+	return activityResult{
+		Items: result.Items,
+		Summary: activitySummary{
+			Total:     result.Summary.Total,
+			Likes:     result.Summary.Likes,
+			Comments:  result.Summary.Comments,
+			Following: result.Summary.Following,
+			Followers: result.Summary.Followers,
+			Skipped:   result.Summary.Skipped,
+		},
+		Warnings: result.Warnings,
+	}
+}
+
+func activityResultFromReddit(result reddit.ScanResult) activityResult {
+	return activityResult{
+		Items: result.Items,
+		Summary: activitySummary{
+			Total:    result.Summary.Total,
+			Comments: result.Summary.Comments,
+			Posts:    result.Summary.Posts,
+			Skipped:  result.Summary.Skipped,
+		},
+		Warnings: result.Warnings,
+	}
+}
+
+func planResultFromInstagram(result instagram.PlanBuildResult) planBuildResult {
+	return planBuildResult{
+		Plan:          result.Plan,
+		SelectedCount: result.SelectedCount,
+		Skipped:       instagramSkips(result.Skipped),
+		Counts: map[domain.ActionType]int{
+			domain.ActionUnlike:        result.Counts.Unlike,
+			domain.ActionDeleteComment: result.Counts.DeleteComment,
+			domain.ActionUnfollow:      result.Counts.Unfollow,
+		},
+		Message: result.Message,
+	}
+}
+
+func planResultFromReddit(result reddit.PlanBuildResult) planBuildResult {
+	return planBuildResult{
+		Plan:          result.Plan,
+		SelectedCount: result.SelectedCount,
+		Skipped:       redditSkips(result.Skipped),
+		Counts: map[domain.ActionType]int{
+			domain.ActionRedditDeleteComment: result.Counts.DeleteComment,
+			domain.ActionRedditDeletePost:    result.Counts.DeletePost,
+		},
+		Message: result.Message,
+	}
+}
+
+func instagramSkips(skips []instagram.PlanBuildSkip) []planBuildSkip {
+	result := make([]planBuildSkip, 0, len(skips))
+	for _, skip := range skips {
+		result = append(result, planBuildSkip{
+			SourceActivityItemID: skip.SourceActivityItemID,
+			ItemType:             skip.ItemType,
+			TargetRef:            skip.TargetRef,
+			Reason:               skip.Reason,
+		})
+	}
+	return result
+}
+
+func redditSkips(skips []reddit.PlanBuildSkip) []planBuildSkip {
+	result := make([]planBuildSkip, 0, len(skips))
+	for _, skip := range skips {
+		result = append(result, planBuildSkip{
+			SourceActivityItemID: skip.SourceActivityItemID,
+			ItemType:             skip.ItemType,
+			TargetRef:            skip.TargetRef,
+			Reason:               skip.Reason,
+		})
+	}
+	return result
+}
+
 func importZIPCmd(zipPath, source string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := instagram.ImportZIP(zipPath)
-		return importFinishedMsg{result: result, err: err, source: source}
+		return importFinishedMsg{result: activityResultFromInstagram(result), err: err, source: source, platform: domain.PlatformInstagram}
 	}
 }
 
@@ -2930,16 +3548,119 @@ func loadPlanJSONCmd(planPath string, fromRecent bool) tea.Cmd {
 	}
 }
 
+func redditConnectCmd(input, state string, allowFileFallback bool, appDir string) tea.Cmd {
+	return func() tea.Msg {
+		code, err := redditCodeFromInput(input, state)
+		if err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		if err := ensureRedditSecretStoreReady(allowFileFallback, appDir); err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		oauth, err := newRedditOAuth(allowFileFallback, appDir)
+		if err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		tokens, err := oauth.ExchangeCode(context.Background(), code)
+		if err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		client, err := reddit.NewClient(tokens.Access, reddit.ClientOptions{})
+		if err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		user, err := client.Me(context.Background())
+		if err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		result, err := oauth.SaveRefreshToken(user.Name, tokens)
+		if err != nil {
+			return redditConnectFinishedMsg{err: err}
+		}
+		metadata := reddit.WorkspaceMetadata(user.Name, tokens, result, time.Now().UTC())
+		return redditConnectFinishedMsg{username: user.Name, metadata: metadata}
+	}
+}
+
+func redditScanCmd(config *workspace.RedditConfig, allowFileFallback bool, appDir string) tea.Cmd {
+	return func() tea.Msg {
+		if config == nil || strings.TrimSpace(config.Username) == "" {
+			return redditScanFinishedMsg{err: errors.New("connect Reddit before scanning")}
+		}
+		oauth, err := newRedditOAuth(allowFileFallback, appDir)
+		if err != nil {
+			return redditScanFinishedMsg{err: err}
+		}
+		refresh, loadResult, err := oauth.LoadRefreshToken(config.Username)
+		if err != nil {
+			return redditScanFinishedMsg{err: err}
+		}
+		tokens, err := oauth.Refresh(context.Background(), refresh)
+		if err != nil {
+			return redditScanFinishedMsg{err: err}
+		}
+		client, err := reddit.NewClient(tokens.Access, reddit.ClientOptions{})
+		if err != nil {
+			return redditScanFinishedMsg{err: err}
+		}
+		result, err := client.ScanActivity(context.Background(), config.Username, reddit.ScanOptions{})
+		if err != nil {
+			return redditScanFinishedMsg{result: result, err: err}
+		}
+		metadata := *config
+		metadata.ExpiresAt = timePtr(tokens.ExpiresAt)
+		metadata.Scopes = cloneStrings(tokens.Scopes)
+		if loadResult.Mode != "" {
+			metadata.TokenStorageMode = string(loadResult.Mode)
+			metadata.CredentialStore = string(loadResult.Mode)
+		}
+		return redditScanFinishedMsg{result: result, metadata: &metadata}
+	}
+}
+
+func redditDisconnectCmd(config *workspace.RedditConfig, revoke bool, allowFileFallback bool, appDir string) tea.Cmd {
+	return func() tea.Msg {
+		if config == nil || strings.TrimSpace(config.Username) == "" {
+			return redditDisconnectFinishedMsg{message: "No Reddit account metadata found."}
+		}
+		oauth, err := newRedditOAuth(allowFileFallback, appDir)
+		if err != nil {
+			return redditDisconnectFinishedMsg{err: err}
+		}
+		message := "Forgot local Reddit metadata."
+		if revoke {
+			refresh, _, err := oauth.LoadRefreshToken(config.Username)
+			if err == nil {
+				if err := oauth.Revoke(context.Background(), refresh); err != nil {
+					return redditDisconnectFinishedMsg{err: err}
+				}
+				message = "Revoked Reddit access and cleared local metadata."
+			} else if errors.Is(err, secretstore.ErrNotFound) {
+				message = "No local refresh token found; cleared local metadata. Remote revoke was not possible."
+			} else {
+				return redditDisconnectFinishedMsg{err: err}
+			}
+		}
+		if err := oauth.ForgetLocal(config.Username); err != nil && !errors.Is(err, secretstore.ErrNotFound) {
+			if !revoke && errors.Is(err, secretstore.ErrUnavailable) {
+				return redditDisconnectFinishedMsg{message: "Forgot local Reddit metadata. Stored refresh token could not be cleared because the credential store is unavailable."}
+			}
+			return redditDisconnectFinishedMsg{err: err}
+		}
+		return redditDisconnectFinishedMsg{message: message}
+	}
+}
+
 func demoImportCmd() tea.Cmd {
 	return func() tea.Msg {
 		demoPath, err := instagram.CreateDemoExportZIP("")
 		if err != nil {
-			return importFinishedMsg{err: err, source: "demo instagram export"}
+			return importFinishedMsg{err: err, source: "demo instagram export", platform: domain.PlatformInstagram}
 		}
 		defer os.Remove(demoPath)
 
 		result, err := instagram.ImportZIP(demoPath)
-		return importFinishedMsg{result: result, err: err, source: "demo instagram export"}
+		return importFinishedMsg{result: activityResultFromInstagram(result), err: err, source: "demo instagram export", platform: domain.PlatformInstagram}
 	}
 }
 
@@ -3008,7 +3729,7 @@ func itemDetailLines(item domain.ActivityItem) []string {
 	return lines
 }
 
-func planPreviewRows(actions []domain.CleanupAction, skipped []instagram.PlanBuildSkip) []string {
+func planPreviewRows(actions []domain.CleanupAction, skipped []planBuildSkip) []string {
 	rows := make([]string, 0, len(actions)+len(skipped))
 	for _, action := range actions {
 		rows = append(rows, planActionListRow(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID))
@@ -3184,6 +3905,47 @@ func (m Model) actionCountLines(counts map[domain.ActionType]int) []string {
 	return lines
 }
 
+func (m Model) planActionCountRows(counts map[domain.ActionType]int) []string {
+	if len(counts) == 0 {
+		return nil
+	}
+	keys := make([]domain.ActionType, 0, len(counts))
+	for actionType, count := range counts {
+		if count > 0 {
+			keys = append(keys, actionType)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return string(keys[i]) < string(keys[j])
+	})
+	rows := make([]string, 0, len(keys))
+	for _, actionType := range keys {
+		rows = append(rows, m.styles.body.Render(fmt.Sprintf("%s: %d", actionTypeDisplayLabel(actionType), counts[actionType])))
+	}
+	return rows
+}
+
+func actionTypeDisplayLabel(actionType domain.ActionType) string {
+	switch actionType {
+	case domain.ActionUnlike:
+		return "Unlike"
+	case domain.ActionDeleteComment:
+		return "Delete comment"
+	case domain.ActionUnfollow:
+		return "Unfollow"
+	case domain.ActionRedditDeleteComment:
+		return "Reddit delete comment"
+	case domain.ActionRedditDeletePost:
+		return "Reddit delete post"
+	default:
+		label := strings.ReplaceAll(string(actionType), "_", " ")
+		if label == "" {
+			return "-"
+		}
+		return strings.ToUpper(label[:1]) + label[1:]
+	}
+}
+
 func (m Model) statusCountLines(counts map[domain.ActionStatus]int) []string {
 	statuses := []domain.ActionStatus{
 		domain.ActionStatusPending,
@@ -3301,6 +4063,7 @@ func recentImportDetailLines(entry workspace.RecentImport) []string {
 		fmt.Sprintf("Total items: %d", entry.ItemCount),
 		fmt.Sprintf("Likes: %d", entry.LikeCount),
 		fmt.Sprintf("Comments: %d", entry.CommentCount),
+		fmt.Sprintf("Posts: %d", entry.PostCount),
 		fmt.Sprintf("Following: %d", entry.FollowingCount),
 		fmt.Sprintf("Followers: %d", entry.FollowerCount),
 		"",
@@ -3391,7 +4154,8 @@ func planAuditFields(path string, plan domain.CleanupPlan, summary domain.Cleanu
 		"platform":             string(plan.Platform),
 		"action_count":         summary.TotalActions,
 		"unlike_count":         summary.ActionCounts[domain.ActionUnlike],
-		"delete_comment_count": summary.ActionCounts[domain.ActionDeleteComment],
+		"delete_comment_count": summary.ActionCounts[domain.ActionDeleteComment] + summary.ActionCounts[domain.ActionRedditDeleteComment],
+		"delete_post_count":    summary.ActionCounts[domain.ActionRedditDeletePost],
 		"unfollow_count":       summary.ActionCounts[domain.ActionUnfollow],
 		"pending_count":        summary.StatusCounts[domain.ActionStatusPending],
 		"running_count":        summary.StatusCounts[domain.ActionStatusRunning],
@@ -3419,6 +4183,124 @@ func cleanAuditFields(fields map[string]any) map[string]any {
 	return cleaned
 }
 
+func newRedditOAuth(allowFileFallback bool, appDir string) (*reddit.OAuth, error) {
+	clientID, err := reddit.ClientIDFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	vault, err := redditSecretVault(allowFileFallback, appDir)
+	if err != nil {
+		return nil, err
+	}
+	return reddit.NewOAuth(reddit.OAuthConfig{
+		ClientID: clientID,
+		Vault:    vault,
+	})
+}
+
+func redditSecretVault(allowFileFallback bool, appDir string) (secretstore.Vault, error) {
+	vault := secretstore.Vault{
+		Primary:           secretstore.NewKeyringStore(),
+		AllowFileFallback: allowFileFallback,
+	}
+	if strings.TrimSpace(appDir) != "" {
+		fallback, err := secretstore.NewFileStore(appDir, allowFileFallback)
+		if err != nil {
+			return secretstore.Vault{}, err
+		}
+		vault.Fallback = fallback
+	}
+	return vault, nil
+}
+
+func ensureRedditSecretStoreReady(allowFileFallback bool, appDir string) error {
+	primary := secretstore.NewKeyringStore()
+	if err := primary.Available(); err == nil {
+		return nil
+	}
+	if !allowFileFallback {
+		return errors.New("credential store unavailable; enable explicit local token file fallback before exchanging code")
+	}
+	if strings.TrimSpace(appDir) == "" {
+		return errors.New("local token file fallback requires the Vanish app dir")
+	}
+	return nil
+}
+
+func redditCodeFromInput(input, state string) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", errors.New("reddit auth code is required")
+	}
+	if strings.Contains(input, "://") {
+		parsed, err := url.Parse(input)
+		if err != nil {
+			return "", errors.New("reddit redirect URL is invalid")
+		}
+		if gotState := strings.TrimSpace(parsed.Query().Get("state")); gotState != "" && strings.TrimSpace(state) != "" && gotState != strings.TrimSpace(state) {
+			return "", errors.New("reddit OAuth state mismatch; start connect again")
+		}
+		input = strings.TrimSpace(parsed.Query().Get("code"))
+	}
+	if input == "" {
+		return "", errors.New("reddit auth code is required")
+	}
+	return input, nil
+}
+
+func friendlyRedditError(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, secretstore.ErrNotFound):
+		return "Reddit refresh token missing. Reconnect the account."
+	case errors.Is(err, secretstore.ErrUnavailable):
+		return "Credential store unavailable. Enable explicit local token file fallback if you want to store the Reddit refresh token in the Vanish app dir."
+	case errors.Is(err, secretstore.ErrFallbackConfirmationRequired):
+		return "Local token file fallback needs explicit confirmation first."
+	case strings.Contains(err.Error(), reddit.ClientIDEnv):
+		return "Set VANISH_REDDIT_CLIENT_ID before connecting Reddit."
+	default:
+		return err.Error()
+	}
+}
+
+func friendlyActivityError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func redditSourceLabel() string {
+	return "reddit API scan"
+}
+
+func formatTimePtr(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "-"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make([]string, len(values))
+	copy(clone, values)
+	return clone
+}
+
+func timePtr(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	value = value.UTC()
+	return &value
+}
+
 func sourceLabel(source string) string {
 	source = strings.TrimSpace(source)
 	if source == "" {
@@ -3436,7 +4318,7 @@ func sourceLabel(source string) string {
 
 func sourcePath(source string) string {
 	source = strings.Trim(strings.TrimSpace(source), `"'`)
-	if source == "" || isDemoSource(source) {
+	if source == "" || isDemoSource(source) || strings.EqualFold(source, redditSourceLabel()) {
 		return ""
 	}
 	return filepath.Clean(source)
@@ -3687,6 +4569,7 @@ func (m Model) filterRows() []string {
 	return []string{
 		filterTypeRow("Like", m.draftFilter.IncludeTypes[domain.ActivityFilterLike]),
 		filterTypeRow("Comment", m.draftFilter.IncludeTypes[domain.ActivityFilterComment]),
+		filterTypeRow("Post", m.draftFilter.IncludeTypes[domain.ActivityFilterPost]),
 		filterTypeRow("Following", m.draftFilter.IncludeTypes[domain.ActivityFilterFollowing]),
 		filterTypeRow("Follower", m.draftFilter.IncludeTypes[domain.ActivityFilterFollower]),
 		m.filterInputRow("Actor contains", filterRowActor, m.filterActorInput, m.draftFilter.ActorContains),
@@ -3714,6 +4597,15 @@ func newPlanPathInput() textinput.Model {
 	input.CharLimit = 1024
 	input.SetWidth(74)
 	input.SetValue(defaultPlanExportPath)
+	return input
+}
+
+func newRedditCodeInput() textinput.Model {
+	input := textinput.New()
+	input.Placeholder = "code or redirect URL"
+	input.Prompt = "> "
+	input.CharLimit = 4096
+	input.SetWidth(74)
 	return input
 }
 
@@ -3831,8 +4723,9 @@ func (m Model) activateImportPickerEntry(index int) (tea.Model, tea.Cmd) {
 		m = m.resetImportState()
 		m.current = screenImporting
 		m.importSource = zipPath
+		m.importPlatform = domain.PlatformInstagram
 		m.importErr = nil
-		m.importResult = instagram.ImportResult{}
+		m.importResult = activityResult{}
 		return m, tea.Batch(startSpinnerCmd(m.spinner), importZIPCmd(zipPath, zipPath))
 	}
 }
@@ -3901,6 +4794,9 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 	case screenPlatformDetail:
 		current := m.selectedPlatform()
 		actionRows, _ := platformActionRows(current.Actions)
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
+	case screenRedditConnect:
+		actionRows, _ := m.redditConnectActions()
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
 	case screenImportPath:
 		boxes = append(boxes, rowHitBoxes(content, hitImportPickerRow, m.importPickerOffset, importPickerRows(m.importPickerEntries))...)

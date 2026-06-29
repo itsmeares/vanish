@@ -15,6 +15,7 @@ import (
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
+	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/workspace"
 )
 
@@ -139,7 +140,7 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 		"Generate dry-run plans: prototype",
 		"OAuth: prototype",
 		"Network/API access: prototype",
-		"TUI connect/scan workflow is",
+		"manual installed-",
 	} {
 		if !strings.Contains(redditView, want) {
 			t.Fatalf("expected Reddit detail to contain %q, got:\n%s", want, redditView)
@@ -291,26 +292,96 @@ func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestRedditDisabledActionsStayNoopAndShowReason(t *testing.T) {
-	for _, actionID := range []string{platform.ActionConnectAccount, platform.ActionScanActivity} {
-		t.Run(actionID, func(t *testing.T) {
-			m := NewModel()
-			m.openPlatformDetail(1)
-			m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), actionID)
-			view := m.View().Content
-			if !strings.Contains(view, "workflow is not wired") {
-				t.Fatalf("expected disabled action reason, got:\n%s", view)
-			}
+func TestRedditConnectActionShowsManualOAuthSetupAndMissingClientID(t *testing.T) {
+	t.Setenv(reddit.ClientIDEnv, "")
 
-			updated, cmd := m.Update(keyPress("enter"))
-			if cmd != nil {
-				t.Fatalf("expected disabled Reddit action not to return a command")
-			}
-			next := requireModel(t, updated)
-			if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
-				t.Fatalf("expected disabled Reddit action to stay on detail, screen=%v id=%q", next.current, next.selectedPlatformID)
-			}
-		})
+	m := NewModel()
+	m.openPlatformDetail(1)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionConnectAccount)
+
+	updated, cmd := m.Update(keyPress("enter"))
+	if cmd != nil {
+		t.Fatalf("expected connect setup screen not to return a command")
+	}
+	next := requireModel(t, updated)
+	if next.current != screenRedditConnect || next.selectedPlatformID != platform.PlatformReddit {
+		t.Fatalf("expected Reddit connect screen, screen=%v id=%q", next.current, next.selectedPlatformID)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Reddit",
+		"Connect and scan",
+		"Status: not connected",
+		"Set VANISH_REDDIT_CLIENT_ID before connecting Reddit.",
+		"Manual OAuth only",
+		"Enter returned code",
+		"Scan supported activity",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected Reddit connect screen to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestRedditScanActionRequiresConnection(t *testing.T) {
+	t.Setenv(reddit.ClientIDEnv, "test-client")
+
+	m := NewModel()
+	m.openPlatformDetail(1)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionScanActivity)
+
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenRedditConnect {
+		t.Fatalf("expected scan without connection to open connect screen, got %v", next.current)
+	}
+	if !strings.Contains(next.View().Content, "Connect Reddit before scanning.") {
+		t.Fatalf("expected connect-required message, got:\n%s", next.View().Content)
+	}
+}
+
+func TestRedditConnectEnterCodeOpensManualOAuthForm(t *testing.T) {
+	t.Setenv(reddit.ClientIDEnv, "test-client")
+
+	m := NewModel()
+	m.openPlatformDetail(1)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionConnectAccount)
+	next := updateModel(t, m, keyPress("enter"))
+	next.redditConnectCursor = redditConnectEnterCode
+
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected code input focus command")
+	}
+	next = requireModel(t, updated)
+	if next.current != screenRedditAuthCode {
+		t.Fatalf("expected Reddit auth code screen, got %v", next.current)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Reddit OAuth",
+		"Open this Reddit authorization URL",
+		"Requested scopes: identity history",
+		"No password, cookie, session, or browser automation is used.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected Reddit auth form to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestRedditCodeFromInputParsesRedirectAndChecksState(t *testing.T) {
+	code, err := redditCodeFromInput("plain-code", "state-123")
+	if err != nil || code != "plain-code" {
+		t.Fatalf("plain code = %q err=%v", code, err)
+	}
+
+	code, err = redditCodeFromInput(reddit.DefaultRedirectURI+"?state=state-123&code=url-code", "state-123")
+	if err != nil || code != "url-code" {
+		t.Fatalf("redirect code = %q err=%v", code, err)
+	}
+
+	if _, err := redditCodeFromInput(reddit.DefaultRedirectURI+"?state=wrong&code=url-code", "state-123"); err == nil {
+		t.Fatalf("expected state mismatch error")
 	}
 }
 
@@ -325,7 +396,7 @@ func TestRedditNotesActionAndBack(t *testing.T) {
 	for _, want := range []string{
 		"Official API planner prototype targets v0.5",
 		"own comments/posts scan",
-		"TUI workflow is not wired yet",
+		"The TUI can connect with manual OAuth",
 		"No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists.",
 	} {
 		if !strings.Contains(next.View().Content, want) {
@@ -745,7 +816,8 @@ func TestRecentImportsScreenRendersPerTypeCounts(t *testing.T) {
 		ItemCount:      10,
 		LikeCount:      4,
 		CommentCount:   3,
-		FollowingCount: 2,
+		PostCount:      1,
+		FollowingCount: 1,
 		FollowerCount:  1,
 		SkippedCount:   6,
 		WarningCount:   5,
@@ -763,7 +835,8 @@ func TestRecentImportsScreenRendersPerTypeCounts(t *testing.T) {
 		"Total items: 10",
 		"Likes: 4",
 		"Comments: 3",
-		"Following: 2",
+		"Posts: 1",
+		"Following: 1",
 		"Followers: 1",
 		"Skipped or unknown: 6",
 		"Warnings: 5",
@@ -1731,6 +1804,63 @@ func TestPlanPreviewShowsCountsAndUnsupportedFollowers(t *testing.T) {
 	}
 }
 
+func TestRedditSelectionGeneratesDryRunPlan(t *testing.T) {
+	occurred := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	next := NewModel()
+	next.importPlatform = domain.PlatformReddit
+	next.importSource = redditSourceLabel()
+	next.importResult = activityResult{
+		Items: []domain.ActivityItem{
+			{
+				ID:         "reddit-comment",
+				Platform:   domain.PlatformReddit,
+				Type:       domain.ItemTypeComment,
+				Actor:      "test_user",
+				TargetID:   "t1_comment",
+				TargetURL:  "https://www.reddit.com/r/test/comments/post/comment/",
+				OccurredAt: &occurred,
+				Source:     domain.SourceMetadata{Name: "reddit-api", ImportedAt: &occurred},
+			},
+			{
+				ID:         "reddit-post",
+				Platform:   domain.PlatformReddit,
+				Type:       domain.ItemTypePost,
+				Actor:      "test_user",
+				TargetID:   "t3_post",
+				TargetURL:  "https://www.reddit.com/r/test/comments/post/title/",
+				OccurredAt: &occurred,
+				Source:     domain.SourceMetadata{Name: "reddit-api", ImportedAt: &occurred},
+			},
+		},
+		Summary: activitySummary{Total: 2, Comments: 1, Posts: 1},
+	}
+	next.selection.Toggle("reddit-comment")
+	next.selection.Toggle("reddit-post")
+	next.current = screenSelectionSummary
+
+	next.generatePlanFromSelection()
+
+	if next.current != screenPlanPreview {
+		t.Fatalf("expected Reddit plan preview, got %v", next.current)
+	}
+	if next.planResult.Plan.Platform != domain.PlatformReddit || len(next.planResult.Plan.Actions) != 2 {
+		t.Fatalf("unexpected Reddit plan result: %#v", next.planResult)
+	}
+	if next.planResult.Plan.Actions[0].Type != domain.ActionRedditDeleteComment || next.planResult.Plan.Actions[1].Type != domain.ActionRedditDeletePost {
+		t.Fatalf("unexpected Reddit action types: %#v", next.planResult.Plan.Actions)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Platform: reddit",
+		"Reddit delete comment: 1",
+		"Reddit delete post: 1",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected Reddit plan preview to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestPlanExportPathDefaultsAndWritesReadableJSON(t *testing.T) {
 	next := planPreviewModel(t)
 	next = updateModel(t, next, keyPress("enter"))
@@ -1793,7 +1923,7 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	if len(imports) != 1 {
 		t.Fatalf("recent imports = %d, want 1", len(imports))
 	}
-	if imports[0].SourcePath != filepath.Clean(sourcePath) || imports[0].ItemCount != 4 || imports[0].LikeCount != 1 || imports[0].CommentCount != 1 || imports[0].FollowingCount != 1 || imports[0].FollowerCount != 1 || imports[0].WarningCount != 1 {
+	if imports[0].SourcePath != filepath.Clean(sourcePath) || imports[0].ItemCount != 4 || imports[0].LikeCount != 1 || imports[0].CommentCount != 1 || imports[0].PostCount != 0 || imports[0].FollowingCount != 1 || imports[0].FollowerCount != 1 || imports[0].WarningCount != 1 {
 		t.Fatalf("unexpected recent import: %#v", imports[0])
 	}
 	requireAuditEvent(t, w, "import_completed")
@@ -1932,7 +2062,7 @@ func TestFiltersScreenOpensFromItemsBrowser(t *testing.T) {
 	if next.current != screenFilters {
 		t.Fatalf("expected filters screen, got %v", next.current)
 	}
-	for _, want := range []string{"Filters", "[ ] Like", "Actor contains", "Apply filters", "Clear all filters"} {
+	for _, want := range []string{"Filters", "[ ] Like", "[ ] Post", "Actor contains", "Apply filters", "Clear all filters"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected filters view to contain %q, got:\n%s", want, view)
 		}
@@ -2087,6 +2217,16 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 	importing := NewModel()
 	importing.current = screenImporting
 	importing.importSource = "demo instagram export"
+	redditConnect := NewModel()
+	redditConnect.current = screenRedditConnect
+	redditConnect.selectedPlatformID = platform.PlatformReddit
+	redditAuth := redditConnect
+	redditAuth.current = screenRedditAuthCode
+	redditAuth.redditAuthURL = "https://www.reddit.com/api/v1/authorize?client_id=test"
+	redditBusy := redditConnect
+	redditBusy.current = screenRedditBusy
+	redditBusy.redditBusyTitle = "Scanning Reddit"
+	redditBusy.redditBusyDetail = "Reading own comments and submitted posts."
 
 	cases := []struct {
 		name  string
@@ -2098,6 +2238,9 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 		{name: "import path", model: clickTab(t, NewModel(), "Import")},
 		{name: "importing", model: importing},
 		{name: "import result", model: imported},
+		{name: "reddit connect", model: redditConnect},
+		{name: "reddit auth", model: redditAuth},
+		{name: "reddit busy", model: redditBusy},
 		{name: "items", model: items},
 		{name: "review empty", model: reviewEmpty},
 		{name: "filters", model: filters},

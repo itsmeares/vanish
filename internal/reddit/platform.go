@@ -7,7 +7,7 @@ func Platform() platform.Platform {
 		ID:      platform.PlatformReddit,
 		Name:    "Reddit",
 		Status:  platform.StatusPrototype,
-		Summary: "Official API planner prototype for v0.5. OAuth/API, own comments/posts scan, and dry-run planning foundations exist; TUI connect/scan workflow is not wired yet.",
+		Summary: "Official API planner prototype for v0.5. Vanish can use manual installed-app OAuth, scan own comments/posts, and generate local dry-run plans.",
 		Capabilities: []platform.Capability{
 			{
 				Label:       "Scan own comments/posts",
@@ -47,18 +47,8 @@ func Platform() platform.Platform {
 		},
 		Actions: []platform.PlatformAction{
 			{ID: platform.ActionViewIntegrationNote, Label: "View integration notes"},
-			{
-				ID:       platform.ActionConnectAccount,
-				Label:    "Connect Reddit account",
-				Disabled: true,
-				Reason:   "OAuth foundation exists, but the TUI connect workflow is not wired in this chunk.",
-			},
-			{
-				ID:       platform.ActionScanActivity,
-				Label:    "Scan Reddit activity",
-				Disabled: true,
-				Reason:   "Scanner foundation exists, but the TUI scan workflow is not wired in this chunk.",
-			},
+			{ID: platform.ActionConnectAccount, Label: "Connect Reddit account"},
+			{ID: platform.ActionScanActivity, Label: "Scan Reddit activity"},
 			{ID: platform.ActionBack, Label: "Back"},
 		},
 		Notes: []string{
@@ -66,7 +56,7 @@ func Platform() platform.Platform {
 			"Current scanner supports own comments and submitted posts through Reddit's official API.",
 			"Saved items and vote history stay deferred until support and cleanup mapping are clean.",
 			"No Reddit content mutations, scraping, browser automation, password collection, cookie paste, or session paste exists.",
-			"Disabled TUI actions mean the interactive connect/scan flow is still a later chunk.",
+			"TUI flow is manual OAuth: Vanish shows the URL and accepts the returned code or redirect URL.",
 		},
 	}
 }

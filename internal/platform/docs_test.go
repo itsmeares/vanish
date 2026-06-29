@@ -17,7 +17,7 @@ func TestPlatformDocsStateCurrentSupportAndBoundaries(t *testing.T) {
 		"Scan saved items",
 		"Scan vote history",
 		"Use installed-app OAuth with `identity history` scopes.",
-		"TUI connect and scan actions remain disabled",
+		"Connect through the TUI with manual OAuth",
 		"does not delete platform content or apply account changes",
 	} {
 		if !strings.Contains(text, want) {
@@ -32,7 +32,7 @@ func TestReadmeLinksPlatformDocsAndAvoidsOverstatingSupport(t *testing.T) {
 		"[docs/platforms.md](docs/platforms.md)",
 		"Instagram Export prototype",
 		"Reddit official API planner",
-		"prototype foundation for v0.5",
+		"manual installed-app OAuth",
 		"does not delete platform content or apply account changes",
 	} {
 		if !strings.Contains(text, want) {

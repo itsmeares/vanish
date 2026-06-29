@@ -27,9 +27,9 @@ support honestly.
 
 ## Instagram Export
 
-Instagram Export is the only prototype platform in v0.4. Vanish can read a
-local export ZIP, normalize supported activity records, show parsed items for
-review, and generate a local dry-run cleanup plan.
+Instagram Export remains a prototype platform. Vanish can read a local export
+ZIP, normalize supported activity records, show parsed items for review, and
+generate a local dry-run cleanup plan.
 
 Vanish does not log in to Instagram, call Instagram APIs, automate a browser,
 delete platform content, or apply account changes.
@@ -38,24 +38,26 @@ delete platform content, or apply account changes.
 
 Official API planner prototype targets v0.5.
 
-Reddit now has foundation code for installed-app OAuth, secure refresh-token
-storage, official API requests, own comments/posts scanning, and local dry-run
-planning. The TUI connect and scan actions remain disabled until the interactive
-workflow is wired.
+Reddit now has a TUI-accessible prototype for installed-app OAuth, secure
+refresh-token storage, official API requests, own comments/posts scanning, and
+local dry-run planning.
 
-Implemented prototype foundations:
+Implemented prototype flow:
 
 - Use installed-app OAuth with `identity history` scopes.
+- Connect through the TUI with manual OAuth: Vanish shows the authorization URL
+  and accepts the returned code or redirect URL.
 - Store refresh tokens through the Vanish secret store, not normal config.
 - Scan own comments and submitted posts through Reddit's official API.
-- Normalize supported activity into Vanish activity items.
+- Normalize supported activity into Vanish activity items for the existing
+  review, filter, and selection screens.
 - Generate local dry-run plans with Reddit-specific planned actions.
 
 Deferred directions:
 
 - Scan saved items.
 - Scan vote history.
-- Wire TUI connect/scan flows.
+- Apply, delete, edit, save, vote, submit, or permission-changing behavior.
 
 Apply cleanup is later. It is not part of the v0.5 planner prototype and should
 not be implied to work today.

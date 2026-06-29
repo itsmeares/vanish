@@ -7,18 +7,19 @@ platform.
 ## Current Alpha Guarantees
 
 - Dry-run only.
-- Local files only.
+- Local files by default, with the explicit Reddit official API prototype
+  exception described below.
 - No cloud backend.
 - No telemetry by default.
-- No platform login.
+- No platform password login.
 - No browser automation.
 - No private API calls.
 - No deletion or account changes.
 
 ## Reddit v0.5 Official API Boundary
 
-Vanish v0.5 may add an official Reddit API planner prototype. This is the only
-planned exception to the current no-network rule, and it must stay narrow:
+Vanish v0.5 adds an official Reddit API planner prototype. This is the only
+exception to the current no-network rule, and it stays narrow:
 
 - Official Reddit OAuth and OAuth API calls only.
 - Network code only in reviewed Reddit OAuth/API files.

@@ -6,10 +6,11 @@ activity and building safe cleanup plans.
 Current status: **v0.1.0-alpha**. The app is useful for local review and dry-run
 planning, but it does not delete platform content or apply account changes.
 
-The v0.2 local workspace and v0.4 multi-platform foundation are documented
-here, but those versions have not been released. The same alpha limits still
-apply: Vanish remains local-only, dry-run-only, and does not log in to
-platforms or apply cleanup actions.
+The v0.2 local workspace, v0.4 multi-platform foundation, and v0.5 Reddit
+planner prototype are documented here, but those versions have not been
+released. The same alpha limits still apply: Vanish remains dry-run-only and
+does not apply cleanup actions. Instagram stays local-file only; Reddit uses
+explicit installed-app OAuth and the official API for the prototype scanner.
 
 ![Vanish home screen](docs/assets/home.svg)
 
@@ -37,7 +38,8 @@ platforms or apply cleanup actions.
 
 - No cloud backend.
 - No telemetry by default.
-- No credentials collected.
+- No passwords, cookies, or pasted sessions collected.
+- Reddit refresh tokens, when used, go through the configured secret store.
 - No passwords, cookies, sessions, authorization headers, or raw private
   messages in plan files.
 - Local Instagram export ZIPs are read from disk only.
@@ -107,16 +109,17 @@ model.
 - Dry-run plan generation.
 - Plan export to JSON.
 - Plan loading and viewing.
+- Reddit official API planner prototype: manual installed-app OAuth, own
+  comments/posts scan, review/filter/select reuse, and Reddit dry-run plan
+  generation.
 
 ## Not Supported Yet
 
 - Automatic deletion or apply/execution.
 - Instagram login.
 - Browser automation.
-- Reddit official API planner. Reddit has a prototype foundation for v0.5:
-  installed-app OAuth, secure refresh-token storage, official API client
-  support, own comments/posts scan, and local dry-run planning. The TUI
-  connect/scan workflow is not wired yet.
+- Reddit saved items and vote history scanning.
+- Reddit apply/delete execution.
 - Other platform integrations beyond Instagram Export and Reddit.
 - Cloud sync or hosted accounts.
 

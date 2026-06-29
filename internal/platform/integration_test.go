@@ -58,7 +58,7 @@ func TestInstagramPlatformCapabilitiesAndActions(t *testing.T) {
 	}
 }
 
-func TestRedditPlatformPrototypeAndDisabledActions(t *testing.T) {
+func TestRedditPlatformPrototypeActions(t *testing.T) {
 	current := reddit.Platform()
 	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPrototype {
 		t.Fatalf("unexpected Reddit platform identity: %#v", current)
@@ -83,18 +83,9 @@ func TestRedditPlatformPrototypeAndDisabledActions(t *testing.T) {
 	}
 	assertActionIDs(t, current.Actions, wantActions)
 
-	disabled := map[string]bool{}
 	for _, action := range current.Actions {
 		if action.Disabled {
-			if action.Reason == "" {
-				t.Fatalf("expected disabled action %q to include reason", action.ID)
-			}
-			disabled[action.ID] = true
-		}
-	}
-	for _, actionID := range []string{platform.ActionConnectAccount, platform.ActionScanActivity} {
-		if !disabled[actionID] {
-			t.Fatalf("expected Reddit action %q to be disabled", actionID)
+			t.Fatalf("expected Reddit prototype action %q to be enabled", action.ID)
 		}
 	}
 }
