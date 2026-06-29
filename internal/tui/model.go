@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -379,6 +380,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordPlanLoaded(msg.path, msg.plan, msg.summary)
 		m.current = screenLoadedPlanSummary
 		return m, nil
+
+	case tea.MouseClickMsg:
+		return m.updateMouseClick(msg)
+
+	case tea.MouseWheelMsg:
+		return m.updateMouseWheel(msg)
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, m.keys.quit) {
@@ -927,86 +934,332 @@ func (m Model) updateQuitConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders current model as terminal content.
-func (m Model) View() tea.View {
+func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	if mouse.Button != tea.MouseLeft {
+		return m, nil
+	}
+	content := m.View().Content
+
 	switch m.current {
 	case screenHome:
-		return tea.NewView(m.homeView())
-	case screenImportPath:
-		return tea.NewView(m.importPathView())
-	case screenImporting:
-		return tea.NewView(m.importingView())
+		if index := menuIndexAtY(content, mouse.Y, homeMenuItems); index >= 0 {
+			if index == m.homeCursor {
+				return m.updateHome(selectKeyPress())
+			}
+			m.homeCursor = index
+		}
 	case screenImportResult:
-		return tea.NewView(m.importResultView())
+		if m.importErr != nil {
+			return m, nil
+		}
+		if index := menuIndexAtY(content, mouse.Y, resultMenuItems); index >= 0 {
+			if index == m.resultCursor {
+				return m.updateImportResult(selectKeyPress())
+			}
+			m.resultCursor = index
+		}
 	case screenItemsBrowser:
-		return tea.NewView(m.itemsBrowserView())
-	case screenFilters:
-		return tea.NewView(m.filtersView())
+		return m.updateItemListClick(content, mouse.Y)
 	case screenSelectionSummary:
-		return tea.NewView(m.selectionSummaryView())
+		if index := menuIndexAtY(content, mouse.Y, selectionMenuItems); index >= 0 {
+			if index == m.selectionCursor {
+				return m.updateSelectionSummary(selectKeyPress())
+			}
+			m.selectionCursor = index
+			m.selectionMessage = ""
+		}
 	case screenSelectedItems:
-		return tea.NewView(m.selectedItemsView())
+		m.updateSelectedItemListClick(content, mouse.Y)
 	case screenPlanPreview:
-		return tea.NewView(m.planPreviewView())
-	case screenPlanExportPath:
-		return tea.NewView(m.planExportPathView())
-	case screenPlanLoadPath:
-		return tea.NewView(m.planLoadPathView())
+		if index := menuIndexAtY(content, mouse.Y, planPreviewMenuItems); index >= 0 {
+			if index == m.planPreviewCursor {
+				return m.updatePlanPreview(selectKeyPress())
+			}
+			m.planPreviewCursor = index
+		}
 	case screenLoadedPlanSummary:
-		return tea.NewView(m.loadedPlanSummaryView())
+		if index := menuIndexAtY(content, mouse.Y, loadedPlanSummaryMenuItems); index >= 0 {
+			if index == m.loadedPlanCursor {
+				return m.updateLoadedPlanSummary(selectKeyPress())
+			}
+			m.loadedPlanCursor = index
+		}
 	case screenLoadedPlanActions:
-		return tea.NewView(m.loadedPlanActionsView())
+		m.updatePlanActionListClick(content, mouse.Y)
 	case screenWarnings:
-		return tea.NewView(m.warningsView())
+		m.updateWarningListClick(content, mouse.Y)
 	case screenLocalDataOverview:
-		return tea.NewView(m.localDataOverviewView())
+		if index := menuIndexAtY(content, mouse.Y, localDataMenuItems); index >= 0 {
+			if index == m.localDataCursor {
+				return m.updateLocalDataOverview(selectKeyPress())
+			}
+			m.localDataCursor = index
+		}
 	case screenRecentImports:
-		return tea.NewView(m.recentImportsView())
+		m.updateRecentImportListClick(content, mouse.Y)
 	case screenRecentPlans:
-		return tea.NewView(m.recentPlansView())
+		m.updateRecentPlanListClick(content, mouse.Y)
 	case screenAuditLog:
-		return tea.NewView(m.auditLogView())
+		m.updateAuditListClick(content, mouse.Y)
 	case screenWipeLocalDataConfirm:
-		return tea.NewView(m.wipeLocalDataConfirmView())
-	case screenKeybindings:
-		return tea.NewView(m.keybindingsView())
+		if index := menuIndexAtY(content, mouse.Y, wipeLocalDataMenuItems); index >= 0 {
+			if index == m.wipeLocalDataCursor {
+				return m.updateWipeLocalDataConfirm(selectKeyPress())
+			}
+			m.wipeLocalDataCursor = index
+		}
 	case screenQuitConfirm:
-		return tea.NewView(m.quitConfirmView())
-	default:
-		return tea.NewView(m.homeView())
+		if index := menuIndexAtY(content, mouse.Y, quitConfirmMenuItems); index >= 0 {
+			if index == m.quitCursor {
+				return m.updateQuitConfirm(selectKeyPress())
+			}
+			m.quitCursor = index
+		}
 	}
+
+	return m, nil
+}
+
+func (m Model) updateMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	delta := 0
+	switch mouse.Button {
+	case tea.MouseWheelUp:
+		delta = -1
+	case tea.MouseWheelDown:
+		delta = 1
+	default:
+		return m, nil
+	}
+
+	switch m.current {
+	case screenItemsBrowser:
+		items := m.visibleItems()
+		m.itemCursor = moveCursor(m.itemCursor, len(items), delta)
+		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.itemListHeight())
+	case screenSelectedItems:
+		items := m.selectedItems()
+		m.selectedCursor = moveCursor(m.selectedCursor, len(items), delta)
+		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+	case screenLoadedPlanActions:
+		m.loadedActionCursor = moveCursor(m.loadedActionCursor, len(m.loadedPlan.Actions), delta)
+		m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
+	case screenWarnings:
+		m.warningCursor = moveCursor(m.warningCursor, len(m.importResult.Warnings), delta)
+		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+	case screenRecentImports:
+		m.recentImportCursor = moveCursor(m.recentImportCursor, len(m.recentImports), delta)
+		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+	case screenRecentPlans:
+		m.recentPlanError = ""
+		m.recentPlanCursor = moveCursor(m.recentPlanCursor, len(m.recentPlans), delta)
+		m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+	case screenAuditLog:
+		m.auditCursor = moveCursor(m.auditCursor, len(m.auditEvents), delta)
+		m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
+	default:
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m Model) updateItemListClick(content string, y int) (tea.Model, tea.Cmd) {
+	items := m.visibleItems()
+	ordinal := rowOrdinalAtY(content, y, isSelectionRowLine)
+	index := m.itemOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(items) {
+		return m, nil
+	}
+	if index == clampCursor(m.itemCursor, len(items)) {
+		return m.updateItemsBrowser(selectKeyPress())
+	}
+	m.itemCursor = index
+	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.itemListHeight())
+	return m, nil
+}
+
+func (m *Model) updateSelectedItemListClick(content string, y int) {
+	items := m.selectedItems()
+	ordinal := rowOrdinalAtY(content, y, isSelectionRowLine)
+	index := m.selectedOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(items) {
+		return
+	}
+	m.selectedCursor = index
+	m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+}
+
+func (m *Model) updatePlanActionListClick(content string, y int) {
+	actions := m.loadedPlan.Actions
+	anchors := make([]string, 0, len(actions))
+	for _, action := range actions {
+		anchors = append(anchors, actionRowAnchor(action))
+	}
+	ordinal := rowOrdinalAtY(content, y, lineMatchesAnyAnchor(anchors))
+	index := m.loadedActionOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(actions) {
+		return
+	}
+	m.loadedActionCursor = index
+	m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(actions), m.planActionListHeight())
+}
+
+func (m *Model) updateWarningListClick(content string, y int) {
+	ordinal := rowOrdinalAtY(content, y, lineMatchesAnyAnchor(m.importResult.Warnings))
+	index := m.warningOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(m.importResult.Warnings) {
+		return
+	}
+	m.warningCursor = index
+	m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+}
+
+func (m *Model) updateRecentImportListClick(content string, y int) {
+	anchors := make([]string, 0, len(m.recentImports))
+	for _, entry := range m.recentImports {
+		anchors = append(anchors, recentImportRow(entry))
+	}
+	ordinal := rowOrdinalAtY(content, y, lineMatchesAnyAnchor(anchors))
+	index := m.recentImportOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(m.recentImports) {
+		return
+	}
+	m.recentImportCursor = index
+	m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
+}
+
+func (m *Model) updateRecentPlanListClick(content string, y int) {
+	anchors := make([]string, 0, len(m.recentPlans))
+	for _, entry := range m.recentPlans {
+		anchors = append(anchors, recentPlanRow(entry))
+	}
+	ordinal := rowOrdinalAtY(content, y, lineMatchesAnyAnchor(anchors))
+	index := m.recentPlanOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(m.recentPlans) {
+		return
+	}
+	m.recentPlanError = ""
+	m.recentPlanCursor = index
+	m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+}
+
+func (m *Model) updateAuditListClick(content string, y int) {
+	anchors := make([]string, 0, len(m.auditEvents))
+	for _, event := range m.auditEvents {
+		anchors = append(anchors, auditEventRow(event))
+	}
+	ordinal := rowOrdinalAtY(content, y, lineMatchesAnyAnchor(anchors))
+	index := m.auditOffset + ordinal
+	if ordinal < 0 || index < 0 || index >= len(m.auditEvents) {
+		return
+	}
+	m.auditCursor = index
+	m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
+}
+
+// View renders current model as terminal content.
+func (m Model) View() tea.View {
+	var content string
+	switch m.current {
+	case screenHome:
+		content = m.homeView()
+	case screenImportPath:
+		content = m.importPathView()
+	case screenImporting:
+		content = m.importingView()
+	case screenImportResult:
+		content = m.importResultView()
+	case screenItemsBrowser:
+		content = m.itemsBrowserView()
+	case screenFilters:
+		content = m.filtersView()
+	case screenSelectionSummary:
+		content = m.selectionSummaryView()
+	case screenSelectedItems:
+		content = m.selectedItemsView()
+	case screenPlanPreview:
+		content = m.planPreviewView()
+	case screenPlanExportPath:
+		content = m.planExportPathView()
+	case screenPlanLoadPath:
+		content = m.planLoadPathView()
+	case screenLoadedPlanSummary:
+		content = m.loadedPlanSummaryView()
+	case screenLoadedPlanActions:
+		content = m.loadedPlanActionsView()
+	case screenWarnings:
+		content = m.warningsView()
+	case screenLocalDataOverview:
+		content = m.localDataOverviewView()
+	case screenRecentImports:
+		content = m.recentImportsView()
+	case screenRecentPlans:
+		content = m.recentPlansView()
+	case screenAuditLog:
+		content = m.auditLogView()
+	case screenWipeLocalDataConfirm:
+		content = m.wipeLocalDataConfirmView()
+	case screenKeybindings:
+		content = m.keybindingsView()
+	case screenQuitConfirm:
+		content = m.quitConfirmView()
+	default:
+		content = m.homeView()
+	}
+
+	view := tea.NewView(content)
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
 }
 
 func (m Model) homeView() string {
-	lines := m.header("Home")
-	lines = append(lines,
-		"",
-		m.styles.body.Render("Local-first review and cleanup planning for your social media footprint."),
-		m.styles.muted.Render("No cloud backend. No telemetry by default. No hidden background actions."),
-		"",
-		m.styles.body.Render("Import a local Instagram export ZIP or inspect an exported cleanup plan."),
-		"",
-	)
-	lines = append(lines, m.localDataMessages()...)
-	lines = append(lines, m.renderMenu(homeMenuItems, m.homeCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.help, m.keys.quit))
+	spec := layoutSpec(m.width, m.height)
+	menu := m.menuRows(homeMenuItems, m.homeCursor, spec.sidebarWidth)
+	workspaceLines := m.keyValueRows([]keyValue{
+		{Key: "App directory", Value: m.localDataDirLabel()},
+		{Key: "Telemetry", Value: enabledLabel(m.localConfig.Telemetry.Enabled)},
+		{Key: "Recent imports", Value: compactCount(len(m.recentImports))},
+		{Key: "Recent plans", Value: compactCount(len(m.recentPlans))},
+		{Key: "Audit events", Value: compactCount(len(m.auditEvents))},
+	})
+	if m.auditMalformed > 0 {
+		workspaceLines = append(workspaceLines, m.notice("warning", fmt.Sprintf("Malformed audit lines: %d", m.auditMalformed)))
+	}
 
-	return m.frame(strings.Join(lines, "\n"))
+	right := m.dashboardSections(
+		spec.detailWidth,
+		m.warningBanner(m.localDataWarning, spec.detailWidth),
+		m.section("Safety", []string{
+			m.styles.body.Render("Local-only review of files you choose."),
+			m.styles.body.Render("Dry-run cleanup planning only."),
+			m.styles.body.Render("No login, browser automation, deletion, or network requests."),
+		}),
+		m.section("Workspace", workspaceLines),
+		m.section("Getting Started", []string{
+			m.styles.body.Render("Import a local Instagram export ZIP or run the demo data."),
+			m.styles.body.Render("Review parsed items, filters, and selections."),
+			m.styles.body.Render("Generate and export a local dry-run plan JSON."),
+		}),
+	)
+
+	body := m.twoPane(
+		spec,
+		"Start", "Choose a local workflow", menu,
+		"Command Center", "Safety and local workspace", right,
+	)
+	return m.appShell("Home", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.help, m.keys.quit))
 }
 
 func (m Model) importPathView() string {
-	lines := m.header("Import Instagram Export")
-	lines = append(lines,
-		"",
+	lines := []string{
 		m.styles.body.Render("Type the path to a local Instagram data export .zip file."),
 		m.styles.muted.Render("Vanish will only read local JSON files from the ZIP."),
 		"",
 		m.pathInput.View(),
-		"",
-		m.helpLine(m.keys.start, m.keys.cancel, m.keys.help, m.keys.quit),
-	)
-
-	return m.frame(strings.Join(lines, "\n"))
+	}
+	return m.singlePane("Import Instagram Export", "Local ZIP path", lines, m.keys.start, m.keys.cancel, m.keys.help, m.keys.quit)
 }
 
 func (m Model) importingView() string {
@@ -1015,53 +1268,46 @@ func (m Model) importingView() string {
 		source = "instagram export"
 	}
 
-	lines := m.header("Importing")
-	lines = append(lines,
-		"",
+	lines := []string{
 		m.styles.body.Render(fmt.Sprintf("%s Parsing local ZIP...", m.spinner.View())),
-		m.styles.muted.Render(source),
-		"",
-		m.helpLine(m.keys.help, m.keys.quit),
-	)
-
-	return m.frame(strings.Join(lines, "\n"))
+		m.styles.muted.Render(truncateMiddle(source, layoutSpec(m.width, m.height).contentWidth-4)),
+	}
+	return m.singlePane("Importing", "Reading local files only", lines, m.keys.help, m.keys.quit)
 }
 
 func (m Model) importResultView() string {
 	if m.importErr != nil {
-		lines := m.header("Import Failed")
-		lines = append(lines,
-			"",
-			m.styles.error.Render(m.importErr.Error()),
+		lines := []string{
+			m.notice("error", m.importErr.Error()),
 			m.styles.muted.Render("Check that the path points to a local Instagram export .zip, then try again."),
-			m.styles.muted.Render(m.importSource),
 			"",
-		)
+			m.styles.muted.Render(truncateMiddle(m.importSource, layoutSpec(m.width, m.height).contentWidth-4)),
+		}
 		lines = append(lines, m.localDataMessages()...)
-		lines = append(lines, m.helpLine(m.keys.back, m.keys.help, m.keys.quit))
-
-		return m.frame(strings.Join(lines, "\n"))
+		return m.singlePane("Import Failed", "No data was imported", lines, m.keys.back, m.keys.help, m.keys.quit)
 	}
 
+	spec := layoutSpec(m.width, m.height)
 	summary := m.importResult.Summary
-	lines := m.header("Import Complete")
-	lines = append(lines,
-		"",
+	summaryLines := []string{
 		m.styles.body.Render(fmt.Sprintf("Source: %s", emptyFallback(m.importSource, "instagram export"))),
 		"",
 		m.styles.body.Render(fmt.Sprintf("Parsed: %d total | Likes: %d | Comments: %d | Following: %d | Followers: %d", summary.Total, summary.Likes, summary.Comments, summary.Following, summary.Followers)),
 		m.styles.body.Render(fmt.Sprintf("Skipped or unknown: %d | Warnings: %d", summary.Skipped, len(m.importResult.Warnings))),
-		"",
+	}
+	summaryLines = append(summaryLines, m.localDataMessages()...)
+	body := m.twoPane(
+		spec,
+		"Actions", "Next review step", m.menuRows(resultMenuItems, m.resultCursor, spec.sidebarWidth),
+		"Import Complete", "Parsed local export", summaryLines,
 	)
-	lines = append(lines, m.localDataMessages()...)
-
-	lines = append(lines, m.renderMenu(resultMenuItems, m.resultCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	return m.appShell("Import Complete", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) itemsBrowserView() string {
+	spec := layoutSpec(m.width, m.height)
 	items := m.visibleItems()
+	listWidth, detailWidth := twoPaneWidths(spec, "Parsed Items")
 	total := len(m.importResult.Items)
 	visibleRows := m.itemListHeight()
 	cursor := clampCursor(m.itemCursor, len(items))
@@ -1071,119 +1317,109 @@ func (m Model) itemsBrowserView() string {
 	if m.itemFilter.Active() {
 		filterStatus = "active"
 	}
-	lines := m.header("Parsed Items")
-	lines = append(lines,
-		"",
-		m.styles.muted.Render(fmt.Sprintf("Visible: %d / %d | Selected: %d | Filters: %s", len(items), total, m.selection.Len(), filterStatus)),
+	listLines := []string{
+		m.styles.muted.Render(fmt.Sprintf("Visible: %s / %s | Selected: %s | Filters: %s", compactCount(len(items)), compactCount(total), compactCount(m.selection.Len()), filterStatus)),
 		m.styles.muted.Render(fmt.Sprintf("Source: %s", emptyFallback(m.importSource, "instagram export"))),
 		"",
-	)
+	}
 	if m.itemFilter.Active() {
-		lines = append(lines, m.styles.warning.Render("Filters active"), "")
+		listLines = append(listLines, m.notice("warning", "Filters active"), "")
 	}
 
 	if len(items) == 0 {
-		lines = append(lines, m.styles.muted.Render("No parsed items."))
+		listLines = append(listLines, m.emptyState("No parsed items."))
 	} else {
-		end := minInt(len(items), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
+		rows := make([]string, 0, len(items))
+		for _, item := range items {
+			rows = append(rows, m.selectableItemRow(item))
 		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(m.selectableItemRow(items[i]), i == cursor))
-		}
-		if end < len(items) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
+		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth)...)
 	}
 
-	lines = append(lines, "", m.styles.separator.Render("Details"))
+	detailLines := []string{}
 	if len(items) == 0 {
-		lines = append(lines, m.styles.muted.Render("No items match the current filters. Clear filters or import another ZIP."))
+		detailLines = append(detailLines, m.emptyState("No items match the current filters. Clear filters or import another ZIP."))
 	} else {
-		for _, line := range itemDetailLines(items[cursor]) {
-			lines = append(lines, m.styles.body.Render(line))
-		}
+		detailLines = append(detailLines, m.detailRows(itemDetailLines(items[cursor]), detailWidth)...)
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.toggleSelection, m.keys.selectionSummary, m.keys.filter, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	body := m.twoPane(spec, "Parsed Items", "Review and toggle", listLines, "Details", "Highlighted item", detailLines)
+	return m.appShell("Parsed Items", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.toggleSelection, m.keys.selectionSummary, m.keys.filter, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) selectionSummaryView() string {
+	spec := layoutSpec(m.width, m.height)
 	counts := m.selection.Counts(m.importResult.Items)
 	visibleCount := len(m.visibleItems())
-	lines := m.header("Selection Summary")
-	lines = append(lines,
-		"",
-		m.styles.body.Render(fmt.Sprintf("Total selected: %d", counts.Total)),
-		m.styles.body.Render(fmt.Sprintf("Visible items: %d", visibleCount)),
-		m.styles.body.Render(fmt.Sprintf("Selected likes: %d", counts.Likes)),
-		m.styles.body.Render(fmt.Sprintf("Selected comments: %d", counts.Comments)),
-		m.styles.body.Render(fmt.Sprintf("Selected following: %d", counts.Following)),
-		m.styles.body.Render(fmt.Sprintf("Selected followers: %d", counts.Followers)),
-		"",
+	summaryLines := m.dashboardSections(
+		spec.detailWidth,
+		m.warningBanner(m.selectionMessage, spec.detailWidth),
+		m.section("Selection Totals", m.keyValueRows([]keyValue{
+			{Key: "Total selected", Value: compactCount(counts.Total)},
+			{Key: "Visible items", Value: compactCount(visibleCount)},
+			{Key: "All parsed items", Value: compactCount(len(m.importResult.Items))},
+		})),
+		m.section("Selected Type Counts", m.keyValueRows([]keyValue{
+			{Key: "Likes", Value: compactCount(counts.Likes)},
+			{Key: "Comments", Value: compactCount(counts.Comments)},
+			{Key: "Following", Value: compactCount(counts.Following)},
+			{Key: "Followers", Value: compactCount(counts.Followers)},
+		})),
+		m.section("Current Filters", m.filterSummaryLines()),
+		m.section("Next Suggested Action", []string{m.styles.body.Render(m.selectionNextAction(counts.Total))}),
 	)
-
-	if strings.TrimSpace(m.selectionMessage) != "" {
-		lines = append(lines, m.styles.warning.Render(m.selectionMessage), "")
-	}
-	lines = append(lines, m.renderMenu(selectionMenuItems, m.selectionCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	body := m.twoPane(
+		spec,
+		"Actions", "Selection workflow", m.menuRows(selectionMenuItems, m.selectionCursor, spec.sidebarWidth),
+		"Selection Dashboard", "Current review set", summaryLines,
+	)
+	return m.appShell("Selection Summary", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) selectedItemsView() string {
+	spec := layoutSpec(m.width, m.height)
 	items := m.selectedItems()
+	listWidth, detailWidth := twoPaneWidths(spec, "Selected Items")
 	total := len(m.importResult.Items)
 	visibleRows := m.itemListHeight()
 	cursor := clampCursor(m.selectedCursor, len(items))
 	offset := ensureOffset(cursor, m.selectedOffset, len(items), visibleRows)
 
-	lines := m.header("Selected Items")
-	lines = append(lines,
-		"",
+	listLines := []string{
 		m.styles.muted.Render(fmt.Sprintf("Selected: %d / Total: %d", len(items), total)),
 		"",
-	)
-
-	if len(items) == 0 {
-		lines = append(lines, m.styles.muted.Render("No selected items yet. Toggle items in the parsed item list or select visible items from the summary."))
-	} else {
-		end := minInt(len(items), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(m.selectableItemRow(items[i]), i == cursor))
-		}
-		if end < len(items) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
 	}
 
-	lines = append(lines, "", m.styles.separator.Render("Details"))
 	if len(items) == 0 {
-		lines = append(lines, m.styles.muted.Render("No item selected."))
+		listLines = append(listLines, m.emptyState("No selected items yet. Toggle items in the parsed item list or select visible items from the summary."))
 	} else {
-		for _, line := range itemDetailLines(items[cursor]) {
-			lines = append(lines, m.styles.body.Render(line))
+		rows := make([]string, 0, len(items))
+		for _, item := range items {
+			rows = append(rows, m.selectableItemRow(item))
 		}
+		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth)...)
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	detailLines := []string{}
+	if len(items) == 0 {
+		detailLines = append(detailLines, m.emptyState("No item selected."))
+	} else {
+		detailLines = append(detailLines, m.detailRows(itemDetailLines(items[cursor]), detailWidth)...)
+	}
+
+	body := m.twoPane(spec, "Selected Items", "Chosen cleanup candidates", listLines, "Details", "Highlighted item", detailLines)
+	return m.appShell("Selected Items", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) planPreviewView() string {
+	spec := layoutSpec(m.width, m.height)
 	result := m.planResult
+	summaryWidth, actionWidth := twoPaneWidths(spec, "Plan Summary")
 	rows := planPreviewRows(result.Plan.Actions, result.Skipped)
 	visibleRows := m.planListHeight()
 	offset := ensureOffset(0, m.planListOffset, len(rows), visibleRows)
 
-	lines := m.header("Dry-Run Plan Preview")
-	lines = append(lines,
-		"",
+	summaryLines := []string{
 		m.styles.body.Render(fmt.Sprintf("Plan mode: %s", result.Plan.Mode)),
 		m.styles.body.Render(fmt.Sprintf("Source platform: %s", result.Plan.Platform)),
 		m.styles.body.Render(fmt.Sprintf("Selected items: %d", result.SelectedCount)),
@@ -1191,156 +1427,126 @@ func (m Model) planPreviewView() string {
 		m.styles.body.Render(fmt.Sprintf("Unsupported/skipped selected items: %d", len(result.Skipped))),
 		m.styles.body.Render(fmt.Sprintf("Action counts: unlike %d, delete_comment %d, unfollow %d", result.Counts.Unlike, result.Counts.DeleteComment, result.Counts.Unfollow)),
 		"",
-	)
+	}
+	summaryLines = append(summaryLines, m.menuRows(planPreviewMenuItems, m.planPreviewCursor, summaryWidth)...)
 
-	lines = append(lines, m.renderMenu(planPreviewMenuItems, m.planPreviewCursor)...)
-	lines = append(lines, "", m.styles.separator.Render("Planned actions"))
+	actionLines := []string{}
 	if len(rows) == 0 {
-		lines = append(lines, m.styles.muted.Render("No supported actions."))
+		actionLines = append(actionLines, m.emptyState("No supported actions."))
 	} else {
-		end := minInt(len(rows), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.styles.body.Render(rows[i]))
-		}
-		if end < len(rows) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
+		actionLines = append(actionLines, m.plainRows(rows, offset, visibleRows, actionWidth)...)
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	body := m.twoPane(spec, "Plan Summary", "Dry-run only", summaryLines, "Planned actions", "Supported and skipped", actionLines)
+	return m.appShell("Dry-Run Plan Preview", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) planExportPathView() string {
-	lines := m.header("Export Plan JSON")
-	lines = append(lines,
-		"",
+	lines := []string{
 		m.styles.body.Render("Output path"),
 		m.planPathInput.View(),
 		"",
-	)
+	}
 
 	if strings.TrimSpace(m.planExportStatus) != "" {
-		lines = append(lines, m.styles.success.Render(m.planExportStatus), "")
+		lines = append(lines, m.notice("success", m.planExportStatus), "")
 	}
 	if strings.TrimSpace(m.planExportError) != "" {
-		lines = append(lines, m.styles.error.Render(m.planExportError), "")
+		lines = append(lines, m.notice("error", m.planExportError), "")
 	}
 	lines = append(lines, m.localDataMessages()...)
 
-	lines = append(lines, m.helpLine(m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	return m.singlePane("Export Plan JSON", "Write a local dry-run plan", lines, m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit)
 }
 
 func (m Model) planLoadPathView() string {
-	lines := m.header("Load Cleanup Plan")
-	lines = append(lines,
-		"",
+	lines := []string{
 		m.styles.body.Render("Type the path to a local cleanup plan JSON file."),
 		m.styles.muted.Render("Vanish will only read and validate the local file."),
 		"",
 		m.planPathInput.View(),
 		"",
-	)
-
-	if strings.TrimSpace(m.planLoadError) != "" {
-		lines = append(lines, m.styles.error.Render(m.planLoadError), "")
 	}
 
-	lines = append(lines, m.helpLine(m.keys.start, m.keys.cancel, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	if strings.TrimSpace(m.planLoadError) != "" {
+		lines = append(lines, m.notice("error", m.planLoadError), "")
+	}
+
+	return m.singlePane("Load Cleanup Plan", "Local JSON path", lines, m.keys.start, m.keys.cancel, m.keys.help, m.keys.quit)
 }
 
 func (m Model) loadedPlanSummaryView() string {
+	spec := layoutSpec(m.width, m.height)
 	plan := m.loadedPlan
 	summary := m.loadedPlanSummary
 
-	lines := m.header("Loaded Cleanup Plan")
-	lines = append(lines,
-		"",
-		m.styles.body.Render(fmt.Sprintf("Plan ID: %s", emptyFallback(plan.ID, "-"))),
-		m.styles.body.Render(fmt.Sprintf("Format version: %d", plan.FormatVersion)),
-		m.styles.body.Render(fmt.Sprintf("Platform: %s", emptyFallback(string(plan.Platform), "-"))),
-		m.styles.body.Render(fmt.Sprintf("Source name: %s", emptyFallback(plan.SourceName, "-"))),
-		m.styles.body.Render(fmt.Sprintf("Mode: %s", emptyFallback(string(plan.Mode), "-"))),
-		m.styles.body.Render(fmt.Sprintf("Created at: %s", formatPlanTime(plan.CreatedAt))),
-		m.styles.body.Render(fmt.Sprintf("Total actions: %d", summary.TotalActions)),
-		"",
-		m.styles.separator.Render("Action counts by type"),
+	detailLines := m.dashboardSections(
+		spec.detailWidth,
+		m.section("Plan", m.keyValueRows([]keyValue{
+			{Key: "Plan ID", Value: truncateMiddle(emptyFallback(plan.ID, "-"), 24)},
+			{Key: "Platform", Value: emptyFallback(string(plan.Platform), "-")},
+			{Key: "Mode", Value: emptyFallback(string(plan.Mode), "-")},
+			{Key: "Source", Value: emptyFallback(plan.SourceName, "-")},
+			{Key: "Created at", Value: formatPlanTime(plan.CreatedAt)},
+			{Key: "Total actions", Value: compactCount(summary.TotalActions)},
+		})),
+		m.section("Action Counts", m.actionCountLines(summary.ActionCounts)),
+		m.section("Status Counts", m.statusCountLines(summary.StatusCounts)),
 	)
-	lines = append(lines, m.actionCountLines(summary.ActionCounts)...)
-	lines = append(lines,
-		"",
-		m.styles.separator.Render("Status counts"),
-		m.styles.body.Render(fmt.Sprintf("pending: %d", summary.StatusCounts[domain.ActionStatusPending])),
-		m.styles.body.Render(fmt.Sprintf("running: %d", summary.StatusCounts[domain.ActionStatusRunning])),
-		m.styles.body.Render(fmt.Sprintf("done: %d", summary.StatusCounts[domain.ActionStatusDone])),
-		m.styles.body.Render(fmt.Sprintf("failed: %d", summary.StatusCounts[domain.ActionStatusFailed])),
-		m.styles.body.Render(fmt.Sprintf("skipped: %d", summary.StatusCounts[domain.ActionStatusSkipped])),
-		"",
+	body := m.twoPane(
+		spec,
+		"Actions", "Loaded plan", m.menuRows(loadedPlanSummaryMenuItems, m.loadedPlanCursor, spec.sidebarWidth),
+		"Loaded Cleanup Plan", "Plan metadata", detailLines,
 	)
-	lines = append(lines, m.renderMenu(loadedPlanSummaryMenuItems, m.loadedPlanCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	return m.appShell("Loaded Cleanup Plan", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) loadedPlanActionsView() string {
+	spec := layoutSpec(m.width, m.height)
 	actions := m.loadedPlan.Actions
+	listWidth, detailWidth := twoPaneWidths(spec, "Plan Actions")
 	visibleRows := m.planActionListHeight()
 	cursor := clampCursor(m.loadedActionCursor, len(actions))
 	offset := ensureOffset(cursor, m.loadedActionOffset, len(actions), visibleRows)
 
-	lines := m.header("Plan Actions")
-	lines = append(lines,
-		"",
+	listLines := []string{
 		m.styles.muted.Render(fmt.Sprintf("Actions: %d | Plan: %s", len(actions), emptyFallback(m.loadedPlan.ID, "-"))),
 		"",
-	)
-
-	if len(actions) == 0 {
-		lines = append(lines, m.styles.muted.Render("No actions in this plan."))
-	} else {
-		end := minInt(len(actions), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(planActionRow(actions[i]), i == cursor))
-		}
-		if end < len(actions) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
 	}
 
-	lines = append(lines, "", m.styles.separator.Render("Details"))
 	if len(actions) == 0 {
-		lines = append(lines, m.styles.muted.Render("No action selected."))
+		listLines = append(listLines, m.emptyState("No actions in this plan."))
 	} else {
-		for _, line := range planActionDetailLines(actions[cursor]) {
-			lines = append(lines, m.styles.body.Render(line))
+		rows := make([]string, 0, len(actions))
+		for _, action := range actions {
+			rows = append(rows, planActionRow(action))
 		}
+		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth)...)
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	detailLines := []string{}
+	if len(actions) == 0 {
+		detailLines = append(detailLines, m.emptyState("No action selected."))
+	} else {
+		detailLines = append(detailLines, m.detailRows(planActionDetailLines(actions[cursor]), detailWidth)...)
+	}
+
+	body := m.twoPane(spec, "Plan Actions", "Read-only dry-run actions", listLines, "Details", "Highlighted action", detailLines)
+	return m.appShell("Plan Actions", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) filtersView() string {
-	lines := m.header("Filters")
-	lines = append(lines,
-		"",
+	spec := layoutSpec(m.width, m.height)
+	lines := []string{
 		m.styles.muted.Render(fmt.Sprintf("Visible: %d / %d | Filters: %s", len(m.visibleItems()), len(m.importResult.Items), activeLabel(m.itemFilter.Active()))),
 		"",
-	)
+	}
 
 	if m.itemFilter.Active() {
-		lines = append(lines, m.styles.warning.Render("Filters active"), "")
+		lines = append(lines, m.notice("warning", "Filters active"), "")
 	}
 	if strings.TrimSpace(m.filterError) != "" {
-		lines = append(lines, m.styles.error.Render(m.filterError), "")
+		lines = append(lines, m.notice("error", m.filterError), "")
 	}
 
 	rows := []string{
@@ -1357,53 +1563,40 @@ func (m Model) filtersView() string {
 	}
 
 	for i, row := range rows {
-		lines = append(lines, m.renderSelectableLine(row, i == m.filterCursor))
+		lines = append(lines, m.selectableLine(row, i == m.filterCursor, spec.contentWidth))
 	}
 
 	if m.filterEditing == filterEditNone {
-		lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
+		return m.singlePane("Filters", "Constrain parsed items", lines, m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit)
 	} else {
-		lines = append(lines, "", m.helpLine(m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit))
+		return m.singlePane("Filters", "Editing filter value", lines, m.keys.save, m.keys.cancel, m.keys.help, m.keys.quit)
 	}
-	return m.frame(strings.Join(lines, "\n"))
 }
 
 func (m Model) warningsView() string {
+	spec := layoutSpec(m.width, m.height)
 	warnings := m.importResult.Warnings
 	visibleRows := m.warningListHeight()
 	cursor := clampCursor(m.warningCursor, len(warnings))
 	offset := ensureOffset(cursor, m.warningOffset, len(warnings), visibleRows)
 
-	lines := m.header("Import Warnings")
-	lines = append(lines,
-		"",
+	lines := []string{
 		m.styles.muted.Render(fmt.Sprintf("%d warnings from %s", len(warnings), emptyFallback(m.importSource, "instagram export"))),
 		"",
-	)
-
-	if len(warnings) == 0 {
-		lines = append(lines, m.styles.muted.Render("No warnings."))
-	} else {
-		end := minInt(len(warnings), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(warnings[i], i == cursor))
-		}
-		if end < len(warnings) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
 	}
 
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	if len(warnings) == 0 {
+		lines = append(lines, m.emptyState("No warnings."))
+	} else {
+		lines = append(lines, m.tableRows(warnings, cursor, offset, visibleRows, spec.contentWidth)...)
+	}
+
+	return m.singlePane("Import Warnings", "Skipped or unsupported local files", lines, m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit)
 }
 
 func (m Model) localDataOverviewView() string {
-	lines := m.header("Local Data")
-	lines = append(lines,
-		"",
+	spec := layoutSpec(m.width, m.height)
+	stats := []string{
 		m.styles.body.Render("Vanish stores local metadata only in its app directory."),
 		m.styles.muted.Render("Imports and cleanup plans stay at the local paths you choose."),
 		"",
@@ -1412,153 +1605,131 @@ func (m Model) localDataOverviewView() string {
 		m.styles.body.Render(fmt.Sprintf("Recent imports: %d", len(m.recentImports))),
 		m.styles.body.Render(fmt.Sprintf("Recent plans: %d", len(m.recentPlans))),
 		m.styles.body.Render(fmt.Sprintf("Audit events: %d", len(m.auditEvents))),
-	)
-	if m.auditMalformed > 0 {
-		lines = append(lines, m.styles.warning.Render(fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)))
 	}
-	lines = append(lines, "")
-	lines = append(lines, m.localDataMessages()...)
-	lines = append(lines, m.renderMenu(localDataMenuItems, m.localDataCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	if m.auditMalformed > 0 {
+		stats = append(stats, m.notice("warning", fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)))
+	}
+	stats = append(stats, "")
+	stats = append(stats, m.localDataMessages()...)
+	body := m.twoPane(
+		spec,
+		"Actions", "Local metadata", m.menuRows(localDataMenuItems, m.localDataCursor, spec.sidebarWidth),
+		"Local Data", "Workspace overview", stats,
+	)
+	return m.appShell("Local Data", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) recentImportsView() string {
+	spec := layoutSpec(m.width, m.height)
 	visibleRows := m.localDataListHeight()
+	listWidth, detailWidth := twoPaneWidths(spec, "Recent Imports")
 	cursor := clampCursor(m.recentImportCursor, len(m.recentImports))
 	offset := ensureOffset(cursor, m.recentImportOffset, len(m.recentImports), visibleRows)
-	lines := m.header("Recent Imports")
-	lines = append(lines,
-		"",
+	listLines := []string{
 		m.styles.muted.Render(fmt.Sprintf("%d recent imports from %s", len(m.recentImports), m.localDataDirLabel())),
 		"",
-	)
-	lines = append(lines, m.localDataMessages()...)
-	if len(m.recentImports) == 0 {
-		lines = append(lines, m.styles.muted.Render("No recent imports yet. Import demo data or a local Instagram ZIP to add one."))
-	} else {
-		end := minInt(len(m.recentImports), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(recentImportRow(m.recentImports[i]), i == cursor))
-		}
-		if end < len(m.recentImports) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
 	}
-	lines = append(lines, "", m.styles.separator.Render("Details"))
+	listLines = append(listLines, m.localDataMessages()...)
 	if len(m.recentImports) == 0 {
-		lines = append(lines, m.styles.muted.Render("No import selected."))
+		listLines = append(listLines, m.emptyState("No recent imports yet. Import demo data or a local Instagram ZIP to add one."))
 	} else {
-		for _, line := range recentImportDetailLines(m.recentImports[cursor]) {
-			lines = append(lines, m.styles.body.Render(line))
+		rows := make([]string, 0, len(m.recentImports))
+		for _, entry := range m.recentImports {
+			rows = append(rows, recentImportRow(entry))
 		}
+		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth)...)
 	}
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	detailLines := []string{}
+	if len(m.recentImports) == 0 {
+		detailLines = append(detailLines, m.emptyState("No import selected."))
+	} else {
+		detailLines = append(detailLines, m.detailRows(recentImportDetailLines(m.recentImports[cursor]), detailWidth)...)
+	}
+	body := m.twoPane(spec, "Recent Imports", "Newest first", listLines, "Details", "Highlighted import", detailLines)
+	return m.appShell("Recent Imports", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) recentPlansView() string {
+	spec := layoutSpec(m.width, m.height)
 	visibleRows := m.localDataListHeight()
+	listWidth, detailWidth := twoPaneWidths(spec, "Recent Plans")
 	cursor := clampCursor(m.recentPlanCursor, len(m.recentPlans))
 	offset := ensureOffset(cursor, m.recentPlanOffset, len(m.recentPlans), visibleRows)
-	lines := m.header("Recent Plans")
-	lines = append(lines,
-		"",
+	listLines := []string{
 		m.styles.muted.Render(fmt.Sprintf("%d recent plans from %s", len(m.recentPlans), m.localDataDirLabel())),
 		"",
-	)
-	lines = append(lines, m.localDataMessages()...)
+	}
+	listLines = append(listLines, m.localDataMessages()...)
 	if strings.TrimSpace(m.recentPlanError) != "" {
-		lines = append(lines, m.styles.error.Render(m.recentPlanError), "")
+		listLines = append(listLines, m.notice("error", m.recentPlanError), "")
 	}
 	if len(m.recentPlans) == 0 {
-		lines = append(lines, m.styles.muted.Render("No recent plans yet. Export or load a dry-run cleanup plan to add one."))
+		listLines = append(listLines, m.emptyState("No recent plans yet. Export or load a dry-run cleanup plan to add one."))
 	} else {
-		end := minInt(len(m.recentPlans), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
+		rows := make([]string, 0, len(m.recentPlans))
+		for _, entry := range m.recentPlans {
+			rows = append(rows, recentPlanRow(entry))
 		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(recentPlanRow(m.recentPlans[i]), i == cursor))
-		}
-		if end < len(m.recentPlans) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
+		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth)...)
 	}
-	lines = append(lines, "", m.styles.separator.Render("Details"))
+	detailLines := []string{}
 	if len(m.recentPlans) == 0 {
-		lines = append(lines, m.styles.muted.Render("No plan selected."))
+		detailLines = append(detailLines, m.emptyState("No plan selected."))
 	} else {
-		for _, line := range recentPlanDetailLines(m.recentPlans[cursor]) {
-			lines = append(lines, m.styles.body.Render(line))
-		}
+		detailLines = append(detailLines, m.detailRows(recentPlanDetailLines(m.recentPlans[cursor]), detailWidth)...)
 	}
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	body := m.twoPane(spec, "Recent Plans", "Enter loads selected", listLines, "Details", "Highlighted plan", detailLines)
+	return m.appShell("Recent Plans", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) auditLogView() string {
+	spec := layoutSpec(m.width, m.height)
 	visibleRows := m.localDataListHeight()
+	listWidth, detailWidth := twoPaneWidths(spec, "Audit Log")
 	cursor := clampCursor(m.auditCursor, len(m.auditEvents))
 	offset := ensureOffset(cursor, m.auditOffset, len(m.auditEvents), visibleRows)
-	lines := m.header("Audit Log")
-	lines = append(lines,
-		"",
+	listLines := []string{
 		m.styles.muted.Render(fmt.Sprintf("%d audit events from %s", len(m.auditEvents), m.localDataDirLabel())),
 		"",
-	)
-	lines = append(lines, m.localDataMessages()...)
+	}
+	listLines = append(listLines, m.localDataMessages()...)
 	if m.auditMalformed > 0 {
-		lines = append(lines, m.styles.warning.Render(fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)), "")
+		listLines = append(listLines, m.notice("warning", fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)), "")
 	}
 	if len(m.auditEvents) == 0 {
-		lines = append(lines, m.styles.muted.Render("No audit events yet."))
+		listLines = append(listLines, m.emptyState("No audit events yet."))
 	} else {
-		end := minInt(len(m.auditEvents), offset+visibleRows)
-		if offset > 0 {
-			lines = append(lines, m.styles.muted.Render("..."))
+		rows := make([]string, 0, len(m.auditEvents))
+		for _, entry := range m.auditEvents {
+			rows = append(rows, auditEventRow(entry))
 		}
-		for i := offset; i < end; i++ {
-			lines = append(lines, m.renderSelectableLine(auditEventRow(m.auditEvents[i]), i == cursor))
-		}
-		if end < len(m.auditEvents) {
-			lines = append(lines, m.styles.muted.Render("..."))
-		}
+		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth)...)
 	}
-	lines = append(lines, "", m.styles.separator.Render("Details"))
+	detailLines := []string{}
 	if len(m.auditEvents) == 0 {
-		lines = append(lines, m.styles.muted.Render("No audit event selected."))
+		detailLines = append(detailLines, m.emptyState("No audit event selected."))
 	} else {
-		for _, line := range auditEventDetailLines(m.auditEvents[cursor]) {
-			lines = append(lines, m.styles.body.Render(line))
-		}
+		detailLines = append(detailLines, m.detailRows(auditEventDetailLines(m.auditEvents[cursor]), detailWidth)...)
 	}
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	body := m.twoPane(spec, "Audit Log", "Local metadata events", listLines, "Details", "Highlighted event", detailLines)
+	return m.appShell("Audit Log", body, m.contextFooter(m.keys.up, m.keys.down, m.keys.back, m.keys.help, m.keys.quit))
 }
 
 func (m Model) wipeLocalDataConfirmView() string {
-	lines := m.header("Wipe Local Data?")
-	lines = append(lines,
-		"",
-		m.styles.warning.Render("This clears Vanish-managed config, recent history, and audit records."),
+	spec := layoutSpec(m.width, m.height)
+	lines := []string{
+		m.notice("warning", "This clears Vanish-managed config, recent history, and audit records."),
 		m.styles.body.Render("It does not delete Instagram export ZIPs or cleanup plan JSON files outside the app directory."),
 		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
 		"",
-	)
+	}
 	lines = append(lines, m.localDataMessages()...)
-	lines = append(lines, m.renderMenu(wipeLocalDataMenuItems, m.wipeLocalDataCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit))
-	return m.frame(strings.Join(lines, "\n"))
+	lines = append(lines, m.menuRows(wipeLocalDataMenuItems, m.wipeLocalDataCursor, spec.contentWidth)...)
+	return m.singlePane("Wipe Local Data?", "Defaults to Cancel", lines, m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help, m.keys.quit)
 }
 
 func (m Model) keybindingsView() string {
-	lines := m.header("Help")
-	lines = append(lines,
-		"",
+	lines := []string{
 		m.styles.separator.Render("Navigation"),
 		m.styles.body.Render("Up/Down or j/k: move"),
 		m.styles.body.Render("Enter: primary action; toggles highlighted parsed item"),
@@ -1575,80 +1746,19 @@ func (m Model) keybindingsView() string {
 		m.styles.separator.Render("Safety"),
 		m.styles.body.Render("Vanish is local-only and dry-run only in this alpha."),
 		m.styles.body.Render("No login, browser automation, deletion, telemetry, or network requests."),
-		"",
-		m.helpLine(m.keys.back, m.keys.quit),
-	)
-	return m.frame(strings.Join(lines, "\n"))
+	}
+	return m.singlePane("Help", "Keyboard and safety model", lines, m.keys.back, m.keys.quit)
 }
 
 func (m Model) quitConfirmView() string {
-	lines := m.header("Quit Vanish?")
-	lines = append(lines,
-		"",
+	spec := layoutSpec(m.width, m.height)
+	lines := []string{
 		m.styles.body.Render("Your current in-memory review state will be discarded."),
 		"",
-	)
-
-	lines = append(lines, m.renderMenu(quitConfirmMenuItems, m.quitCursor)...)
-	lines = append(lines, "", m.helpLine(m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help))
-	return m.frame(strings.Join(lines, "\n"))
-}
-
-func (m Model) renderMenu(items []string, cursor int) []string {
-	lines := make([]string, 0, len(items))
-	for i, item := range items {
-		lines = append(lines, m.renderSelectableLine(item, i == cursor))
-	}
-	return lines
-}
-
-func (m Model) renderSelectableLine(value string, selected bool) string {
-	prefix := "  "
-	style := m.styles.row
-	if selected {
-		prefix = "> "
-		style = m.styles.selected
-	}
-	return style.Render(prefix + value)
-}
-
-func (m Model) helpLine(bindings ...key.Binding) string {
-	return m.styles.help.Render(m.help.View(screenHelp(bindings)))
-}
-
-func (m Model) header(section string) []string {
-	return []string{
-		m.styles.title.Render("Vanish") + m.styles.muted.Render(" / "+section),
-		m.statusLine(),
-		m.separatorLine(),
-	}
-}
-
-func (m Model) statusLine() string {
-	return strings.Join([]string{
-		m.styles.badge.Render("[LOCAL]"),
-		m.styles.badge.Render("[DRY-RUN]"),
-		m.styles.badge.Render("[NO NETWORK]"),
-	}, " ")
-}
-
-func (m Model) separatorLine() string {
-	width := 74
-	if m.width > 8 && m.width-4 < width {
-		width = m.width - 4
-	}
-	if width < 20 {
-		width = 20
-	}
-	return m.styles.separator.Render(strings.Repeat("-", width))
-}
-
-func (m Model) frame(body string) string {
-	if m.width > 0 {
-		return m.styles.frame.Width(m.width).Render(body)
 	}
 
-	return m.styles.frame.Render(body)
+	lines = append(lines, m.menuRows(quitConfirmMenuItems, m.quitCursor, spec.contentWidth)...)
+	return m.singlePane("Quit Vanish?", "Defaults to Cancel", lines, m.keys.up, m.keys.down, m.keys.selectItem, m.keys.back, m.keys.help)
 }
 
 func (m Model) resetImportState() Model {
@@ -1917,23 +2027,27 @@ func (m *Model) warnLocalData(action string, err error) {
 }
 
 func (m Model) itemListHeight() int {
-	return boundedListHeight(m.height, 15, 3, 10)
+	return layoutSpec(m.width, m.height).listHeight
 }
 
 func (m Model) warningListHeight() int {
-	return boundedListHeight(m.height, 8, 3, 18)
+	spec := layoutSpec(m.width, m.height)
+	return maxInt(3, minInt(18, spec.bodyHeight-4))
 }
 
 func (m Model) planListHeight() int {
-	return boundedListHeight(m.height, 20, 3, 8)
+	spec := layoutSpec(m.width, m.height)
+	return maxInt(3, minInt(8, spec.bodyHeight-10))
 }
 
 func (m Model) planActionListHeight() int {
-	return boundedListHeight(m.height, 18, 3, 10)
+	spec := layoutSpec(m.width, m.height)
+	return maxInt(3, minInt(10, spec.bodyHeight-8))
 }
 
 func (m Model) localDataListHeight() int {
-	return boundedListHeight(m.height, 18, 3, 8)
+	spec := layoutSpec(m.width, m.height)
+	return maxInt(3, minInt(8, spec.bodyHeight-8))
 }
 
 type keyMap struct {
@@ -2034,18 +2148,24 @@ func (h screenHelp) FullHelp() [][]key.Binding {
 }
 
 type styles struct {
-	frame     lipgloss.Style
-	title     lipgloss.Style
-	body      lipgloss.Style
-	row       lipgloss.Style
-	selected  lipgloss.Style
-	muted     lipgloss.Style
-	help      lipgloss.Style
-	error     lipgloss.Style
-	success   lipgloss.Style
-	warning   lipgloss.Style
-	badge     lipgloss.Style
-	separator lipgloss.Style
+	frame        lipgloss.Style
+	title        lipgloss.Style
+	body         lipgloss.Style
+	row          lipgloss.Style
+	selected     lipgloss.Style
+	muted        lipgloss.Style
+	help         lipgloss.Style
+	error        lipgloss.Style
+	success      lipgloss.Style
+	warning      lipgloss.Style
+	badge        lipgloss.Style
+	separator    lipgloss.Style
+	footer       lipgloss.Style
+	tab          lipgloss.Style
+	activeTab    lipgloss.Style
+	pane         lipgloss.Style
+	paneTitle    lipgloss.Style
+	paneSubtitle lipgloss.Style
 }
 
 func newStyles(isDark bool) styles {
@@ -2058,32 +2178,43 @@ func newStyles(isDark bool) styles {
 			Bold(true).
 			Foreground(lightDark(lipgloss.Color("#4B2E83"), lipgloss.Color("#D6C7FF"))),
 		body: lipgloss.NewStyle().
-			Foreground(lightDark(lipgloss.Color("#24292F"), lipgloss.Color("#E6EDF3"))).
-			Width(74),
+			Foreground(lightDark(lipgloss.Color("#24292F"), lipgloss.Color("#E6EDF3"))),
 		row: lipgloss.NewStyle().
 			Foreground(lightDark(lipgloss.Color("#24292F"), lipgloss.Color("#E6EDF3"))),
 		selected: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lightDark(lipgloss.Color("#0A3069"), lipgloss.Color("#79C0FF"))),
 		muted: lipgloss.NewStyle().
-			Foreground(lightDark(lipgloss.Color("#57606A"), lipgloss.Color("#8B949E"))).
-			Width(74),
+			Foreground(lightDark(lipgloss.Color("#57606A"), lipgloss.Color("#8B949E"))),
 		help: lipgloss.NewStyle().
 			Foreground(lightDark(lipgloss.Color("#6E7781"), lipgloss.Color("#8B949E"))),
 		error: lipgloss.NewStyle().
-			Foreground(lightDark(lipgloss.Color("#B42318"), lipgloss.Color("#FFB4A8"))).
-			Width(74),
+			Foreground(lightDark(lipgloss.Color("#B42318"), lipgloss.Color("#FFB4A8"))),
 		success: lipgloss.NewStyle().
-			Foreground(lightDark(lipgloss.Color("#1A7F37"), lipgloss.Color("#7EE787"))).
-			Width(74),
+			Foreground(lightDark(lipgloss.Color("#1A7F37"), lipgloss.Color("#7EE787"))),
 		warning: lipgloss.NewStyle().
-			Foreground(lightDark(lipgloss.Color("#8A6100"), lipgloss.Color("#FFD479"))).
-			Width(74),
+			Foreground(lightDark(lipgloss.Color("#8A6100"), lipgloss.Color("#FFD479"))),
 		badge: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lightDark(lipgloss.Color("#0969DA"), lipgloss.Color("#79C0FF"))),
 		separator: lipgloss.NewStyle().
 			Bold(true).
+			Foreground(lightDark(lipgloss.Color("#57606A"), lipgloss.Color("#8B949E"))),
+		footer: lipgloss.NewStyle().
+			MarginTop(1),
+		tab: lipgloss.NewStyle().
+			Foreground(lightDark(lipgloss.Color("#57606A"), lipgloss.Color("#8B949E"))),
+		activeTab: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lightDark(lipgloss.Color("#0969DA"), lipgloss.Color("#79C0FF"))),
+		pane: lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lightDark(lipgloss.Color("#D0D7DE"), lipgloss.Color("#30363D"))).
+			Padding(0, 1),
+		paneTitle: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lightDark(lipgloss.Color("#24292F"), lipgloss.Color("#E6EDF3"))),
+		paneSubtitle: lipgloss.NewStyle().
 			Foreground(lightDark(lipgloss.Color("#57606A"), lipgloss.Color("#8B949E"))),
 	}
 }
@@ -2164,119 +2295,211 @@ func startSpinnerCmd(spinnerModel spinner.Model) tea.Cmd {
 }
 
 func itemRow(item domain.ActivityItem) string {
-	target := firstNonEmptyString(item.TargetURL, item.TargetID)
-	occurred := ""
-	if item.OccurredAt != nil {
-		occurred = item.OccurredAt.Format(time.RFC3339)
-	}
-
-	return fmt.Sprintf(
-		"%s | %s | %s | %s",
-		item.Type,
-		emptyFallback(item.Actor, "-"),
-		emptyFallback(target, "-"),
-		emptyFallback(occurred, "-"),
+	return fixedWidthRow(
+		fixedColumn{Text: activityTypeLabel(item), Width: 9},
+		fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: 18},
+		fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: 26},
+		fixedColumn{Text: compactTime(item.OccurredAt), Width: 10},
 	)
 }
 
 func (m Model) selectableItemRow(item domain.ActivityItem) string {
-	checked := " "
+	marker := "[ ]"
 	if m.selection.Contains(item.ID) {
-		checked = "x"
+		marker = "[x]"
 	}
-	return fmt.Sprintf("[%s] %s", checked, itemRow(item))
+	return fixedWidthRow(
+		fixedColumn{Text: marker, Width: 3},
+		fixedColumn{Text: activityTypeLabel(item), Width: 9},
+		fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: 18},
+		fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: 26},
+		fixedColumn{Text: compactTime(item.OccurredAt), Width: 10},
+	)
 }
 
 func itemDetailLines(item domain.ActivityItem) []string {
-	lines := []string{
-		"ID: " + item.ID,
-		"Platform: " + string(item.Platform),
-		"Type: " + string(item.Type),
+	lines := []string{}
+	lines = appendDetailSection(lines, detailSection("Identity",
+		detailKV("ID", item.ID),
+		detailKV("Platform", string(item.Platform)),
+		detailKV("Type", activityTypeLabel(item)),
+		detailKV("Actor", item.Actor),
+	))
+	lines = appendDetailSection(lines, detailSection("Target",
+		detailKV("Target URL", item.TargetURL),
+		detailKV("Target ID", item.TargetID),
+	))
+	lines = appendDetailSection(lines, detailSection("Source",
+		detailKV("Source name", item.Source.Name),
+		detailKV("Import ID", item.Source.ImportID),
+		detailKV("Source file", item.Source.FileName),
+	))
+	if item.OccurredAt != nil || item.Source.ImportedAt != nil {
+		lines = appendDetailSection(lines, detailSection("Timing",
+			detailTimeKV("Occurred", item.OccurredAt),
+			detailTimeKV("Imported", item.Source.ImportedAt),
+		))
 	}
-	if item.Actor != "" {
-		lines = append(lines, "Actor: "+item.Actor)
-	}
-	if item.TargetURL != "" {
-		lines = append(lines, "Target URL: "+item.TargetURL)
-	}
-	if item.TargetID != "" {
-		lines = append(lines, "Target ID: "+item.TargetID)
-	}
-	if item.OccurredAt != nil {
-		lines = append(lines, "Occurred: "+item.OccurredAt.Format(time.RFC3339))
-	}
-	if item.Source.FileName != "" {
-		lines = append(lines, "Source file: "+item.Source.FileName)
-	}
-	if item.Text != nil && item.Text.Hash != "" {
-		lines = append(lines, "Safe text hash: "+item.Text.Hash)
-	}
-	if len(item.Metadata) > 0 {
-		lines = append(lines, "Metadata:")
-		keys := make([]string, 0, len(item.Metadata))
-		for key := range item.Metadata {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			lines = append(lines, fmt.Sprintf("  %s: %s", key, item.Metadata[key]))
-		}
-	}
-
+	lines = appendDetailSection(lines, detailSection("Safe Metadata", safeActivityMetadataLines(item)...))
 	return lines
 }
 
 func planPreviewRows(actions []domain.CleanupAction, skipped []instagram.PlanBuildSkip) []string {
 	rows := make([]string, 0, len(actions)+len(skipped))
 	for _, action := range actions {
-		target := firstNonEmptyString(action.TargetURL, action.TargetID)
-		rows = append(rows, fmt.Sprintf(
-			"%s | %s | %s",
-			action.Type,
-			action.SourceActivityItemID,
-			emptyFallback(target, "-"),
-		))
+		rows = append(rows, planActionListRow(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID))
 	}
 	for _, skip := range skipped {
-		rows = append(rows, fmt.Sprintf(
-			"skipped | %s | %s | %s",
-			emptyFallback(skip.SourceActivityItemID, "-"),
-			emptyFallback(skip.TargetRef, "-"),
-			emptyFallback(skip.Reason, "unsupported"),
+		rows = append(rows, fixedWidthRow(
+			fixedColumn{Text: "skipped", Width: 14},
+			fixedColumn{Text: emptyFallback(skip.Reason, "unsupported"), Width: 12},
+			fixedColumn{Text: emptyFallback(skip.TargetRef, "-"), Width: 26},
+			fixedColumn{Text: emptyFallback(skip.SourceActivityItemID, "-"), Width: 16},
 		))
 	}
 	return rows
 }
 
 func planActionRow(action domain.CleanupAction) string {
-	target := firstNonEmptyString(action.TargetURL, action.TargetID)
-	return fmt.Sprintf(
-		"%s | %s | %s",
-		action.Type,
-		action.Status,
-		emptyFallback(target, "-"),
-	)
+	return planActionListRow(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID)
 }
 
 func planActionDetailLines(action domain.CleanupAction) []string {
-	lines := []string{
-		"ID: " + action.ID,
-		"Type: " + string(action.Type),
-		"Status: " + string(action.Status),
-	}
-	if action.TargetURL != "" {
-		lines = append(lines, "Target URL: "+action.TargetURL)
-	}
-	if action.TargetID != "" {
-		lines = append(lines, "Target ID: "+action.TargetID)
-	}
-	if action.SourceActivityItemID != "" {
-		lines = append(lines, "Source activity item ID: "+action.SourceActivityItemID)
-	}
+	lines := []string{}
+	lines = appendDetailSection(lines, detailSection("Identity",
+		detailKV("ID", action.ID),
+		detailKV("Platform", string(action.Platform)),
+		detailKV("Type", string(action.Type)),
+		detailKV("Status", string(action.Status)),
+	))
+	lines = appendDetailSection(lines, detailSection("Target",
+		detailKV("Target URL", action.TargetURL),
+		detailKV("Target ID", action.TargetID),
+	))
+	lines = appendDetailSection(lines, detailSection("Source",
+		detailKV("Source activity item ID", action.SourceActivityItemID),
+	))
 	if !action.CreatedAt.IsZero() {
-		lines = append(lines, "Created at: "+action.CreatedAt.Format(time.RFC3339))
+		lines = appendDetailSection(lines, detailSection("Timing",
+			detailKV("Created at", action.CreatedAt.Format(time.RFC3339)),
+		))
 	}
 	return lines
+}
+
+func planActionListRow(actionType domain.ActionType, status domain.ActionStatus, targetURL, targetID, sourceID string) string {
+	return fixedWidthRow(
+		fixedColumn{Text: string(actionType), Width: 14},
+		fixedColumn{Text: string(status), Width: 9},
+		fixedColumn{Text: targetListLabel(targetURL, targetID), Width: 26},
+		fixedColumn{Text: shortID(sourceID), Width: 16},
+	)
+}
+
+func actionRowAnchor(action domain.CleanupAction) string {
+	return string(action.Type) + " " + string(action.Status)
+}
+
+func activityTypeLabel(item domain.ActivityItem) string {
+	if item.Type == domain.ItemTypeFollow {
+		if strings.EqualFold(strings.TrimSpace(item.Metadata["relationship"]), "follower") {
+			return "follower"
+		}
+		return "following"
+	}
+	return string(item.Type)
+}
+
+func targetListLabel(targetURL, targetID string) string {
+	if path := pathLikeTarget(targetURL); path != "" {
+		return path
+	}
+	return emptyFallback(targetID, "-")
+}
+
+func pathLikeTarget(targetURL string) string {
+	targetURL = strings.TrimSpace(targetURL)
+	if targetURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		return ""
+	}
+	path := strings.TrimSpace(parsed.EscapedPath())
+	if path == "" || path == "/" {
+		return ""
+	}
+	if path != "/" {
+		path = strings.TrimRight(path, "/")
+	}
+	if path == "" {
+		return ""
+	}
+	return path
+}
+
+func compactTime(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "-"
+	}
+	return value.UTC().Format("2006-01-02")
+}
+
+func detailKV(key, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return key + ": " + value
+}
+
+func detailTimeKV(key string, value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return ""
+	}
+	return key + ": " + value.UTC().Format(time.RFC3339)
+}
+
+func safeActivityMetadataLines(item domain.ActivityItem) []string {
+	lines := []string{}
+	if item.Text != nil && item.Text.Hash != "" {
+		lines = append(lines, "Safe text hash: "+item.Text.Hash)
+	}
+	lines = append(lines, safeStringMapLines("Metadata", item.Metadata)...)
+	lines = append(lines, safeStringMapLines("Source metadata", item.Source.Metadata)...)
+	return lines
+}
+
+func safeStringMapLines(label string, values map[string]string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) > 4 {
+		return []string{fmt.Sprintf("%s entries: %d", label, len(values))}
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := strings.TrimSpace(values[key])
+		if value == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s %s: %s", label, key, value))
+	}
+	return lines
+}
+
+func shortID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return truncateMiddle(value, 16)
 }
 
 func (m Model) actionCountLines(counts map[domain.ActionType]int) []string {
@@ -2295,6 +2518,63 @@ func (m Model) actionCountLines(counts map[domain.ActionType]int) []string {
 		lines = append(lines, m.styles.body.Render(fmt.Sprintf("%s: %d", key, counts[domain.ActionType(key)])))
 	}
 	return lines
+}
+
+func (m Model) statusCountLines(counts map[domain.ActionStatus]int) []string {
+	statuses := []domain.ActionStatus{
+		domain.ActionStatusPending,
+		domain.ActionStatusRunning,
+		domain.ActionStatusDone,
+		domain.ActionStatusFailed,
+		domain.ActionStatusSkipped,
+	}
+	lines := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		lines = append(lines, m.styles.body.Render(fmt.Sprintf("%s: %d", status, counts[status])))
+	}
+	return lines
+}
+
+func (m Model) filterSummaryLines() []string {
+	if !m.itemFilter.Active() {
+		return []string{m.styles.body.Render("Filters: off")}
+	}
+	lines := []string{m.styles.body.Render("Filters: active")}
+	if len(m.itemFilter.IncludeTypes) > 0 {
+		types := make([]string, 0, len(m.itemFilter.IncludeTypes))
+		for filterType, included := range m.itemFilter.IncludeTypes {
+			if included {
+				types = append(types, string(filterType))
+			}
+		}
+		sort.Strings(types)
+		if len(types) > 0 {
+			lines = append(lines, m.styles.body.Render("Types: "+strings.Join(types, ", ")))
+		}
+	}
+	if m.itemFilter.ActorContains != "" {
+		lines = append(lines, m.styles.body.Render("Actor contains: "+m.itemFilter.ActorContains))
+	}
+	if m.itemFilter.TargetContains != "" {
+		lines = append(lines, m.styles.body.Render("Target contains: "+m.itemFilter.TargetContains))
+	}
+	if m.itemFilter.OlderThan != nil {
+		lines = append(lines, m.styles.body.Render("Older than: "+m.itemFilter.OlderThan.UTC().Format("2006-01-02")))
+	}
+	if m.itemFilter.NewerThan != nil {
+		lines = append(lines, m.styles.body.Render("Newer than: "+m.itemFilter.NewerThan.UTC().Format("2006-01-02")))
+	}
+	return lines
+}
+
+func (m Model) selectionNextAction(selected int) string {
+	if selected == 0 {
+		if len(m.visibleItems()) == 0 {
+			return "Clear filters or return to parsed items."
+		}
+		return "Select visible items or return to parsed items."
+	}
+	return "Generate a dry-run plan."
 }
 
 func (m Model) localDataMessages() []string {
@@ -2781,6 +3061,78 @@ func copyActivityItemFilter(filter domain.ActivityItemFilter) domain.ActivityIte
 		}
 	}
 	return copied
+}
+
+func selectKeyPress() tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
+}
+
+func menuIndexAtY(content string, y int, items []string) int {
+	line := renderedLineAt(content, y)
+	if line == "" {
+		return -1
+	}
+	for index, item := range items {
+		if strings.Contains(line, item) {
+			return index
+		}
+	}
+	return -1
+}
+
+func rowOrdinalAtY(content string, y int, matches func(string) bool) int {
+	lines := strings.Split(content, "\n")
+	if y < 0 || y >= len(lines) || !matches(lines[y]) {
+		return -1
+	}
+	ordinal := 0
+	for i := 0; i < y; i++ {
+		if matches(lines[i]) {
+			ordinal++
+		}
+	}
+	return ordinal
+}
+
+func renderedLineAt(content string, y int) string {
+	lines := strings.Split(content, "\n")
+	if y < 0 || y >= len(lines) {
+		return ""
+	}
+	return lines[y]
+}
+
+func isSelectionRowLine(line string) bool {
+	return strings.Contains(line, "[ ]") || strings.Contains(line, "[x]")
+}
+
+func lineMatchesAnyAnchor(anchors []string) func(string) bool {
+	normalized := make([]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		anchor = normalizeAnchor(anchor)
+		if anchor != "" {
+			normalized = append(normalized, anchor)
+		}
+	}
+	return func(line string) bool {
+		line = normalizeAnchor(line)
+		if line == "" {
+			return false
+		}
+		for _, anchor := range normalized {
+			if strings.Contains(line, anchor) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func normalizeAnchor(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "")
+	value = strings.ReplaceAll(value, "\t", "")
+	return value
 }
 
 func moveCursor(cursor, count, delta int) int {
