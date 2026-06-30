@@ -51,6 +51,7 @@ jobs:
           allowed_network_files=(
             "./internal/reddit/oauth.go"
             "./internal/reddit/client.go"
+            "./internal/reddit/callback.go"
           )
 
           is_allowed_network_file() {

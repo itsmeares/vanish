@@ -753,15 +753,15 @@ func (m Model) currentRedditSignIn(state string) bool {
 
 func redditSignInCmd(ctx context.Context, authURL, state string, allowFileFallback bool, appDir string) tea.Cmd {
 	return func() tea.Msg {
-		waiter, err := newRedditCallbackWaiter()
+		waiter, err := reddit.NewCallbackWaiter()
 		if err != nil {
 			return redditConnectFinishedMsg{state: state, err: err}
 		}
 		if err := openExternalURL(authURL); err != nil {
-			_ = waiter.listener.Close()
+			_ = waiter.Close()
 			return redditConnectFinishedMsg{state: state, err: fmt.Errorf("open reddit sign-in URL: %w", err)}
 		}
-		code, err := waiter.wait(ctx, state)
+		code, err := waiter.Wait(ctx, state)
 		if err != nil {
 			return redditConnectFinishedMsg{state: state, err: err}
 		}

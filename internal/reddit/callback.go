@@ -1,4 +1,4 @@
-package tui
+package reddit
 
 import (
 	"context"
@@ -10,24 +10,26 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/itsmeares/vanish/internal/reddit"
 )
 
-const redditCallbackTimeout = 5 * time.Minute
+const callbackTimeout = 5 * time.Minute
 
-type redditCallbackWaiter struct {
+type CallbackWaiter struct {
 	listener net.Listener
 	path     string
 }
 
-type redditCallbackResult struct {
+type callbackResult struct {
 	code string
 	err  error
 }
 
-func newRedditCallbackWaiter() (*redditCallbackWaiter, error) {
-	redirect, err := url.Parse(reddit.DefaultRedirectURI)
+func NewCallbackWaiter() (*CallbackWaiter, error) {
+	return newCallbackWaiter(DefaultRedirectURI)
+}
+
+func newCallbackWaiter(redirectURI string) (*CallbackWaiter, error) {
+	redirect, err := url.Parse(redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("reddit redirect URL is invalid: %w", err)
 	}
@@ -39,21 +41,21 @@ func newRedditCallbackWaiter() (*redditCallbackWaiter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reddit sign-in listener failed: %w", err)
 	}
-	return &redditCallbackWaiter{listener: listener, path: redirect.Path}, nil
+	return &CallbackWaiter{listener: listener, path: redirect.Path}, nil
 }
 
-func (waiter *redditCallbackWaiter) wait(ctx context.Context, state string) (string, error) {
+func (waiter *CallbackWaiter) Wait(ctx context.Context, state string) (string, error) {
 	if waiter == nil || waiter.listener == nil {
 		return "", errors.New("reddit sign-in listener is not ready")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, redditCallbackTimeout)
+	ctx, cancel := context.WithTimeout(ctx, callbackTimeout)
 	defer cancel()
 
-	resultCh := make(chan redditCallbackResult, 1)
+	resultCh := make(chan callbackResult, 1)
 	serveErrCh := make(chan error, 1)
 	var once sync.Once
-	send := func(result redditCallbackResult) {
+	send := func(result callbackResult) {
 		once.Do(func() {
 			resultCh <- result
 		})
@@ -69,7 +71,7 @@ func (waiter *redditCallbackWaiter) wait(ctx context.Context, state string) (str
 			query := request.URL.Query()
 			if got := strings.TrimSpace(query.Get("state")); got != strings.TrimSpace(state) {
 				http.Error(writer, "Reddit sign-in failed. Return to Vanish.", http.StatusBadRequest)
-				send(redditCallbackResult{err: errors.New("reddit OAuth state mismatch; start sign-in again")})
+				send(callbackResult{err: errors.New("reddit OAuth state mismatch; start sign-in again")})
 				return
 			}
 			if problem := strings.TrimSpace(query.Get("error")); problem != "" {
@@ -78,19 +80,19 @@ func (waiter *redditCallbackWaiter) wait(ctx context.Context, state string) (str
 					detail = problem
 				}
 				http.Error(writer, "Reddit sign-in failed. Return to Vanish.", http.StatusBadRequest)
-				send(redditCallbackResult{err: fmt.Errorf("reddit sign-in failed: %s", detail)})
+				send(callbackResult{err: fmt.Errorf("reddit sign-in failed: %s", detail)})
 				return
 			}
 			code := strings.TrimSpace(query.Get("code"))
 			if code == "" {
 				http.Error(writer, "Reddit sign-in failed. Return to Vanish.", http.StatusBadRequest)
-				send(redditCallbackResult{err: errors.New("reddit auth code is required")})
+				send(callbackResult{err: errors.New("reddit auth code is required")})
 				return
 			}
 
 			writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = writer.Write([]byte("Reddit sign-in complete. Return to Vanish."))
-			send(redditCallbackResult{code: code})
+			send(callbackResult{code: code})
 		}),
 	}
 
@@ -99,7 +101,7 @@ func (waiter *redditCallbackWaiter) wait(ctx context.Context, state string) (str
 			serveErrCh <- err
 		}
 	}()
-	defer shutdownRedditCallbackServer(server)
+	defer shutdownCallbackServer(server)
 
 	select {
 	case result := <-resultCh:
@@ -114,7 +116,14 @@ func (waiter *redditCallbackWaiter) wait(ctx context.Context, state string) (str
 	}
 }
 
-func shutdownRedditCallbackServer(server *http.Server) {
+func (waiter *CallbackWaiter) Close() error {
+	if waiter == nil || waiter.listener == nil {
+		return nil
+	}
+	return waiter.listener.Close()
+}
+
+func shutdownCallbackServer(server *http.Server) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_ = server.Shutdown(ctx)

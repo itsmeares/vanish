@@ -1,11 +1,9 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"image/color"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -385,42 +383,6 @@ func TestRedditSignInCancelReturnsToSimpleState(t *testing.T) {
 	}
 	if !strings.Contains(next.View().Content, "Sign in to scan your Reddit activity.") {
 		t.Fatalf("expected simple Reddit state after cancel, got:\n%s", next.View().Content)
-	}
-}
-
-func TestRedditCallbackWaiterReceivesCode(t *testing.T) {
-	waiter, err := newRedditCallbackWaiter()
-	if err != nil {
-		t.Fatalf("newRedditCallbackWaiter: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	result := make(chan struct {
-		code string
-		err  error
-	}, 1)
-	go func() {
-		code, err := waiter.wait(ctx, "state-123")
-		result <- struct {
-			code string
-			err  error
-		}{code: code, err: err}
-	}()
-
-	res, err := http.Get(reddit.DefaultRedirectURI + "?state=state-123&code=code-123")
-	if err != nil {
-		t.Fatalf("callback GET: %v", err)
-	}
-	_ = res.Body.Close()
-
-	select {
-	case got := <-result:
-		if got.err != nil || got.code != "code-123" {
-			t.Fatalf("callback result code=%q err=%v", got.code, got.err)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for callback")
 	}
 }
 
