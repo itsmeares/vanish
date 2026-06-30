@@ -66,6 +66,34 @@ func TestImportZIPParsesDemoExport(t *testing.T) {
 	}
 }
 
+func TestDemoExportUsesReadableSampleData(t *testing.T) {
+	zipPath, err := CreateDemoExportZIP(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected demo zip, got error: %v", err)
+	}
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected import to succeed, got error: %v", err)
+	}
+
+	var rendered strings.Builder
+	for _, item := range result.Items {
+		fmt.Fprintf(&rendered, "%s %s %s\n", item.Actor, item.TargetURL, item.TargetID)
+	}
+	text := rendered.String()
+	for _, want := range []string{"mira_studio", "https://www.instagram.com/p/C7mug01/", "old_band", "marina_reads"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected readable demo data to contain %q, got:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"vanish_demo", "fake_", "test_account", "demo_"} {
+		if strings.Contains(strings.ToLower(text), unwanted) {
+			t.Fatalf("expected demo data not to contain %q, got:\n%s", unwanted, text)
+		}
+	}
+}
+
 func TestDemoExportCanBuildMixedSupportPlan(t *testing.T) {
 	zipPath, err := CreateDemoExportZIP(t.TempDir())
 	if err != nil {

@@ -42,20 +42,21 @@ func demoFiles() map[string]string {
 		"your_instagram_activity/comments/post_comments_1.json": demoJSON(map[string]any{"comments_media_comments": demoCommentRecords()}),
 		"followers_and_following/following.json":                demoJSON(map[string]any{"relationships_following": demoRelationshipRecords("following", 0)}),
 		"followers_and_following/followers_1.json":              demoJSON(map[string]any{"relationships_followers": demoRelationshipRecords("follower", 12)}),
-		"settings/unknown_shape.json":                           demoJSON(map[string]any{"unexpected": true, "note": "This fake file should be skipped with a warning."}),
-		"your_instagram_activity/saved/unsupported_saved.json":  demoJSON(map[string]any{"saved_media": []any{map[string]any{"title": "demo unsupported saved item"}}}),
+		"settings/unknown_shape.json":                           demoJSON(map[string]any{"unexpected": true, "note": "This sample file should be skipped with a warning."}),
+		"your_instagram_activity/saved/unsupported_saved.json":  demoJSON(map[string]any{"saved_media": []any{map[string]any{"title": "saved recipe reference"}}}),
 	}
 }
 
 func demoLikeRecords() []map[string]any {
-	users := []string{"demo_artist", "trail_sketcher", "city_archivist", "quiet_reader", "night_coder", "plant_corner"}
+	users := []string{"mira_studio", "trail_notes", "city_archive", "quiet_pages", "night_builds", "plant_shelf"}
+	posts := []string{"C7mug01", "C7trail02", "C7city03", "C7book04", "C7code05", "C7plant06"}
 	records := make([]map[string]any, 0, len(users))
 	for i, user := range users {
 		records = append(records, map[string]any{
 			"title": user,
 			"string_list_data": []map[string]any{
 				{
-					"href":      fmt.Sprintf("https://www.instagram.com/p/vanish_demo_like_%02d/", i+1),
+					"href":      fmt.Sprintf("https://www.instagram.com/p/%s/", posts[i]),
 					"value":     user,
 					"timestamp": demoTimestamp(i),
 				},
@@ -66,14 +67,15 @@ func demoLikeRecords() []map[string]any {
 }
 
 func demoCommentRecords() []map[string]any {
-	owners := []string{"demo_bakery", "paper_museum", "coastal_walks", "tiny_studio", "archive_room", "garden_notes"}
+	owners := []string{"rise_bakery", "paper_museum", "coastal_walks", "tiny_studio", "archive_room", "garden_notes"}
+	posts := []string{"C8roll01", "C8poster02", "C8coast03", "C8sketch04", "C8photo05", "C8seed06"}
 	comments := []string{
-		"Fake demo comment about a pastry.",
-		"Fake demo comment about a poster.",
-		"Fake demo comment about a beach path.",
-		"Fake demo comment about a sketch.",
-		"Fake demo comment about old photos.",
-		"Fake demo comment about seedlings.",
+		"Loved the morning pastry.",
+		"Great poster archive.",
+		"Saving this beach walk.",
+		"Nice linework.",
+		"These photos hold up.",
+		"Seedlings look strong.",
 	}
 	records := make([]map[string]any, 0, len(owners))
 	for i, owner := range owners {
@@ -82,7 +84,7 @@ func demoCommentRecords() []map[string]any {
 			"string_map_data": map[string]map[string]any{
 				"Comment": {
 					"value":     comments[i],
-					"href":      fmt.Sprintf("https://www.instagram.com/p/vanish_demo_comment_%02d/", i+1),
+					"href":      fmt.Sprintf("https://www.instagram.com/p/%s/", posts[i]),
 					"timestamp": demoTimestamp(i + 6),
 				},
 				"Media Owner": {
@@ -95,9 +97,9 @@ func demoCommentRecords() []map[string]any {
 }
 
 func demoRelationshipRecords(kind string, offset int) []map[string]any {
-	names := []string{"demo_following", "old_band_page", "local_gallery", "recipe_notes", "indie_dev_log", "camera_roll"}
+	names := []string{"old_band", "local_gallery", "recipe_notes", "indie_dev_log", "camera_roll", "bike_maps"}
 	if kind == "follower" {
-		names = []string{"demo_follower", "sample_reader", "friendly_runner", "fake_photo_club", "demo_neighbor", "test_account_06"}
+		names = []string{"marina_reads", "runner_alex", "photo_walks", "neighbor_notes", "field_sketches", "market_friend"}
 	}
 
 	records := make([]map[string]any, 0, len(names))
@@ -117,8 +119,8 @@ func demoRelationshipRecords(kind string, offset int) []map[string]any {
 }
 
 func demoTimestamp(offset int) int64 {
-	base := time.Date(2023, 1, 15, 12, 0, 0, 0, time.UTC)
-	return base.AddDate(0, offset, offset%5).Unix()
+	base := time.Date(2024, 4, 8, 12, 0, 0, 0, time.UTC)
+	return base.AddDate(0, 0, offset*3).Unix()
 }
 
 func demoJSON(value any) string {

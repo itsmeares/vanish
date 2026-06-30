@@ -294,6 +294,52 @@ func (m Model) twoPaneFocused(spec layoutMetrics, leftTitle, leftSubtitle string
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", spec.gap), right)
 }
 
+func (m Model) compactTwoPane(spec layoutMetrics, leftTitle, leftSubtitle string, leftLines []string, rightTitle, rightSubtitle string, rightLines []string) string {
+	return m.compactTwoPaneFocused(spec, leftTitle, leftSubtitle, leftLines, false, rightTitle, rightSubtitle, rightLines, false)
+}
+
+func (m Model) compactTwoPaneFocused(spec layoutMetrics, leftTitle, leftSubtitle string, leftLines []string, leftFocused bool, rightTitle, rightSubtitle string, rightLines []string, rightFocused bool) string {
+	if spec.narrow {
+		leftHeight := compactPaneContentHeight(leftTitle, leftSubtitle, leftLines, twoPaneBodyHeight(spec))
+		rightHeight := compactPaneContentHeight(rightTitle, rightSubtitle, rightLines, twoPaneBodyHeight(spec))
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.paneFocused(leftTitle, leftSubtitle, strings.Join(leftLines, "\n"), spec.contentWidth, leftHeight, leftFocused),
+			m.paneFocused(rightTitle, rightSubtitle, strings.Join(rightLines, "\n"), spec.contentWidth, rightHeight, rightFocused),
+		)
+	}
+
+	leftWidth, rightWidth := twoPaneWidths(spec, leftTitle)
+	leftHeight := compactPaneContentHeight(leftTitle, leftSubtitle, leftLines, spec.bodyHeight)
+	rightHeight := compactPaneContentHeight(rightTitle, rightSubtitle, rightLines, spec.bodyHeight)
+	height := maxInt(leftHeight, rightHeight)
+	left := m.paneFocused(leftTitle, leftSubtitle, strings.Join(leftLines, "\n"), leftWidth, height, leftFocused)
+	right := m.paneFocused(rightTitle, rightSubtitle, strings.Join(rightLines, "\n"), rightWidth, height, rightFocused)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", spec.gap), right)
+}
+
+func compactPaneContentHeight(title, subtitle string, lines []string, maxHeight int) int {
+	bodyLines := len(lines)
+	if bodyLines == 0 {
+		bodyLines = 1
+	}
+	innerHeight := bodyLines
+	if title != "" {
+		innerHeight++
+	}
+	if subtitle != "" {
+		innerHeight++
+	}
+	height := innerHeight + 2
+	if height < 5 {
+		height = 5
+	}
+	if maxHeight > 0 && height > maxHeight {
+		return maxHeight
+	}
+	return height
+}
+
 func (m Model) dashboardSections(width int, sections ...[]string) []string {
 	lines := []string{}
 	for _, section := range sections {

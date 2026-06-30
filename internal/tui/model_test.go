@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/itsmeares/vanish/internal/apply"
 	"github.com/itsmeares/vanish/internal/domain"
@@ -147,6 +148,24 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 		if strings.Contains(redditView, unwanted) {
 			t.Fatalf("expected Reddit home detail not to show %q, got:\n%s", unwanted, redditView)
 		}
+	}
+}
+
+func TestHomeRendersBorderedFullHeightPanesAtTallSize(t *testing.T) {
+	next := updateModel(t, NewModel(), tea.WindowSizeMsg{Width: 160, Height: 60})
+
+	view := next.View().Content
+	for _, want := range []string{"Platforms", "Instagram Export", "Reddit", "Enter to continue."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected home to contain %q, got:\n%s", want, view)
+		}
+	}
+	if lines := strings.Count(view, "\n") + 1; lines < 54 {
+		t.Fatalf("expected home shell to use terminal height, got %d lines:\n%s", lines, view)
+	}
+	plain := stripANSI(view)
+	if strings.Count(plain, "└") < 2 {
+		t.Fatalf("expected bordered home panes, got:\n%s", view)
 	}
 }
 
@@ -306,6 +325,9 @@ func TestRedditNotConnectedShowsSimpleSignInState(t *testing.T) {
 	for _, want := range []string{
 		"Reddit",
 		"Sign in to scan your Reddit activity.",
+		"Create a Reddit installed app.",
+		"Set VANISH_REDDIT_CLIENT_ID to its client ID.",
+		"Redirect URI: http://127.0.0.1:53682/reddit/oauth/callback",
 		"Sign in with Reddit",
 		"Back",
 	} {
@@ -332,6 +354,15 @@ func TestRedditSignInWithoutClientIDShowsShortError(t *testing.T) {
 	}
 	if !strings.Contains(next.View().Content, "Reddit sign-in is not configured. Set VANISH_REDDIT_CLIENT_ID and try again.") {
 		t.Fatalf("expected short configuration error, got:\n%s", next.View().Content)
+	}
+	for _, want := range []string{
+		"Create a Reddit installed app.",
+		"Set VANISH_REDDIT_CLIENT_ID to its client ID.",
+		"Redirect URI: http://127.0.0.1:53682/reddit/oauth/callback",
+	} {
+		if !strings.Contains(next.View().Content, want) {
+			t.Fatalf("expected Reddit setup hint %q, got:\n%s", want, next.View().Content)
+		}
 	}
 }
 
@@ -1371,6 +1402,42 @@ func TestItemsBrowserShowsVisibleAndTotalCount(t *testing.T) {
 	}
 }
 
+func TestItemsBrowserRowsHideLowPriorityColumnsWhenTight(t *testing.T) {
+	next := importedModel(t, fakeImportResult())
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 84, Height: 28})
+
+	view := next.View().Content
+	row := lineContaining(t, view, "[ ]", "demo_artist")
+	segment := strings.TrimSpace(stripANSI(firstPaneSegment(row)))
+	for _, unwanted := range []string{"/p/demo_like", "2024-03-09", "https://"} {
+		if strings.Contains(segment, unwanted) {
+			t.Fatalf("expected tight parsed row to hide %q, got %q in:\n%s", unwanted, segment, view)
+		}
+	}
+	listWidth, _ := twoPaneWidths(layoutSpec(next.width, next.height), "Parsed Items")
+	if lipgloss.Width(segment) > maxInt(1, listWidth-4) {
+		t.Fatalf("tight parsed row width %d exceeds pane content width %d: %q", lipgloss.Width(segment), listWidth-4, segment)
+	}
+}
+
+func TestItemsBrowserRowsDoNotExposeDatesAtMediumWidth(t *testing.T) {
+	next := importedModel(t, fakeImportResultWithManyItems(24))
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 132, Height: 36})
+
+	view := next.View().Content
+	for _, line := range strings.Split(view, "\n") {
+		segment := strings.TrimSpace(stripANSI(firstPaneSegment(line)))
+		if !strings.Contains(segment, "[ ]") {
+			continue
+		}
+		if strings.Contains(segment, "2024-") {
+			t.Fatalf("expected medium parsed rows to hide date column, got %q in:\n%s", segment, view)
+		}
+	}
+}
+
 func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
 	m := importedModel(t, fakeImportResult())
 	next := updateModel(t, m, keyPress("enter"))
@@ -1434,8 +1501,8 @@ func TestItemsBrowserFillsAvailablePaneAndShowsPageRange(t *testing.T) {
 
 	plain := stripANSI(next.View().Content)
 	for _, want := range []string{
-		fmt.Sprintf("Showing 1-%d of 24", viewport.End),
-		"Matching 24/24",
+		fmt.Sprintf("1-%d/24", viewport.End),
+		"Match 24/24",
 		"Page 1/",
 	} {
 		if !strings.Contains(plain, want) {
@@ -1907,7 +1974,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 		"Reddit account: ready",
 		"Pending: 3",
 		"Unsupported: 0",
-		"Run no-op apply",
+		"Simulate no-op run",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected apply preview to contain %q, got:\n%s", want, view)
@@ -1919,8 +1986,8 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	if next.current != screenApplyConfirm {
 		t.Fatalf("expected apply confirm, got %v", next.current)
 	}
-	if !strings.Contains(next.View().Content, "Run no-op apply for 3 pending actions?") ||
-		!strings.Contains(next.View().Content, "No real deletion happens.") {
+	if !strings.Contains(next.View().Content, "Simulate no-op run for 3 pending actions?") ||
+		!strings.Contains(next.View().Content, "No platform content changes.") {
 		t.Fatalf("expected short confirmation copy, got:\n%s", next.View().Content)
 	}
 
@@ -1950,7 +2017,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	for _, want := range []string{
 		"Apply Result",
 		"State: done",
-		"No real deletion: yes",
+		"No platform changes: yes",
 		"Done: 3",
 		"Back to plan",
 	} {
@@ -1992,7 +2059,7 @@ func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
 			t.Fatalf("expected blocked reddit preview to contain %q, got:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Run no-op apply") {
+	if strings.Contains(view, "Simulate no-op run") {
 		t.Fatalf("blocked preview should not offer run action, got:\n%s", view)
 	}
 
