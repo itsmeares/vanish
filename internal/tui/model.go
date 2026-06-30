@@ -19,6 +19,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/itsmeares/vanish/internal/apply"
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
@@ -50,6 +51,10 @@ const (
 	screenPlanLoadPath
 	screenLoadedPlanSummary
 	screenLoadedPlanActions
+	screenApplyPreview
+	screenApplyConfirm
+	screenApplyRunning
+	screenApplyResult
 	screenWarnings
 	screenLocalDataOverview
 	screenRecentImports
@@ -145,11 +150,13 @@ var parsedItemActionItems = []string{
 }
 
 const (
-	planPreviewExport = iota
+	planPreviewApply = iota
+	planPreviewExport
 	planPreviewBack
 )
 
 var planPreviewMenuItems = []string{
+	"Apply preview",
 	"Export JSON",
 	"Back",
 }
@@ -157,14 +164,57 @@ var planPreviewMenuItems = []string{
 const defaultPlanExportPath = workspace.DefaultPlanExportPath
 
 const (
-	loadedPlanViewActions = iota
+	loadedPlanApplyPreview = iota
+	loadedPlanViewActions
 	loadedPlanBackHome
 )
 
 var loadedPlanSummaryMenuItems = []string{
+	"Apply preview",
 	"View actions",
 	"Back home",
 }
+
+const (
+	applyPreviewRun = iota
+	applyPreviewBack
+)
+
+var applyPreviewMenuItems = []string{
+	"Run no-op apply",
+	"Back",
+}
+
+var applyPreviewBlockedMenuItems = []string{
+	"Back",
+}
+
+const (
+	applyConfirmRun = iota
+	applyConfirmCancel
+)
+
+var applyConfirmMenuItems = []string{
+	"Run no-op apply",
+	"Cancel",
+}
+
+const (
+	applyResultBack = iota
+	applyResultViewActions
+)
+
+var applyResultMenuItems = []string{
+	"Back to plan",
+	"View actions",
+}
+
+type applyPlanSource int
+
+const (
+	applySourceGenerated applyPlanSource = iota
+	applySourceLoaded
+)
 
 const (
 	localDataRecentImports = iota
@@ -218,6 +268,9 @@ const (
 	hitPlanPreviewAction
 	hitLoadedPlanAction
 	hitLoadedPlanRow
+	hitApplyPreviewAction
+	hitApplyConfirmAction
+	hitApplyResultAction
 	hitFilterRow
 	hitWarningRow
 	hitLocalDataAction
@@ -289,6 +342,9 @@ type Model struct {
 	planResult           planBuildResult
 	loadedPlan           domain.CleanupPlan
 	loadedPlanSummary    domain.CleanupPlanSummary
+	applyPlanSource      applyPlanSource
+	applyPreview         apply.Preview
+	applyExecution       apply.Execution
 	draftFilter          domain.ActivityItemFilter
 	draftOlderDate       string
 	draftNewerDate       string
@@ -330,6 +386,9 @@ type Model struct {
 	loadedPlanCursor     int
 	loadedActionCursor   int
 	loadedActionOffset   int
+	applyPreviewCursor   int
+	applyConfirmCursor   int
+	applyResultCursor    int
 	warningCursor        int
 	warningOffset        int
 	localDataCursor      int
@@ -516,7 +575,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.current == screenImporting || m.current == screenRedditSigningIn || m.current == screenRedditBusy {
+		if m.current == screenImporting || m.current == screenRedditSigningIn || m.current == screenRedditBusy || m.current == screenApplyRunning {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -556,6 +615,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.planPathInput.Blur()
 		m.recordPlanLoaded(msg.path, msg.plan, msg.summary)
 		m.current = screenLoadedPlanSummary
+		return m, nil
+
+	case applyRunFinishedMsg:
+		m.applyExecution = msg.execution
+		m.applyPreview = msg.execution.Preview
+		if msg.source == applySourceLoaded {
+			m.loadedPlan = msg.execution.Plan
+			m.loadedPlanSummary = domain.SummarizeCleanupPlan(msg.execution.Plan)
+		} else {
+			m.planResult.Plan = msg.execution.Plan
+		}
+		m.recordApplyExecution(msg.execution)
+		m.applyResultCursor = 0
+		m.current = screenApplyResult
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -618,6 +691,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateLoadedPlanSummary(msg)
 		case screenLoadedPlanActions:
 			return m.updateLoadedPlanActions(msg)
+		case screenApplyPreview:
+			return m.updateApplyPreview(msg)
+		case screenApplyConfirm:
+			return m.updateApplyConfirm(msg)
+		case screenApplyRunning:
+			return m, nil
+		case screenApplyResult:
+			return m.updateApplyResult(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
 		case screenLocalDataOverview:
@@ -1007,6 +1088,8 @@ func (m Model) updatePlanPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.current = screenSelectionSummary
 	case key.Matches(msg, m.keys.selectItem):
 		switch m.planPreviewCursor {
+		case planPreviewApply:
+			m.openApplyPreview(applySourceGenerated)
 		case planPreviewExport:
 			m.current = screenPlanExportPath
 			if strings.TrimSpace(m.planPathInput.Value()) == "" {
@@ -1075,6 +1158,8 @@ func (m Model) updateLoadedPlanSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		m.current = screenHome
 	case key.Matches(msg, m.keys.selectItem):
 		switch m.loadedPlanCursor {
+		case loadedPlanApplyPreview:
+			m.openApplyPreview(applySourceLoaded)
 		case loadedPlanViewActions:
 			m.loadedActionCursor = clampCursor(m.loadedActionCursor, len(m.loadedPlan.Actions))
 			m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
@@ -1097,6 +1182,78 @@ func (m Model) updateLoadedPlanActions(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		m.current = screenLoadedPlanSummary
 	}
 	m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(actions), m.planActionListHeight())
+	return m, nil
+}
+
+func (m Model) updateApplyPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	items := m.currentApplyPreviewMenuItems()
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.applyPreviewCursor = moveCursor(m.applyPreviewCursor, len(items), -1)
+	case key.Matches(msg, m.keys.down):
+		m.applyPreviewCursor = moveCursor(m.applyPreviewCursor, len(items), 1)
+	case key.Matches(msg, m.keys.back):
+		m.returnToApplySource()
+	case key.Matches(msg, m.keys.selectItem):
+		index := clampCursor(m.applyPreviewCursor, len(items))
+		if !m.applyPreview.CanApply {
+			m.returnToApplySource()
+			return m, nil
+		}
+		switch index {
+		case applyPreviewRun:
+			m.applyConfirmCursor = applyConfirmCancel
+			m.current = screenApplyConfirm
+		case applyPreviewBack:
+			m.returnToApplySource()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateApplyConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.applyConfirmCursor = moveCursor(m.applyConfirmCursor, len(applyConfirmMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.applyConfirmCursor = moveCursor(m.applyConfirmCursor, len(applyConfirmMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenApplyPreview
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.applyConfirmCursor {
+		case applyConfirmRun:
+			m.recordApplyConfirmed(m.applyPreview)
+			m.current = screenApplyRunning
+			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.redditConnected()))
+		case applyConfirmCancel:
+			m.current = screenApplyPreview
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateApplyResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.applyResultCursor = moveCursor(m.applyResultCursor, len(applyResultMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.applyResultCursor = moveCursor(m.applyResultCursor, len(applyResultMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.returnToApplySource()
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.applyResultCursor {
+		case applyResultBack:
+			m.returnToApplySource()
+		case applyResultViewActions:
+			if m.applyPlanSource == applySourceLoaded {
+				m.loadedActionCursor = clampCursor(m.loadedActionCursor, len(m.loadedPlan.Actions))
+				m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
+				m.current = screenLoadedPlanActions
+			} else {
+				m.current = screenPlanPreview
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -1338,6 +1495,23 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 	case screenLoadedPlanActions:
 		m.updatePlanActionListClick(target)
+	case screenApplyPreview:
+		if target.Kind == hitApplyPreviewAction {
+			m.applyPreviewCursor = target.Index
+			return m.updateApplyPreview(selectKeyPress())
+		}
+	case screenApplyConfirm:
+		if target.Kind == hitApplyConfirmAction {
+			if target.Index == m.applyConfirmCursor {
+				return m.updateApplyConfirm(selectKeyPress())
+			}
+			m.applyConfirmCursor = target.Index
+		}
+	case screenApplyResult:
+		if target.Kind == hitApplyResultAction {
+			m.applyResultCursor = target.Index
+			return m.updateApplyResult(selectKeyPress())
+		}
 	case screenFilters:
 		if m.filterEditing == filterEditNone {
 			if target.Kind == hitFilterRow {
@@ -1565,6 +1739,14 @@ func (m Model) renderContent() string {
 		content = m.loadedPlanSummaryView()
 	case screenLoadedPlanActions:
 		content = m.loadedPlanActionsView()
+	case screenApplyPreview:
+		content = m.applyPreviewView()
+	case screenApplyConfirm:
+		content = m.applyConfirmView()
+	case screenApplyRunning:
+		content = m.applyRunningView()
+	case screenApplyResult:
+		content = m.applyResultView()
 	case screenWarnings:
 		content = m.warningsView()
 	case screenLocalDataOverview:
@@ -2201,6 +2383,97 @@ func (m Model) loadedPlanActionsView() string {
 	return m.appShell("Plan Actions", body, m.footer(footerList))
 }
 
+func (m Model) applyPreviewView() string {
+	spec := layoutSpec(m.width, m.height)
+	preview := m.applyPreview
+	menuItems := m.currentApplyPreviewMenuItems()
+
+	status := "Ready"
+	if !preview.CanApply {
+		status = "Blocked"
+	}
+	summaryLines := m.dashboardSections(
+		spec.detailWidth,
+		m.section("Apply Preview", m.keyValueRows([]keyValue{
+			{Key: "Platform", Value: emptyFallback(string(preview.Platform), "-")},
+			{Key: "Executor", Value: preview.Executor},
+			{Key: "Status", Value: status},
+			{Key: "Reddit account", Value: readyLabel(preview.AccountReady)},
+		})),
+		m.section("Counts", m.keyValueRows([]keyValue{
+			{Key: "Actions", Value: compactCount(preview.Summary.TotalActions)},
+			{Key: "Pending", Value: compactCount(preview.PendingCount)},
+			{Key: "Unsupported", Value: compactCount(preview.UnsupportedCount)},
+			{Key: "Failed", Value: compactCount(preview.Summary.StatusCounts[domain.ActionStatusFailed])},
+			{Key: "Skipped", Value: compactCount(preview.Summary.StatusCounts[domain.ActionStatusSkipped])},
+		})),
+	)
+	if len(preview.Blockers) > 0 {
+		summaryLines = append(summaryLines, m.section("Blocker", []string{m.styles.body.Render(preview.Blockers[0].Message)})...)
+	}
+	summaryLines = append(summaryLines, "")
+	summaryLines = append(summaryLines, m.menuRows(menuItems, m.applyPreviewCursor, spec.detailWidth, hitApplyPreviewAction)...)
+
+	actionLines := m.applyActionSummaryLines(preview)
+	body := m.twoPane(spec, "Actions", "No-op apply", summaryLines, "Pending Work", "What would run", actionLines)
+	return m.appShell("Apply Preview", body, m.footer(footerActionMenu))
+}
+
+func (m Model) applyConfirmView() string {
+	spec := layoutSpec(m.width, m.height)
+	lines := []string{
+		m.styles.body.Render(fmt.Sprintf("Run no-op apply for %d pending actions?", m.applyPreview.PendingCount)),
+		m.styles.body.Render("No real deletion happens."),
+		"",
+	}
+	lines = append(lines, m.menuRows(applyConfirmMenuItems, m.applyConfirmCursor, spec.contentWidth, hitApplyConfirmAction)...)
+	return m.singlePaneFooter("Confirm Apply", "No-op execution", lines, m.footer(footerConfirm))
+}
+
+func (m Model) applyRunningView() string {
+	lines := []string{
+		m.styles.body.Render(fmt.Sprintf("%s Running no-op apply...", m.spinner.View())),
+		m.styles.muted.Render("One action at a time."),
+	}
+	return m.centeredPaneFooter("Applying", "No real deletion", lines, m.footer(footerBusy))
+}
+
+func (m Model) applyResultView() string {
+	spec := layoutSpec(m.width, m.height)
+	execution := m.applyExecution
+	lines := m.dashboardSections(
+		spec.detailWidth,
+		m.section("Result", m.keyValueRows([]keyValue{
+			{Key: "State", Value: string(execution.State)},
+			{Key: "Executor", Value: apply.ExecutorNoop},
+			{Key: "No real deletion", Value: "yes"},
+		})),
+		m.section("Counts", m.keyValueRows([]keyValue{
+			{Key: "Done", Value: compactCount(execution.Counts.Done)},
+			{Key: "Failed", Value: compactCount(execution.Counts.Failed)},
+			{Key: "Skipped", Value: compactCount(execution.Counts.Skipped)},
+			{Key: "Stopped", Value: compactCount(execution.Counts.Stopped)},
+			{Key: "Cancelled", Value: compactCount(execution.Counts.Cancelled)},
+			{Key: "Pending", Value: compactCount(execution.Counts.Pending)},
+		})),
+	)
+	lines = append(lines, "")
+	lines = append(lines, m.menuRows(applyResultMenuItems, m.applyResultCursor, spec.detailWidth, hitApplyResultAction)...)
+
+	resultLines := []string{}
+	if len(execution.Results) == 0 {
+		resultLines = append(resultLines, m.emptyState("No actions ran."))
+	} else {
+		rows := make([]string, 0, len(execution.Results))
+		for _, result := range execution.Results {
+			rows = append(rows, applyResultRow(result))
+		}
+		resultLines = append(resultLines, m.plainRows(rows, 0, m.planActionListHeight(), spec.mainWidth)...)
+	}
+	body := m.twoPane(spec, "Apply Result", "No-op execution", lines, "Action Results", "Safe summary", resultLines)
+	return m.appShell("Apply Result", body, m.footer(footerActionMenu))
+}
+
 func (m Model) filtersView() string {
 	spec := layoutSpec(m.width, m.height)
 	lines := []string{
@@ -2443,6 +2716,7 @@ func (m *Model) resetPlanState() {
 	m.planResult = planBuildResult{}
 	m.planPreviewCursor = 0
 	m.planListOffset = 0
+	m.resetApplyState()
 	m.planPathInput.SetValue(m.defaultPlanPathValue())
 	m.planPathInput.Blur()
 	m.planExportStatus = ""
@@ -2455,8 +2729,18 @@ func (m *Model) resetLoadedPlanState() {
 	m.loadedPlanCursor = 0
 	m.loadedActionCursor = 0
 	m.loadedActionOffset = 0
+	m.resetApplyState()
 	m.planLoadError = ""
 	m.planPathInput.Blur()
+}
+
+func (m *Model) resetApplyState() {
+	m.applyPlanSource = applySourceGenerated
+	m.applyPreview = apply.Preview{}
+	m.applyExecution = apply.Execution{}
+	m.applyPreviewCursor = 0
+	m.applyConfirmCursor = applyConfirmCancel
+	m.applyResultCursor = 0
 }
 
 func (m *Model) openQuitConfirm() {
@@ -2597,6 +2881,48 @@ func (m Model) hasLoadedPlan() bool {
 
 func (m Model) hasPlanPreview() bool {
 	return strings.TrimSpace(m.planResult.Plan.ID) != "" || len(m.planResult.Plan.Actions) > 0 || len(m.planResult.Skipped) > 0
+}
+
+func (m *Model) openApplyPreview(source applyPlanSource) {
+	m.applyPlanSource = source
+	m.applyPreview = m.applyRunner().Preview(m.currentApplyPlan())
+	m.applyExecution = apply.Execution{}
+	m.applyPreviewCursor = 0
+	m.applyConfirmCursor = applyConfirmCancel
+	m.applyResultCursor = 0
+	m.recordApplyPreviewed(m.applyPreview)
+	m.current = screenApplyPreview
+}
+
+func (m Model) applyRunner() apply.Runner {
+	return apply.Runner{
+		Executor: apply.NoopExecutor{},
+		Accounts: apply.AccountState{
+			RedditConnected: m.redditConnected(),
+		},
+	}
+}
+
+func (m Model) currentApplyPlan() domain.CleanupPlan {
+	if m.applyPlanSource == applySourceLoaded {
+		return m.loadedPlan
+	}
+	return m.planResult.Plan
+}
+
+func (m Model) currentApplyPreviewMenuItems() []string {
+	if m.applyPreview.CanApply {
+		return applyPreviewMenuItems
+	}
+	return applyPreviewBlockedMenuItems
+}
+
+func (m *Model) returnToApplySource() {
+	if m.applyPlanSource == applySourceLoaded {
+		m.current = screenLoadedPlanSummary
+		return
+	}
+	m.current = screenPlanPreview
 }
 
 func (m Model) currentActivityPlatform(items []domain.ActivityItem) domain.PlatformName {
@@ -2943,6 +3269,23 @@ func (m *Model) recordPlanLoadFailed(path string, err error) {
 		"path":  path,
 		"error": friendlyPlanLoadError(err),
 	})
+	m.refreshLocalData()
+}
+
+func (m *Model) recordApplyPreviewed(preview apply.Preview) {
+	m.appendAudit(string(apply.EventPreviewed), applyPreviewAuditFields(preview))
+	m.refreshLocalData()
+}
+
+func (m *Model) recordApplyConfirmed(preview apply.Preview) {
+	m.appendAudit(string(apply.EventConfirmed), applyPreviewAuditFields(preview))
+	m.refreshLocalData()
+}
+
+func (m *Model) recordApplyExecution(execution apply.Execution) {
+	for _, event := range execution.Events {
+		m.appendAudit(string(event.Type), applyEventAuditFields(event))
+	}
 	m.refreshLocalData()
 }
 
@@ -3415,6 +3758,11 @@ type loadPlanFinishedMsg struct {
 	fromRecent bool
 }
 
+type applyRunFinishedMsg struct {
+	source    applyPlanSource
+	execution apply.Execution
+}
+
 func activityResultFromAny(value any) activityResult {
 	switch typed := value.(type) {
 	case activityResult:
@@ -3542,6 +3890,21 @@ func loadPlanJSONCmd(planPath string, fromRecent bool) tea.Cmd {
 			plan:       plan,
 			summary:    domain.SummarizeCleanupPlan(plan),
 			fromRecent: fromRecent,
+		}
+	}
+}
+
+func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, redditConnected bool) tea.Cmd {
+	return func() tea.Msg {
+		runner := apply.Runner{
+			Executor: apply.NoopExecutor{},
+			Accounts: apply.AccountState{
+				RedditConnected: redditConnected,
+			},
+		}
+		return applyRunFinishedMsg{
+			source:    source,
+			execution: runner.Run(context.Background(), plan),
 		}
 	}
 }
@@ -3751,6 +4114,38 @@ func planActionRow(action domain.CleanupAction) string {
 	return planActionListRow(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID)
 }
 
+func (m Model) applyActionSummaryLines(preview apply.Preview) []string {
+	rows := []string{
+		m.styles.body.Render(fmt.Sprintf("Pending: %d", preview.PendingCount)),
+		m.styles.body.Render(fmt.Sprintf("Unsupported: %d", preview.UnsupportedCount)),
+	}
+	if preview.UnsupportedCount > 0 && len(preview.Unsupported) > 0 {
+		rows = append(rows, "")
+		for _, unsupported := range preview.Unsupported {
+			rows = append(rows, m.styles.body.Render(fmt.Sprintf("%s | %s | %s", unsupported.Status, unsupported.Type, unsupported.Reason)))
+			if len(rows) >= 7 {
+				break
+			}
+		}
+	}
+	return rows
+}
+
+func applyResultRow(result apply.ActionResult) string {
+	return fixedWidthRow(
+		fixedColumn{Text: string(result.Status), Width: 12},
+		fixedColumn{Text: string(result.Type), Width: 24},
+		fixedColumn{Text: emptyFallback(result.ActionID, "-"), Width: 24},
+	)
+}
+
+func readyLabel(ready bool) string {
+	if ready {
+		return "ready"
+	}
+	return "not ready"
+}
+
 func planActionDetailLines(action domain.CleanupAction) []string {
 	lines := []string{}
 	lines = appendDetailSection(lines, detailSection("Identity",
@@ -3955,6 +4350,8 @@ func (m Model) statusCountLines(counts map[domain.ActionStatus]int) []string {
 		domain.ActionStatusDone,
 		domain.ActionStatusFailed,
 		domain.ActionStatusSkipped,
+		domain.ActionStatusStopped,
+		domain.ActionStatusCancelled,
 	}
 	lines := make([]string, 0, len(statuses))
 	for _, status := range statuses {
@@ -4164,7 +4561,51 @@ func planAuditFields(path string, plan domain.CleanupPlan, summary domain.Cleanu
 		"done_count":           summary.StatusCounts[domain.ActionStatusDone],
 		"failed_count":         summary.StatusCounts[domain.ActionStatusFailed],
 		"skipped_count":        summary.StatusCounts[domain.ActionStatusSkipped],
+		"stopped_count":        summary.StatusCounts[domain.ActionStatusStopped],
+		"cancelled_count":      summary.StatusCounts[domain.ActionStatusCancelled],
 	}
+}
+
+func applyPreviewAuditFields(preview apply.Preview) map[string]any {
+	return map[string]any{
+		"plan_id":              preview.PlanID,
+		"platform":             string(preview.Platform),
+		"executor":             preview.Executor,
+		"action_count":         preview.Summary.TotalActions,
+		"pending_count":        preview.PendingCount,
+		"unsupported_count":    preview.UnsupportedCount,
+		"failed_count":         preview.Summary.StatusCounts[domain.ActionStatusFailed],
+		"skipped_count":        preview.Summary.StatusCounts[domain.ActionStatusSkipped],
+		"reddit_account_ready": preview.AccountReady,
+		"can_apply":            preview.CanApply,
+	}
+}
+
+func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
+	fields := map[string]any{
+		"plan_id":  event.PlanID,
+		"platform": string(event.Platform),
+		"executor": event.Executor,
+	}
+	if event.ActionID != "" {
+		fields["action_id"] = event.ActionID
+	}
+	if event.ActionType != "" {
+		fields["action_type"] = string(event.ActionType)
+	}
+	if event.Status != "" {
+		fields["status"] = string(event.Status)
+	}
+	if event.State != "" {
+		fields["state"] = string(event.State)
+	}
+	fields["pending_count"] = event.Counts.Pending
+	fields["done_count"] = event.Counts.Done
+	fields["failed_count"] = event.Counts.Failed
+	fields["skipped_count"] = event.Counts.Skipped
+	fields["stopped_count"] = event.Counts.Stopped
+	fields["cancelled_count"] = event.Counts.Cancelled
+	return fields
 }
 
 func cleanAuditFields(fields map[string]any) map[string]any {
@@ -4819,6 +5260,12 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanAction, 0, loadedPlanSummaryMenuItems)...)
 	case screenLoadedPlanActions:
 		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, m.loadedActionOffset, planActionRows(m.loadedPlan.Actions))...)
+	case screenApplyPreview:
+		boxes = append(boxes, rowHitBoxes(content, hitApplyPreviewAction, 0, m.currentApplyPreviewMenuItems())...)
+	case screenApplyConfirm:
+		boxes = append(boxes, rowHitBoxes(content, hitApplyConfirmAction, 0, applyConfirmMenuItems)...)
+	case screenApplyResult:
+		boxes = append(boxes, rowHitBoxes(content, hitApplyResultAction, 0, applyResultMenuItems)...)
 	case screenFilters:
 		if m.filterEditing == filterEditNone {
 			boxes = append(boxes, rowHitBoxes(content, hitFilterRow, 0, m.filterRows())...)

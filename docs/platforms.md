@@ -59,8 +59,9 @@ Deferred directions:
 - Scan vote history.
 - Apply, delete, edit, save, vote, submit, or permission-changing behavior.
 
-Apply cleanup is later. It is not part of the v0.5 planner prototype and should
-not be implied to work today.
+Real apply cleanup is later. The v0.6 foundation can preview and confirm a plan
+through a no-op executor, but it must not be implied to delete or change
+platform content today.
 
 ## Safety Boundaries
 
@@ -71,5 +72,6 @@ not be implied to work today.
 - Vanish does not collect passwords, cookies, pasted sessions, private API data,
   or authorization headers.
 - Vanish does not delete platform content or apply account changes.
+- Apply preview/no-op execution records safe lifecycle events only.
 - Local data wipe only clears Vanish-managed local app metadata in the active
   app directory. It does not delete platform content.

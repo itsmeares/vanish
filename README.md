@@ -6,10 +6,10 @@ activity and building safe cleanup plans.
 Current status: **v0.1.0-alpha**. The app is useful for local review and dry-run
 planning, but it does not delete platform content or apply account changes.
 
-The v0.2 local workspace, v0.4 multi-platform foundation, and v0.5 Reddit
-planner prototype are documented here, but those versions have not been
-released. The same alpha limits still apply: Vanish remains dry-run-only and
-does not apply cleanup actions. Instagram stays local-file only; Reddit uses
+The v0.2 local workspace, v0.4 multi-platform foundation, v0.5 Reddit planner
+prototype, and v0.6 no-op apply foundation are documented here, but those
+versions have not been released. The same alpha limits still apply: Vanish does
+not apply real cleanup actions. Instagram stays local-file only; Reddit uses
 explicit installed-app OAuth and the official API for the prototype scanner.
 
 ![Vanish home screen](docs/assets/home.svg)
@@ -109,17 +109,19 @@ model.
 - Dry-run plan generation.
 - Plan export to JSON.
 - Plan loading and viewing.
+- Apply preview, short confirmation, and no-op execution for supported pending
+  plan actions.
 - Reddit official API planner prototype: manual installed-app OAuth, own
   comments/posts scan, review/filter/select reuse, and Reddit dry-run plan
   generation.
 
 ## Not Supported Yet
 
-- Automatic deletion or apply/execution.
+- Automatic deletion or real apply/execution.
 - Instagram login.
 - Browser automation.
 - Reddit saved items and vote history scanning.
-- Reddit apply/delete execution.
+- Reddit real apply/delete execution.
 - Other platform integrations beyond Instagram Export and Reddit.
 - Cloud sync or hosted accounts.
 

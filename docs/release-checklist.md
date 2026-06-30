@@ -32,7 +32,7 @@ Use this checklist before publishing the first alpha.
 - [ ] No credentials are collected.
 - [ ] No cookies, tokens, sessions, or passwords are stored.
 - [ ] No raw private messages are stored.
-- [ ] No apply/deletion logic was added.
+- [ ] No real apply/deletion logic was added.
 - [ ] README matches the actual app behavior.
 - [ ] Safety docs match the actual app behavior.
 
@@ -101,6 +101,23 @@ not a release announcement until the feature is complete.
 - [ ] No Reddit content/account mutation endpoints are present.
 - [ ] `/api/v1/revoke_token` is used only for explicit disconnect/auth cleanup,
   if implemented in a later phase.
+
+## v0.6 Apply Foundation Safety Verification
+
+Use this section for the apply preview and no-op execution foundation. It is not
+real platform cleanup.
+
+- [ ] Apply execution uses the no-op executor only.
+- [ ] No Reddit delete, edit, save, vote, submit, or mutation OAuth scopes were
+  added.
+- [ ] No Instagram login, API call, browser automation, scraping, private API,
+  password collection, cookie paste, or session paste flow was added.
+- [ ] Apply audit events include only plan/action IDs, platform, action type,
+  status, executor, account-ready booleans, and counts.
+- [ ] Apply audit events do not include target URLs, usernames, raw content,
+  tokens, cookies, sessions, secrets, or authorization data.
+- [ ] Unsupported platform/action pairs and missing Reddit account metadata
+  block confirmation.
 
 Suggested v0.5 static checks mirror CI:
 
