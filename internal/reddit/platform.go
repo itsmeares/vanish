@@ -7,12 +7,12 @@ func Platform() platform.Platform {
 		ID:      platform.PlatformReddit,
 		Name:    "Reddit",
 		Status:  platform.StatusPrototype,
-		Summary: "Official API planner prototype for v0.5. Vanish can use manual installed-app OAuth, scan own comments/posts, and generate local dry-run plans.",
+		Summary: "Sign in with Reddit, scan your activity, and build a dry-run cleanup plan.",
 		Capabilities: []platform.Capability{
 			{
 				Label:       "Scan own comments/posts",
 				Support:     platform.SupportPrototype,
-				Description: "Prototype scanner uses Reddit's official API for the connected user's own comments and submitted posts.",
+				Description: "Uses Reddit's official API for your comments and posts.",
 			},
 			{
 				Label:       "Scan saved items",
@@ -27,7 +27,7 @@ func Platform() platform.Platform {
 			{
 				Label:       "Generate dry-run plans",
 				Support:     platform.SupportPrototype,
-				Description: "Prototype planner generates local dry-run actions for selected Reddit comments and posts only.",
+				Description: "Builds local dry-run actions for selected comments and posts only.",
 			},
 			{
 				Label:       "Apply cleanup",
@@ -37,18 +37,17 @@ func Platform() platform.Platform {
 			{
 				Label:       "OAuth",
 				Support:     platform.SupportPrototype,
-				Description: "Installed-app OAuth foundation exists with secure refresh-token storage; no embedded browser, password, cookie, or session paste.",
+				Description: "Uses installed-app OAuth with secure refresh-token storage.",
 			},
 			{
 				Label:       "Network/API access",
 				Support:     platform.SupportPrototype,
-				Description: "Official Reddit OAuth/API client foundation exists behind narrow safety checks; no scraping or browser automation.",
+				Description: "Uses official Reddit OAuth/API requests only.",
 			},
 		},
 		Actions: []platform.PlatformAction{
-			{ID: platform.ActionViewIntegrationNote, Label: "View integration notes"},
-			{ID: platform.ActionConnectAccount, Label: "Connect Reddit account"},
-			{ID: platform.ActionScanActivity, Label: "Scan Reddit activity"},
+			{ID: platform.ActionConnectAccount, Label: "Sign in with Reddit"},
+			{ID: platform.ActionScanActivity, Label: "Scan activity"},
 			{ID: platform.ActionBack, Label: "Back"},
 		},
 		Notes: []string{

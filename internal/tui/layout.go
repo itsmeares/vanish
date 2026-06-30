@@ -226,6 +226,36 @@ func (m Model) singlePaneFooter(section, subtitle string, lines []string, footer
 	return m.appShell(section, body, footer)
 }
 
+func (m Model) centeredPaneFooter(section, subtitle string, lines []string, footer string) string {
+	spec := layoutSpec(m.width, m.height)
+	width := clampWidth(minInt(spec.contentWidth, maxInt(48, spec.contentWidth*3/5)))
+	body := m.pane(section, subtitle, strings.Join(lines, "\n"), width, compactPaneHeight(lines, spec.bodyHeight))
+	placed := placeBlock(body, spec.contentWidth, spec.bodyHeight)
+	return m.appShell(section, placed, footer)
+}
+
+func placeBlock(block string, width, height int) string {
+	blockWidth := lipgloss.Width(block)
+	blockHeight := strings.Count(block, "\n") + 1
+	left := maxInt(0, (width-blockWidth)/2)
+	top := maxInt(0, (height-blockHeight)/2)
+	prefix := strings.Repeat(" ", left)
+	lines := strings.Split(block, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	if top == 0 {
+		return strings.Join(lines, "\n")
+	}
+	padding := strings.Repeat("\n", top)
+	return padding + strings.Join(lines, "\n")
+}
+
+func centeredActionWidth(width int) int {
+	spec := layoutSpec(width, defaultTerminalHeight)
+	return clampWidth(minInt(spec.contentWidth, maxInt(48, spec.contentWidth*3/5)))
+}
+
 func compactPaneHeight(lines []string, maxHeight int) int {
 	height := len(lines) + 4
 	if height < 6 {

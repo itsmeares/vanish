@@ -41,9 +41,7 @@ func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 		"Instagram Export",
 		"Reddit",
 		"Import a local Instagram export ZIP",
-		"Status: prototype",
-		"Local ZIP scan: prototype",
-		"Enter opens actions and details.",
+		"Enter to continue.",
 		footerHome,
 	} {
 		if !strings.Contains(plain, want) {
@@ -54,6 +52,9 @@ func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 		"[LOCAL]",
 		"[DRY-RUN]",
 		"[NO NETWORK]",
+		"Capabilities",
+		"Status: prototype",
+		"Local ZIP scan: prototype",
 		"Command Center",
 		"Getting Started",
 		"Local-only review of files you choose.",
@@ -132,15 +133,7 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 	redditView := m.View().Content
 	for _, want := range []string{
 		"Reddit",
-		"Official API planner prototype for v0.5",
-		"Status: prototype",
-		"Scan own comments/posts: prototype",
-		"Scan saved items: planned",
-		"Scan votes: planned",
-		"Generate dry-run plans: prototype",
-		"OAuth: prototype",
-		"Network/API access: prototype",
-		"manual installed-",
+		"Sign in to scan your Reddit activity.",
 	} {
 		if !strings.Contains(redditView, want) {
 			t.Fatalf("expected Reddit detail to contain %q, got:\n%s", want, redditView)
@@ -148,6 +141,11 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 	}
 	if strings.Contains(redditView, "Import a local Instagram export ZIP") {
 		t.Fatalf("expected home detail to change with cursor, got:\n%s", redditView)
+	}
+	for _, unwanted := range []string{"prototype", "planned", "Capabilities", "OAuth:", "Network/API access"} {
+		if strings.Contains(redditView, unwanted) {
+			t.Fatalf("expected Reddit home detail not to show %q, got:\n%s", unwanted, redditView)
+		}
 	}
 }
 
@@ -173,19 +171,22 @@ func TestHomeEnterOpensPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestPlatformDetailRendersSectionsInFixedOrder(t *testing.T) {
+func TestPlatformDetailShowsActionsBeforeShortContext(t *testing.T) {
 	m := NewModel()
 	m.openPlatformDetail(0)
 	plain := stripANSI(m.View().Content)
 	actions := strings.Index(plain, "Actions")
-	status := strings.Index(plain, "Status")
-	capabilities := strings.Index(plain, "Capabilities")
-	notes := strings.Index(plain, "Notes / Guide")
-	if actions < 0 || status < 0 || capabilities < 0 || notes < 0 {
-		t.Fatalf("expected all platform sections, got:\n%s", plain)
+	here := strings.Index(plain, "Here")
+	if actions < 0 || here < 0 {
+		t.Fatalf("expected platform actions and short context, got:\n%s", plain)
 	}
-	if !(actions < status && status < capabilities && capabilities < notes) {
-		t.Fatalf("expected Actions, Status, Capabilities, Notes / Guide order, got:\n%s", plain)
+	if actions > here {
+		t.Fatalf("expected actions before context, got:\n%s", plain)
+	}
+	for _, unwanted := range []string{"Capabilities", "Notes / Guide", "Status: prototype"} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("expected platform detail not to show %q, got:\n%s", unwanted, plain)
+		}
 	}
 }
 
@@ -292,80 +293,96 @@ func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestRedditConnectActionShowsManualOAuthSetupAndMissingClientID(t *testing.T) {
+func TestRedditNotConnectedShowsSimpleSignInState(t *testing.T) {
 	t.Setenv(reddit.ClientIDEnv, "")
 
 	m := NewModel()
 	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionConnectAccount)
-
-	updated, cmd := m.Update(keyPress("enter"))
-	if cmd != nil {
-		t.Fatalf("expected connect setup screen not to return a command")
+	if m.current != screenRedditConnect || m.selectedPlatformID != platform.PlatformReddit {
+		t.Fatalf("expected Reddit connect screen, screen=%v id=%q", m.current, m.selectedPlatformID)
 	}
-	next := requireModel(t, updated)
-	if next.current != screenRedditConnect || next.selectedPlatformID != platform.PlatformReddit {
-		t.Fatalf("expected Reddit connect screen, screen=%v id=%q", next.current, next.selectedPlatformID)
-	}
-	view := next.View().Content
+	view := m.View().Content
 	for _, want := range []string{
 		"Reddit",
-		"Connect and scan",
-		"Status: not connected",
-		"Set VANISH_REDDIT_CLIENT_ID before connecting Reddit.",
-		"Manual OAuth only",
-		"Enter returned code",
-		"Scan supported activity",
+		"Sign in to scan your Reddit activity.",
+		"Sign in with Reddit",
+		"Back",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected Reddit connect screen to contain %q, got:\n%s", want, view)
 		}
 	}
+	for _, unwanted := range []string{"Enter returned code", "Allow local token file fallback", "Forget local metadata", "Disconnect and revoke access", "Manual OAuth only", "Status: not connected"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("expected Reddit connect screen not to contain %q, got:\n%s", unwanted, view)
+		}
+	}
 }
 
-func TestRedditScanActionRequiresConnection(t *testing.T) {
-	t.Setenv(reddit.ClientIDEnv, "test-client")
+func TestRedditSignInWithoutClientIDShowsShortError(t *testing.T) {
+	t.Setenv(reddit.ClientIDEnv, "")
 
 	m := NewModel()
 	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionScanActivity)
 
 	next := updateModel(t, m, keyPress("enter"))
 	if next.current != screenRedditConnect {
-		t.Fatalf("expected scan without connection to open connect screen, got %v", next.current)
+		t.Fatalf("expected missing client ID to stay on connect screen, got %v", next.current)
 	}
-	if !strings.Contains(next.View().Content, "Connect Reddit before scanning.") {
-		t.Fatalf("expected connect-required message, got:\n%s", next.View().Content)
+	if !strings.Contains(next.View().Content, "Reddit sign-in is not configured. Set VANISH_REDDIT_CLIENT_ID and try again.") {
+		t.Fatalf("expected short configuration error, got:\n%s", next.View().Content)
 	}
 }
 
-func TestRedditConnectEnterCodeOpensManualOAuthForm(t *testing.T) {
+func TestRedditSignInOpensBrowserWaitScreen(t *testing.T) {
 	t.Setenv(reddit.ClientIDEnv, "test-client")
 
 	m := NewModel()
 	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionConnectAccount)
-	next := updateModel(t, m, keyPress("enter"))
-	next.redditConnectCursor = redditConnectEnterCode
 
-	updated, cmd := next.Update(keyPress("enter"))
+	updated, cmd := m.Update(keyPress("enter"))
 	if cmd == nil {
-		t.Fatalf("expected code input focus command")
+		t.Fatalf("expected sign-in command")
 	}
-	next = requireModel(t, updated)
-	if next.current != screenRedditAuthCode {
-		t.Fatalf("expected Reddit auth code screen, got %v", next.current)
+	next := requireModel(t, updated)
+	if next.current != screenRedditSigningIn {
+		t.Fatalf("expected Reddit sign-in screen, got %v", next.current)
 	}
 	view := next.View().Content
 	for _, want := range []string{
-		"Reddit OAuth",
-		"Open this Reddit authorization URL",
-		"Requested scopes: identity history",
-		"No password, cookie, session, or browser automation is used.",
+		"Waiting for browser sign-in",
+		"https://www.reddit.com/api/v1/authorize",
+		"Cancel",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("expected Reddit auth form to contain %q, got:\n%s", want, view)
+			t.Fatalf("expected Reddit sign-in screen to contain %q, got:\n%s", want, view)
 		}
+	}
+	for _, unwanted := range []string{"Paste the returned code", "Requested scopes", "token file fallback", "browser automation"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("expected Reddit sign-in screen not to contain %q, got:\n%s", unwanted, view)
+		}
+	}
+}
+
+func TestRedditSignInCancelReturnsToSimpleState(t *testing.T) {
+	cancelled := false
+	m := NewModel()
+	m.current = screenRedditSigningIn
+	m.selectedPlatformID = platform.PlatformReddit
+	m.redditAuthState = "state-123"
+	m.redditAuthURL = "https://www.reddit.com/api/v1/authorize?client_id=test"
+	m.redditSignInCancel = func() { cancelled = true }
+
+	next := updateModel(t, m, keyPress("esc"))
+	if !cancelled {
+		t.Fatalf("expected cancel func to be called")
+	}
+	if next.current != screenRedditConnect || next.redditAuthState != "" || next.redditAuthURL != "" {
+		t.Fatalf("expected cancel to return to Reddit connect state, got screen=%v state=%q url=%q", next.current, next.redditAuthState, next.redditAuthURL)
+	}
+	if !strings.Contains(next.View().Content, "Sign in to scan your Reddit activity.") {
+		t.Fatalf("expected simple Reddit state after cancel, got:\n%s", next.View().Content)
 	}
 }
 
@@ -385,28 +402,26 @@ func TestRedditCodeFromInputParsesRedirectAndChecksState(t *testing.T) {
 	}
 }
 
-func TestRedditNotesActionAndBack(t *testing.T) {
+func TestRedditConnectedShowsScanDisconnectBack(t *testing.T) {
 	m := NewModel()
-	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionViewIntegrationNote)
-	next := updateModel(t, m, keyPress("enter"))
-	if next.current != screenRedditNotes {
-		t.Fatalf("expected Reddit notes screen, got %v", next.current)
-	}
+	m.current = screenRedditConnect
+	m.selectedPlatformID = platform.PlatformReddit
+	m.localConfig.Reddit = &workspace.RedditConfig{Username: "test_user"}
+	view := m.View().Content
 	for _, want := range []string{
-		"Official API planner prototype targets v0.5",
-		"own comments/posts scan",
-		"The TUI can connect with manual OAuth",
-		"No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists.",
+		"Signed in as u/test_user",
+		"Scan activity",
+		"Disconnect",
+		"Back",
 	} {
-		if !strings.Contains(next.View().Content, want) {
-			t.Fatalf("expected Reddit notes to contain %q, got:\n%s", want, next.View().Content)
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected Reddit connected state to contain %q, got:\n%s", want, view)
 		}
 	}
-
-	next = updateModel(t, next, keyPress("esc"))
-	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
-		t.Fatalf("expected back to Reddit platform detail, screen=%v id=%q", next.current, next.selectedPlatformID)
+	for _, unwanted := range []string{"Sign in with Reddit", "Allow local token file fallback", "Forget local metadata", "Disconnect and revoke access"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("expected Reddit connected state not to contain %q, got:\n%s", unwanted, view)
+		}
 	}
 }
 
@@ -496,8 +511,8 @@ func TestMouseClickHomeMenuRowActivatesOnSingleClick(t *testing.T) {
 	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
 
 	next := updateModel(t, m, mouseClick(box.X, box.Y))
-	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
-		t.Fatalf("expected single click on Reddit to open detail, screen=%v id=%q", next.current, next.selectedPlatformID)
+	if next.current != screenRedditConnect || next.selectedPlatformID != platform.PlatformReddit {
+		t.Fatalf("expected single click on Reddit to open sign-in state, screen=%v id=%q", next.current, next.selectedPlatformID)
 	}
 }
 
@@ -555,7 +570,7 @@ func TestMouseHitBoxesStillMatchRowsAfterResize(t *testing.T) {
 	}
 
 	next = updateModel(t, m, mouseClick(box.X, box.Y))
-	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
+	if next.current != screenRedditConnect || next.selectedPlatformID != platform.PlatformReddit {
 		t.Fatalf("expected resized click on Reddit row to activate, screen=%v id=%q", next.current, next.selectedPlatformID)
 	}
 }
@@ -698,9 +713,9 @@ func TestLocalDataScreensEmptyStatesAndBackspaceNavigation(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Local Data",
+		"Manage Vanish data on this device.",
 		"App directory:",
 		filepath.Base(w.Dir()),
-		"Telemetry: disabled",
 		"Recent imports: 0",
 		"Recent plans: 0",
 		"Audit events: 0",
@@ -2221,7 +2236,7 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 	redditConnect.current = screenRedditConnect
 	redditConnect.selectedPlatformID = platform.PlatformReddit
 	redditAuth := redditConnect
-	redditAuth.current = screenRedditAuthCode
+	redditAuth.current = screenRedditSigningIn
 	redditAuth.redditAuthURL = "https://www.reddit.com/api/v1/authorize?client_id=test"
 	redditBusy := redditConnect
 	redditBusy.current = screenRedditBusy
