@@ -35,7 +35,7 @@ const (
 	screenInstagramExportGuide
 	screenRedditNotes
 	screenRedditConnect
-	screenRedditAuthCode
+	screenRedditSigningIn
 	screenRedditBusy
 	screenImportPath
 	screenImporting
@@ -98,22 +98,18 @@ var resultMenuItems = []string{
 	"Back home",
 }
 
+type redditActionID int
+
 const (
-	redditConnectEnterCode = iota
-	redditConnectScan
-	redditConnectAllowFileFallback
-	redditConnectForgetLocal
-	redditConnectRevoke
-	redditConnectBack
+	redditActionSignIn redditActionID = iota
+	redditActionScan
+	redditActionDisconnect
+	redditActionBack
 )
 
-var redditConnectMenuItems = []string{
-	"Enter returned code",
-	"Scan supported activity",
-	"Allow local token file fallback",
-	"Forget local metadata",
-	"Disconnect and revoke access",
-	"Back",
+type redditAction struct {
+	ID    redditActionID
+	Label string
 }
 
 const (
@@ -270,7 +266,6 @@ type Model struct {
 	help                 help.Model
 	localWorkspace       *workspace.Workspace
 	planPathInput        textinput.Model
-	redditCodeInput      textinput.Model
 	filterActorInput     textinput.Model
 	filterTargetInput    textinput.Model
 	filterOlderInput     textinput.Model
@@ -317,6 +312,7 @@ type Model struct {
 	redditFileFallback   bool
 	redditAuthState      string
 	redditAuthURL        string
+	redditSignInCancel   context.CancelFunc
 	redditStatus         string
 	redditError          string
 	redditBusyTitle      string
@@ -369,7 +365,6 @@ func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) 
 		help:               helpModel,
 		localWorkspace:     localWorkspace,
 		planPathInput:      newPlanPathInput(),
-		redditCodeInput:    newRedditCodeInput(),
 		filterActorInput:   newFilterInput("username"),
 		filterTargetInput:  newFilterInput("URL or ID"),
 		filterOlderInput:   newFilterInput("YYYY-MM-DD"),
@@ -409,7 +404,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		m.planPathInput.SetWidth(inputWidth(msg.Width))
-		m.redditCodeInput.SetWidth(inputWidth(msg.Width))
 		m.setFilterInputWidths(inputWidth(msg.Width))
 		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.parsedItemsViewport().VisibleRows)
 		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
@@ -444,6 +438,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.current = screenImportResult
 
 	case redditConnectFinishedMsg:
+		if !m.currentRedditSignIn(msg.state) {
+			return m, nil
+		}
+		m.cancelRedditSignIn()
 		m.redditBusyTitle = ""
 		m.redditBusyDetail = ""
 		if msg.err != nil {
@@ -453,9 +451,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.redditError = ""
-		m.redditStatus = fmt.Sprintf("Connected as u/%s.", msg.username)
-		m.redditCodeInput.SetValue("")
-		m.redditCodeInput.Blur()
+		m.redditStatus = ""
+		m.redditAuthState = ""
+		m.redditAuthURL = ""
 		m.updateConfig("save Reddit connection metadata", func(config *workspace.Config) {
 			config.Reddit = msg.metadata
 		})
@@ -518,7 +516,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.current == screenImporting || m.current == screenRedditBusy {
+		if m.current == screenImporting || m.current == screenRedditSigningIn || m.current == screenRedditBusy {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -571,12 +569,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, m.keys.quit) {
+			if m.current == screenRedditSigningIn {
+				m.cancelRedditSignIn()
+				m.redditAuthState = ""
+			}
 			if m.current != screenQuitConfirm {
 				m.openQuitConfirm()
 			}
 			return m, nil
 		}
-		if key.Matches(msg, m.keys.help) && m.current != screenKeybindings {
+		if key.Matches(msg, m.keys.help) && m.current != screenKeybindings && m.current != screenRedditSigningIn {
 			m.openKeybindings()
 			return m, nil
 		}
@@ -590,8 +592,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePlatformStaticScreen(msg)
 		case screenRedditConnect:
 			return m.updateRedditConnect(msg)
-		case screenRedditAuthCode:
-			return m.updateRedditAuthCode(msg)
+		case screenRedditSigningIn:
+			return m.updateRedditSigningIn(msg)
 		case screenImportPath:
 			return m.updateImportPath(msg)
 		case screenImportResult:
@@ -675,7 +677,7 @@ func (m Model) updatePlatformStaticScreen(msg tea.KeyPressMsg) (tea.Model, tea.C
 }
 
 func (m Model) updateRedditConnect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	actions, disabled := m.redditConnectActions()
+	actions := m.redditConnectActions()
 	switch {
 	case key.Matches(msg, m.keys.up):
 		m.redditConnectCursor = moveCursor(m.redditConnectCursor, len(actions), -1)
@@ -685,55 +687,85 @@ func (m Model) updateRedditConnect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.current = screenPlatformDetail
 	case key.Matches(msg, m.keys.selectItem):
 		index := clampCursor(m.redditConnectCursor, len(actions))
-		if disabled[index] {
-			return m, nil
-		}
-		switch index {
-		case redditConnectEnterCode:
-			if m.ensureRedditAuthURL() {
-				m.redditError = ""
-				m.redditCodeInput.SetValue("")
-				m.current = screenRedditAuthCode
-				return m, m.redditCodeInput.Focus()
-			}
-		case redditConnectScan:
+		switch actions[index].ID {
+		case redditActionSignIn:
+			return m.startRedditSignIn()
+		case redditActionScan:
 			return m.startRedditScan()
-		case redditConnectAllowFileFallback:
-			m.redditFileFallback = true
-			m.redditStatus = "Local token file fallback allowed for this session if credential store is unavailable."
-			m.redditError = ""
-		case redditConnectForgetLocal:
-			return m.startRedditDisconnect(false)
-		case redditConnectRevoke:
+		case redditActionDisconnect:
 			return m.startRedditDisconnect(true)
-		case redditConnectBack:
+		case redditActionBack:
 			m.current = screenPlatformDetail
 		}
 	}
 	return m, nil
 }
 
-func (m Model) updateRedditAuthCode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateRedditSigningIn(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, m.keys.selectItem):
-		input := strings.TrimSpace(m.redditCodeInput.Value())
-		if input == "" {
-			m.redditError = "Paste the returned Reddit code or redirect URL."
-			return m, nil
-		}
+	case key.Matches(msg, m.keys.selectItem), key.Matches(msg, m.keys.cancel), key.Matches(msg, m.keys.back):
+		m.cancelRedditSignIn()
+		m.redditAuthState = ""
+		m.redditAuthURL = ""
 		m.redditError = ""
-		m.redditBusyTitle = "Connecting Reddit"
-		m.redditBusyDetail = "Exchanging the code and storing the refresh token safely."
-		m.current = screenRedditBusy
-		return m, tea.Batch(startSpinnerCmd(m.spinner), redditConnectCmd(input, m.redditAuthState, m.redditAllowFileFallback(), m.localAppDir()))
-	case key.Matches(msg, m.keys.cancel), key.Matches(msg, m.keys.back):
-		m.redditCodeInput.Blur()
+		m.redditStatus = "Reddit sign-in cancelled."
 		m.current = screenRedditConnect
 		return m, nil
 	default:
-		var cmd tea.Cmd
-		m.redditCodeInput, cmd = m.redditCodeInput.Update(msg)
-		return m, cmd
+		return m, nil
+	}
+}
+
+func (m Model) startRedditSignIn() (tea.Model, tea.Cmd) {
+	m.cancelRedditSignIn()
+	m.redditAuthState = fmt.Sprintf("vanish-%d", time.Now().UnixNano())
+	m.redditAuthURL = ""
+	if !m.ensureRedditAuthURL() {
+		m.redditStatus = ""
+		m.current = screenRedditConnect
+		return m, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	state := m.redditAuthState
+	m.redditSignInCancel = cancel
+	m.redditError = ""
+	m.redditStatus = ""
+	m.current = screenRedditSigningIn
+	return m, tea.Batch(
+		startSpinnerCmd(m.spinner),
+		redditSignInCmd(ctx, m.redditAuthURL, state, m.redditAllowFileFallback(), m.localAppDir()),
+	)
+}
+
+func (m *Model) cancelRedditSignIn() {
+	if m.redditSignInCancel != nil {
+		m.redditSignInCancel()
+		m.redditSignInCancel = nil
+	}
+}
+
+func (m Model) currentRedditSignIn(state string) bool {
+	if strings.TrimSpace(state) == "" {
+		return true
+	}
+	return strings.TrimSpace(state) == strings.TrimSpace(m.redditAuthState)
+}
+
+func redditSignInCmd(ctx context.Context, authURL, state string, allowFileFallback bool, appDir string) tea.Cmd {
+	return func() tea.Msg {
+		waiter, err := newRedditCallbackWaiter()
+		if err != nil {
+			return redditConnectFinishedMsg{state: state, err: err}
+		}
+		if err := openExternalURL(authURL); err != nil {
+			_ = waiter.listener.Close()
+			return redditConnectFinishedMsg{state: state, err: fmt.Errorf("open reddit sign-in URL: %w", err)}
+		}
+		code, err := waiter.wait(ctx, state)
+		if err != nil {
+			return redditConnectFinishedMsg{state: state, err: err}
+		}
+		return redditConnectWithCode(code, state, allowFileFallback, appDir)
 	}
 }
 
@@ -1261,6 +1293,10 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.redditConnectCursor = target.Index
 			return m.updateRedditConnect(selectKeyPress())
 		}
+	case screenRedditSigningIn:
+		if target.Kind == hitPlatformAction {
+			return m.updateRedditSigningIn(selectKeyPress())
+		}
 	case screenImportPath:
 		if target.Kind == hitImportPickerRow {
 			m.importPickerCursor = target.Index
@@ -1499,8 +1535,8 @@ func (m Model) renderContent() string {
 		content = m.redditNotesView()
 	case screenRedditConnect:
 		content = m.redditConnectView()
-	case screenRedditAuthCode:
-		content = m.redditAuthCodeView()
+	case screenRedditSigningIn:
+		content = m.redditSigningInView()
 	case screenRedditBusy:
 		content = m.redditBusyView()
 	case screenImportPath:
@@ -1555,7 +1591,7 @@ func (m Model) homeView() string {
 	spec := layoutSpec(m.width, m.height)
 	platforms := m.platforms()
 	menu := append([]string{""}, m.menuRows(platformLabels(platforms), m.homeCursor, spec.sidebarWidth, hitHomeAction)...)
-	detailTitle, detailLines := m.homeDetail(spec.detailWidth)
+	detailTitle, detailLines := m.homeDetail()
 
 	body := m.twoPane(
 		spec,
@@ -1565,24 +1601,17 @@ func (m Model) homeView() string {
 	return m.appShell("Home", body, m.footer(footerHome))
 }
 
-func (m Model) homeDetail(width int) (string, []string) {
+func (m Model) homeDetail() (string, []string) {
 	platforms := m.platforms()
 	if len(platforms) == 0 {
 		return "No platforms", []string{m.emptyState("No platforms are registered.")}
 	}
 	current := platforms[clampCursor(m.homeCursor, len(platforms))]
-	lines := []string{
-		m.styles.body.Render(current.Summary),
-		"",
+	lines := []string{m.styles.body.Render(current.Summary)}
+	if current.ID == platform.PlatformReddit {
+		lines = m.redditHomeDetailLines()
 	}
-	lines = append(lines, m.keyValueRows([]keyValue{
-		{Key: "Status", Value: string(current.Status)},
-	})...)
-	lines = append(lines, "", m.styles.separator.Render("Capabilities"))
-	for _, capability := range current.Capabilities {
-		lines = append(lines, m.styles.body.Render(platformCapabilityLine(capability, maxInt(12, width-4))))
-	}
-	lines = append(lines, "", m.styles.muted.Render("Enter opens actions and details."))
+	lines = append(lines, "", m.styles.muted.Render("Enter to continue."))
 	return current.Name, lines
 }
 
@@ -1592,7 +1621,7 @@ func (m Model) platformDetailView() string {
 		return m.singlePaneFooter("Platform", "", []string{m.emptyState("No platform selected.")}, m.footer(footerEmpty))
 	}
 	lines := m.platformDetailLines(current)
-	return m.singlePaneFooter(current.Name, "Platform detail", lines, m.footer(footerActionMenu))
+	return m.singlePaneFooter(current.Name, "", lines, m.footer(footerActionMenu))
 }
 
 func (m Model) platformDetailLines(current platform.Platform) []string {
@@ -1606,18 +1635,8 @@ func (m Model) platformDetailLines(current platform.Platform) []string {
 		}
 	}
 
-	lines = append(lines, "", m.styles.separator.Render("Status"))
-	lines = append(lines, m.styles.body.Render(fmt.Sprintf("%s - %s", current.Status, current.Summary)))
-
-	lines = append(lines, "", m.styles.separator.Render("Capabilities"))
-	for _, capability := range current.Capabilities {
-		lines = append(lines, m.styles.body.Render(platformCapabilityLine(capability, layoutSpec(m.width, m.height).contentWidth-4)))
-	}
-
-	lines = append(lines, "", m.styles.separator.Render("Notes / Guide"))
-	if len(current.Notes) > 0 {
-		lines = append(lines, m.styles.body.Render(current.Notes[0]))
-	}
+	lines = append(lines, "", m.styles.separator.Render("Here"))
+	lines = append(lines, m.styles.body.Render(current.Summary))
 	return lines
 }
 
@@ -1643,58 +1662,46 @@ func (m Model) instagramExportGuideView() string {
 
 func (m Model) redditNotesView() string {
 	lines := []string{
-		m.styles.body.Render("Official API planner prototype targets v0.5."),
-		m.styles.body.Render("OAuth/API, own comments/posts scan, and dry-run planning foundations exist."),
-		m.styles.body.Render("The TUI can connect with manual OAuth, scan own comments/posts, and build dry-run plans."),
-		m.styles.body.Render("No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists."),
-		"",
-		m.styles.separator.Render("Implementation notes"),
+		m.styles.body.Render("Scan your own Reddit comments and posts."),
+		m.styles.body.Render("Vanish builds dry-run plans only."),
 	}
-	for _, note := range reddit.Platform().Notes {
-		lines = append(lines, m.styles.body.Render(note))
-	}
-	return m.singlePaneFooter("Reddit Notes", "Prototype foundation", lines, m.footer(footerEmpty))
+	return m.singlePaneFooter("Reddit", "", lines, m.footer(footerEmpty))
 }
 
 func (m Model) redditConnectView() string {
 	spec := layoutSpec(m.width, m.height)
-	status := m.redditConnectionRows(spec.detailWidth)
-	actions, disabled := m.redditConnectActions()
-	actionLines := m.menuRowsWithDisabled(actions, disabled, m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
+	status := m.redditConnectionRows()
+	actions := m.redditConnectActions()
+	actionLines := m.menuRows(redditActionLabels(actions), m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
 
 	body := m.twoPane(
 		spec,
-		"Reddit", "Connect and scan", actionLines,
-		"Connection", "Official API prototype", status,
+		"Actions", "", actionLines,
+		"Reddit", "", status,
 	)
 	return m.appShell("Reddit", body, m.footer(footerActionMenu))
 }
 
-func (m Model) redditAuthCodeView() string {
+func (m Model) redditSigningInView() string {
 	lines := []string{
-		m.styles.body.Render("Open this Reddit authorization URL in your browser:"),
+		m.styles.body.Render(fmt.Sprintf("%s Waiting for browser sign-in...", m.spinner.View())),
 		m.styles.muted.Render(m.redditAuthURL),
 		"",
-		m.styles.body.Render("Paste the returned code or full redirect URL."),
-		m.redditCodeInput.View(),
-		"",
-		m.styles.muted.Render("Requested scopes: identity history"),
-		m.styles.muted.Render("No password, cookie, session, or browser automation is used."),
+		m.menuRows([]string{"Cancel"}, 0, centeredActionWidth(m.width), hitPlatformAction)[0],
 	}
 	if strings.TrimSpace(m.redditError) != "" {
-		lines = append(lines, "", m.notice("error", m.redditError))
+		lines = append([]string{m.notice("error", m.redditError), ""}, lines...)
 	}
-	return m.singlePaneFooter("Reddit OAuth", "Manual installed-app flow", lines, m.footer(footerForm))
+	return m.centeredPaneFooter("Reddit", "", lines, m.footer("enter cancel · esc cancel · ctrl+q quit"))
 }
 
 func (m Model) redditBusyView() string {
 	title := emptyFallback(m.redditBusyTitle, "Reddit")
-	detail := emptyFallback(m.redditBusyDetail, "Working with Reddit official API.")
+	detail := emptyFallback(m.redditBusyDetail, "Working with Reddit.")
 	lines := []string{
 		m.styles.body.Render(fmt.Sprintf("%s %s", m.spinner.View(), detail)),
-		m.styles.muted.Render("No Reddit content changes are performed."),
 	}
-	return m.singlePaneFooter(title, "Official API prototype", lines, m.footer(footerBusy))
+	return m.centeredPaneFooter(title, "", lines, m.footer(footerBusy))
 }
 
 func (m Model) platforms() []platform.Platform {
@@ -1801,7 +1808,7 @@ func (m Model) importingView() string {
 		m.styles.body.Render(fmt.Sprintf("%s Parsing local ZIP...", m.spinner.View())),
 		m.styles.muted.Render(truncateMiddle(source, layoutSpec(m.width, m.height).contentWidth-4)),
 	}
-	return m.singlePaneFooter("Importing", "Reading local files only", lines, m.footer(footerBusy))
+	return m.centeredPaneFooter("Importing", "", lines, m.footer(footerBusy))
 }
 
 func (m Model) importResultView() string {
@@ -1886,7 +1893,7 @@ func (m Model) itemsBrowserView() string {
 
 	detailLines := []string{}
 	if len(items) == 0 {
-		detailLines = append(detailLines, m.emptyState("No items match the current filters. Clear filters or scan/import another source."))
+		detailLines = append(detailLines, m.emptyState("No matches. Clear filters or scan again."))
 	} else {
 		detailLines = append(detailLines, m.detailRows(parsedItemDetailLines(items[cursor]), detailWidth)...)
 	}
@@ -1993,8 +2000,8 @@ func (m Model) activateParsedItemAction() (tea.Model, tea.Cmd) {
 
 func (m Model) reviewEmptyView() string {
 	lines := []string{
-		m.styles.body.Render("Import a local Instagram export ZIP, run Demo Import, or scan Reddit first."),
-		m.styles.muted.Render("Parsed items will appear here for review, filtering, and selection."),
+		m.styles.body.Render("Import or scan to review items."),
+		m.styles.muted.Render("Items you can select will appear here."),
 	}
 	return m.singlePaneFooter("Review", "No parsed items yet", lines, m.footer(footerEmpty))
 }
@@ -2044,7 +2051,7 @@ func (m Model) selectedItemsView() string {
 	}
 
 	if len(items) == 0 {
-		listLines = append(listLines, m.emptyState("No selected items yet. Toggle items in the parsed item list or select visible items from the summary."))
+		listLines = append(listLines, m.emptyState("No selected items yet."))
 	} else {
 		rows := make([]string, 0, len(items))
 		for _, item := range items {
@@ -2121,8 +2128,7 @@ func (m Model) planExportPathView() string {
 
 func (m Model) planLoadPathView() string {
 	lines := []string{
-		m.styles.body.Render("Type the path to a local cleanup plan JSON file."),
-		m.styles.muted.Render("Vanish will only read and validate the local file."),
+		m.styles.body.Render("Open a saved cleanup plan JSON file."),
 		"",
 		m.planPathInput.View(),
 		"",
@@ -2156,7 +2162,7 @@ func (m Model) loadedPlanSummaryView() string {
 	body := m.twoPane(
 		spec,
 		"Actions", "Loaded plan", m.menuRows(loadedPlanSummaryMenuItems, m.loadedPlanCursor, spec.sidebarWidth, hitLoadedPlanAction),
-		"Loaded Cleanup Plan", "Plan metadata", detailLines,
+		"Loaded Plan", "", detailLines,
 	)
 	return m.appShell("Loaded Cleanup Plan", body, m.footer(footerActionMenu))
 }
@@ -2191,7 +2197,7 @@ func (m Model) loadedPlanActionsView() string {
 		detailLines = append(detailLines, m.detailRows(planActionDetailLines(actions[cursor]), detailWidth)...)
 	}
 
-	body := m.twoPane(spec, "Plan Actions", "Read-only dry-run actions", listLines, "Details", "Highlighted action", detailLines)
+	body := m.twoPane(spec, "Plan Actions", "Read-only", listLines, "Details", "Selected action", detailLines)
 	return m.appShell("Plan Actions", body, m.footer(footerList))
 }
 
@@ -2240,17 +2246,15 @@ func (m Model) warningsView() string {
 		lines = append(lines, m.tableRows(warnings, cursor, offset, visibleRows, spec.contentWidth, hitWarningRow)...)
 	}
 
-	return m.singlePaneFooter("Import Warnings", "Skipped or unsupported local files", lines, m.footer(footerList))
+	return m.singlePaneFooter("Import Warnings", "Skipped files", lines, m.footer(footerList))
 }
 
 func (m Model) localDataOverviewView() string {
 	spec := layoutSpec(m.width, m.height)
 	stats := []string{
-		m.styles.body.Render("Vanish stores local metadata only in its app directory."),
-		m.styles.muted.Render("Imports and cleanup plans stay at the local paths you choose."),
+		m.styles.body.Render("Manage Vanish data on this device."),
 		"",
 		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
-		m.styles.body.Render(fmt.Sprintf("Telemetry: %s", enabledLabel(m.localConfig.Telemetry.Enabled))),
 		m.styles.body.Render(fmt.Sprintf("Recent imports: %d", len(m.recentImports))),
 		m.styles.body.Render(fmt.Sprintf("Recent plans: %d", len(m.recentPlans))),
 		m.styles.body.Render(fmt.Sprintf("Audit events: %d", len(m.auditEvents))),
@@ -2262,8 +2266,8 @@ func (m Model) localDataOverviewView() string {
 	stats = append(stats, m.localDataMessages()...)
 	body := m.twoPane(
 		spec,
-		"Actions", "Local metadata", m.menuRows(localDataMenuItems, m.localDataCursor, spec.sidebarWidth, hitLocalDataAction),
-		"Local Data", "Workspace overview", stats,
+		"Actions", "", m.menuRows(localDataMenuItems, m.localDataCursor, spec.sidebarWidth, hitLocalDataAction),
+		"Local Data", "", stats,
 	)
 	return m.appShell("Local Data", body, m.footer(footerActionMenu))
 }
@@ -2280,7 +2284,7 @@ func (m Model) recentImportsView() string {
 	}
 	listLines = append(listLines, m.localDataMessages()...)
 	if len(m.recentImports) == 0 {
-		listLines = append(listLines, m.emptyState("No recent imports yet. Import demo data or a local Instagram ZIP to add one."))
+		listLines = append(listLines, m.emptyState("No recent imports yet."))
 	} else {
 		rows := make([]string, 0, len(m.recentImports))
 		for _, entry := range m.recentImports {
@@ -2294,7 +2298,7 @@ func (m Model) recentImportsView() string {
 	} else {
 		detailLines = append(detailLines, m.detailRows(recentImportDetailLines(m.recentImports[cursor]), detailWidth)...)
 	}
-	body := m.twoPane(spec, "Recent Imports", "Newest first", listLines, "Details", "Highlighted import", detailLines)
+	body := m.twoPane(spec, "Recent Imports", "Newest first", listLines, "Details", "Selected import", detailLines)
 	return m.appShell("Recent Imports", body, m.footer(footerList))
 }
 
@@ -2313,7 +2317,7 @@ func (m Model) recentPlansView() string {
 		listLines = append(listLines, m.notice("error", m.recentPlanError), "")
 	}
 	if len(m.recentPlans) == 0 {
-		listLines = append(listLines, m.emptyState("No recent plans yet. Export or load a dry-run cleanup plan to add one."))
+		listLines = append(listLines, m.emptyState("No recent plans yet."))
 	} else {
 		rows := make([]string, 0, len(m.recentPlans))
 		for _, entry := range m.recentPlans {
@@ -2327,7 +2331,7 @@ func (m Model) recentPlansView() string {
 	} else {
 		detailLines = append(detailLines, m.detailRows(recentPlanDetailLines(m.recentPlans[cursor]), detailWidth)...)
 	}
-	body := m.twoPane(spec, "Recent Plans", "Enter loads selected", listLines, "Details", "Highlighted plan", detailLines)
+	body := m.twoPane(spec, "Recent Plans", "Enter loads selected", listLines, "Details", "Selected plan", detailLines)
 	return m.appShell("Recent Plans", body, m.footer("up/down move · enter load · click highlight · esc back · ? help · ctrl+q quit"))
 }
 
@@ -2360,7 +2364,7 @@ func (m Model) auditLogView() string {
 	} else {
 		detailLines = append(detailLines, m.detailRows(auditEventDetailLines(m.auditEvents[cursor]), detailWidth)...)
 	}
-	body := m.twoPane(spec, "Audit Log", "Local metadata events", listLines, "Details", "Highlighted event", detailLines)
+	body := m.twoPane(spec, "Audit Log", "Local events", listLines, "Details", "Selected event", detailLines)
 	return m.appShell("Audit Log", body, m.footer(footerList))
 }
 
@@ -2475,6 +2479,10 @@ func (m *Model) openPlatformDetail(index int) {
 	selected := platforms[m.homeCursor]
 	m.selectedPlatformID = selected.ID
 	m.platformActionCursor = 0
+	if selected.ID == platform.PlatformReddit {
+		m.openRedditConnect("")
+		return
+	}
 	m.current = screenPlatformDetail
 }
 
@@ -2509,7 +2517,7 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 		return m, tea.Batch(startSpinnerCmd(m.spinner), demoImportCmd())
 	case platform.ActionViewIntegrationNote:
 		m.selectedPlatformID = platform.PlatformReddit
-		m.current = screenRedditNotes
+		m.openRedditConnect("")
 	case platform.ActionConnectAccount:
 		m.openRedditConnect("")
 	case platform.ActionScanActivity:
@@ -2527,6 +2535,11 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 	if label == "" || label == m.activeTab() {
 		return m, nil
+	}
+	if m.current == screenRedditSigningIn {
+		m.cancelRedditSignIn()
+		m.redditAuthState = ""
+		m.redditAuthURL = ""
 	}
 	switch label {
 	case "Home":
@@ -2675,10 +2688,7 @@ func (m *Model) openRedditConnect(message string) {
 	initialError := strings.TrimSpace(message)
 	m.redditError = initialError
 	m.redditStatus = ""
-	m.redditConnectCursor = clampCursor(m.redditConnectCursor, len(redditConnectMenuItems))
-	if !m.ensureRedditAuthURL() && initialError != "" && m.redditError != initialError {
-		m.redditError = initialError + " " + m.redditError
-	}
+	m.redditConnectCursor = clampCursor(m.redditConnectCursor, len(m.redditConnectActions()))
 	m.current = screenRedditConnect
 }
 
@@ -2688,7 +2698,7 @@ func (m *Model) ensureRedditAuthURL() bool {
 	}
 	clientID, err := reddit.ClientIDFromEnv()
 	if err != nil {
-		m.redditError = "Set VANISH_REDDIT_CLIENT_ID before connecting Reddit."
+		m.redditError = "Reddit sign-in is not configured. Set VANISH_REDDIT_CLIENT_ID and try again."
 		return false
 	}
 	oauth, err := reddit.NewOAuth(reddit.OAuthConfig{ClientID: clientID})
@@ -2708,65 +2718,56 @@ func (m *Model) ensureRedditAuthURL() bool {
 	return true
 }
 
-func (m Model) redditConnectActions() ([]string, map[int]bool) {
-	connected := m.redditConnected()
-	clientIDPresent := strings.TrimSpace(os.Getenv(reddit.ClientIDEnv)) != ""
-	actions := append([]string(nil), redditConnectMenuItems...)
-	if m.redditAllowFileFallback() {
-		actions[redditConnectAllowFileFallback] = "Local token file fallback allowed"
-	}
-	disabled := make(map[int]bool)
-	disabled[redditConnectEnterCode] = !clientIDPresent
-	disabled[redditConnectScan] = !connected
-	disabled[redditConnectForgetLocal] = !connected
-	disabled[redditConnectRevoke] = !connected
-	if m.localWorkspace == nil {
-		disabled[redditConnectAllowFileFallback] = true
-	}
-	for index, value := range disabled {
-		if !value {
-			delete(disabled, index)
+func (m Model) redditConnectActions() []redditAction {
+	if m.redditConnected() {
+		return []redditAction{
+			{ID: redditActionScan, Label: "Scan activity"},
+			{ID: redditActionDisconnect, Label: "Disconnect"},
+			{ID: redditActionBack, Label: "Back"},
 		}
 	}
-	return actions, disabled
+	return []redditAction{
+		{ID: redditActionSignIn, Label: "Sign in with Reddit"},
+		{ID: redditActionBack, Label: "Back"},
+	}
 }
 
-func (m Model) redditConnectionRows(width int) []string {
+func redditActionLabels(actions []redditAction) []string {
+	labels := make([]string, 0, len(actions))
+	for _, action := range actions {
+		labels = append(labels, action.Label)
+	}
+	return labels
+}
+
+func (m Model) redditHomeDetailLines() []string {
+	if m.redditConnected() {
+		return []string{
+			m.styles.body.Render(fmt.Sprintf("Signed in as u/%s", m.localConfig.Reddit.Username)),
+			m.styles.muted.Render("Scan your Reddit activity next."),
+		}
+	}
+	return []string{m.styles.body.Render("Sign in to scan your Reddit activity.")}
+}
+
+func (m Model) redditConnectionRows() []string {
 	lines := []string{}
 	if strings.TrimSpace(m.redditStatus) != "" {
 		lines = append(lines, m.notice("success", m.redditStatus), "")
 	}
 	if strings.TrimSpace(m.redditError) != "" {
 		lines = append(lines, m.notice("error", m.redditError), "")
+		if strings.TrimSpace(m.redditAuthURL) != "" {
+			lines = append(lines, m.styles.muted.Render(m.redditAuthURL), "")
+		}
 	}
 	config := m.localConfig.Reddit
 	if config == nil || strings.TrimSpace(config.Username) == "" {
-		lines = append(lines, m.styles.body.Render("Status: not connected"))
+		lines = append(lines, m.styles.body.Render("Sign in to scan your Reddit activity."))
 	} else {
-		lines = append(lines, m.keyValueRows([]keyValue{
-			{Key: "Status", Value: "connected"},
-			{Key: "Username", Value: config.Username},
-			{Key: "Scopes", Value: strings.Join(config.Scopes, " ")},
-			{Key: "Token storage", Value: emptyFallback(config.TokenStorageMode, "-")},
-			{Key: "Expires", Value: formatTimePtr(config.ExpiresAt)},
-		})...)
+		lines = append(lines, m.styles.body.Render(fmt.Sprintf("Signed in as u/%s", config.Username)))
+		lines = append(lines, m.styles.muted.Render("Ready to scan your comments and posts."))
 	}
-	clientIDStatus := "set"
-	if strings.TrimSpace(os.Getenv(reddit.ClientIDEnv)) == "" {
-		clientIDStatus = "missing"
-	}
-	lines = append(lines, "", m.styles.separator.Render("Safety"))
-	lines = append(lines, m.keyValueRows([]keyValue{
-		{Key: reddit.ClientIDEnv, Value: clientIDStatus},
-		{Key: "Scopes", Value: "identity history"},
-		{Key: "Fallback", Value: enabledLabel(m.redditAllowFileFallback())},
-	})...)
-	lines = append(lines,
-		m.styles.muted.Render("Manual OAuth only; Vanish does not open a browser."),
-		m.styles.muted.Render("Refresh token uses credential store unless fallback is explicitly allowed."),
-		m.styles.muted.Render("Scanner reads own comments/posts only; saved items and votes are deferred."),
-		m.styles.muted.Render(truncateMiddle(m.redditAuthURL, maxInt(24, width-4))),
-	)
 	return lines
 }
 
@@ -2779,7 +2780,7 @@ func (m Model) startRedditScan() (tea.Model, tea.Cmd) {
 	m.redditError = ""
 	m.redditStatus = ""
 	m.redditBusyTitle = "Scanning Reddit"
-	m.redditBusyDetail = "Reading own comments and submitted posts."
+	m.redditBusyDetail = "Scanning your Reddit activity..."
 	m.current = screenRedditBusy
 	return m, tea.Batch(startSpinnerCmd(m.spinner), redditScanCmd(&config, m.redditAllowFileFallback(), m.localAppDir()))
 }
@@ -2793,11 +2794,7 @@ func (m Model) startRedditDisconnect(revoke bool) (tea.Model, tea.Cmd) {
 	m.redditError = ""
 	m.redditStatus = ""
 	m.redditBusyTitle = "Disconnecting Reddit"
-	if revoke {
-		m.redditBusyDetail = "Revoking OAuth access, then clearing local metadata."
-	} else {
-		m.redditBusyDetail = "Clearing local metadata only."
-	}
+	m.redditBusyDetail = "Disconnecting Reddit..."
 	m.current = screenRedditBusy
 	return m, tea.Batch(startSpinnerCmd(m.spinner), redditDisconnectCmd(&config, revoke, m.redditAllowFileFallback(), m.localAppDir()))
 }
@@ -3388,6 +3385,7 @@ type planBuildSkip struct {
 }
 
 type redditConnectFinishedMsg struct {
+	state    string
 	username string
 	metadata *workspace.RedditConfig
 	err      error
@@ -3552,34 +3550,38 @@ func redditConnectCmd(input, state string, allowFileFallback bool, appDir string
 	return func() tea.Msg {
 		code, err := redditCodeFromInput(input, state)
 		if err != nil {
-			return redditConnectFinishedMsg{err: err}
+			return redditConnectFinishedMsg{state: state, err: err}
 		}
-		if err := ensureRedditSecretStoreReady(allowFileFallback, appDir); err != nil {
-			return redditConnectFinishedMsg{err: err}
-		}
-		oauth, err := newRedditOAuth(allowFileFallback, appDir)
-		if err != nil {
-			return redditConnectFinishedMsg{err: err}
-		}
-		tokens, err := oauth.ExchangeCode(context.Background(), code)
-		if err != nil {
-			return redditConnectFinishedMsg{err: err}
-		}
-		client, err := reddit.NewClient(tokens.Access, reddit.ClientOptions{})
-		if err != nil {
-			return redditConnectFinishedMsg{err: err}
-		}
-		user, err := client.Me(context.Background())
-		if err != nil {
-			return redditConnectFinishedMsg{err: err}
-		}
-		result, err := oauth.SaveRefreshToken(user.Name, tokens)
-		if err != nil {
-			return redditConnectFinishedMsg{err: err}
-		}
-		metadata := reddit.WorkspaceMetadata(user.Name, tokens, result, time.Now().UTC())
-		return redditConnectFinishedMsg{username: user.Name, metadata: metadata}
+		return redditConnectWithCode(code, state, allowFileFallback, appDir)
 	}
+}
+
+func redditConnectWithCode(code, state string, allowFileFallback bool, appDir string) redditConnectFinishedMsg {
+	if err := ensureRedditSecretStoreReady(allowFileFallback, appDir); err != nil {
+		return redditConnectFinishedMsg{state: state, err: err}
+	}
+	oauth, err := newRedditOAuth(allowFileFallback, appDir)
+	if err != nil {
+		return redditConnectFinishedMsg{state: state, err: err}
+	}
+	tokens, err := oauth.ExchangeCode(context.Background(), code)
+	if err != nil {
+		return redditConnectFinishedMsg{state: state, err: err}
+	}
+	client, err := reddit.NewClient(tokens.Access, reddit.ClientOptions{})
+	if err != nil {
+		return redditConnectFinishedMsg{state: state, err: err}
+	}
+	user, err := client.Me(context.Background())
+	if err != nil {
+		return redditConnectFinishedMsg{state: state, err: err}
+	}
+	result, err := oauth.SaveRefreshToken(user.Name, tokens)
+	if err != nil {
+		return redditConnectFinishedMsg{state: state, err: err}
+	}
+	metadata := reddit.WorkspaceMetadata(user.Name, tokens, result, time.Now().UTC())
+	return redditConnectFinishedMsg{state: state, username: user.Name, metadata: metadata}
 }
 
 func redditScanCmd(config *workspace.RedditConfig, allowFileFallback bool, appDir string) tea.Cmd {
@@ -3627,23 +3629,23 @@ func redditDisconnectCmd(config *workspace.RedditConfig, revoke bool, allowFileF
 		if err != nil {
 			return redditDisconnectFinishedMsg{err: err}
 		}
-		message := "Forgot local Reddit metadata."
+		message := "Disconnected Reddit."
 		if revoke {
 			refresh, _, err := oauth.LoadRefreshToken(config.Username)
 			if err == nil {
 				if err := oauth.Revoke(context.Background(), refresh); err != nil {
 					return redditDisconnectFinishedMsg{err: err}
 				}
-				message = "Revoked Reddit access and cleared local metadata."
+				message = "Disconnected Reddit."
 			} else if errors.Is(err, secretstore.ErrNotFound) {
-				message = "No local refresh token found; cleared local metadata. Remote revoke was not possible."
+				message = "Disconnected Reddit locally."
 			} else {
 				return redditDisconnectFinishedMsg{err: err}
 			}
 		}
 		if err := oauth.ForgetLocal(config.Username); err != nil && !errors.Is(err, secretstore.ErrNotFound) {
 			if !revoke && errors.Is(err, secretstore.ErrUnavailable) {
-				return redditDisconnectFinishedMsg{message: "Forgot local Reddit metadata. Stored refresh token could not be cleared because the credential store is unavailable."}
+				return redditDisconnectFinishedMsg{message: "Disconnected Reddit locally."}
 			}
 			return redditDisconnectFinishedMsg{err: err}
 		}
@@ -4219,10 +4221,10 @@ func ensureRedditSecretStoreReady(allowFileFallback bool, appDir string) error {
 		return nil
 	}
 	if !allowFileFallback {
-		return errors.New("credential store unavailable; enable explicit local token file fallback before exchanging code")
+		return secretstore.ErrUnavailable
 	}
 	if strings.TrimSpace(appDir) == "" {
-		return errors.New("local token file fallback requires the Vanish app dir")
+		return errors.New("Vanish app directory is required")
 	}
 	return nil
 }
@@ -4256,11 +4258,19 @@ func friendlyRedditError(err error) string {
 	case errors.Is(err, secretstore.ErrNotFound):
 		return "Reddit refresh token missing. Reconnect the account."
 	case errors.Is(err, secretstore.ErrUnavailable):
-		return "Credential store unavailable. Enable explicit local token file fallback if you want to store the Reddit refresh token in the Vanish app dir."
+		return "Credential store unavailable. Check your system credential store, then try again."
 	case errors.Is(err, secretstore.ErrFallbackConfirmationRequired):
-		return "Local token file fallback needs explicit confirmation first."
+		return "Credential store unavailable. Check your system credential store, then try again."
 	case strings.Contains(err.Error(), reddit.ClientIDEnv):
-		return "Set VANISH_REDDIT_CLIENT_ID before connecting Reddit."
+		return "Reddit sign-in is not configured. Set VANISH_REDDIT_CLIENT_ID and try again."
+	case strings.Contains(err.Error(), "open reddit sign-in URL"):
+		return "Could not open Reddit automatically. Copy the URL into your browser."
+	case strings.Contains(err.Error(), "address already in use"):
+		return "Reddit sign-in is already waiting. Close the other Vanish window and try again."
+	case strings.Contains(err.Error(), "timed out"):
+		return "Reddit sign-in timed out. Try again."
+	case strings.Contains(err.Error(), "cancelled"):
+		return "Reddit sign-in cancelled."
 	default:
 		return err.Error()
 	}
@@ -4600,15 +4610,6 @@ func newPlanPathInput() textinput.Model {
 	return input
 }
 
-func newRedditCodeInput() textinput.Model {
-	input := textinput.New()
-	input.Placeholder = "code or redirect URL"
-	input.Prompt = "> "
-	input.CharLimit = 4096
-	input.SetWidth(74)
-	return input
-}
-
 func filterTypeRow(label string, included bool) string {
 	checked := " "
 	if included {
@@ -4796,8 +4797,9 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		actionRows, _ := platformActionRows(current.Actions)
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
 	case screenRedditConnect:
-		actionRows, _ := m.redditConnectActions()
-		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, redditActionLabels(m.redditConnectActions()))...)
+	case screenRedditSigningIn:
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, []string{"Cancel"})...)
 	case screenImportPath:
 		boxes = append(boxes, rowHitBoxes(content, hitImportPickerRow, m.importPickerOffset, importPickerRows(m.importPickerEntries))...)
 	case screenImportResult:

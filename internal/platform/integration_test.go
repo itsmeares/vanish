@@ -76,7 +76,6 @@ func TestRedditPlatformPrototypeActions(t *testing.T) {
 	assertCapabilities(t, current.Capabilities, wantCapabilities)
 
 	wantActions := []string{
-		platform.ActionViewIntegrationNote,
 		platform.ActionConnectAccount,
 		platform.ActionScanActivity,
 		platform.ActionBack,
