@@ -80,10 +80,11 @@ rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authoriza
 rg -n "VANISH_APP_DIR|UserConfigDir|UserHomeDir|XDG_CONFIG_HOME|Application Support|APPDATA" --glob "*.go"
 ```
 
-## v0.5 Reddit Planner Safety Verification
+## Planned v0.5 Reddit Planner Safety Verification
 
-Use this section for the Reddit Official API Planner Prototype branch. It is
-not a release announcement until the feature is complete.
+Use this section only when the planned Reddit official API planner work starts.
+It is not v0.4 behavior and is not a release announcement until the feature is
+complete.
 
 - [ ] Reddit remains dry-run planning only.
 - [ ] Reddit network code is limited to official OAuth/API code.

@@ -28,16 +28,12 @@ tokens, sessions, authorization headers, OAuth grants, or account secrets.
 
 The current config records a version, local creation/update timestamps,
 telemetry disabled by default, the default plan export path, and the last opened
-plan path. For Reddit, config may store only non-secret connection metadata:
-username, connection time, scopes, token storage mode, credential store mode,
-and expiry metadata. It does not implement telemetry, analytics, remote config,
-password login, or credential storage in normal config.
-
-Reddit refresh tokens use the system credential store when available. If the
-credential store is unavailable and the user explicitly allows local file
-fallback, the fallback secret file is stored under the Vanish app directory with
-strict permissions. Normal config, recent history, audit logs, and cleanup plans
-still must not store token values.
+plan path. Reddit OAuth, tokens, API clients, and network access are not
+implemented in v0.4. Future Reddit work may store only non-secret connection
+metadata such as username, connection time, scopes, token storage mode,
+credential store mode, and expiry metadata. It does not implement telemetry,
+analytics, remote config, password login, or credential storage in normal
+config.
 
 ## Recent Import History
 
@@ -132,6 +128,6 @@ to reconnect app state.
 
 Disallowed data includes raw parsed items, raw exports, raw comments, raw private
 messages, passwords, credentials, cookies, sessions, authorization headers,
-OAuth grants, and account secrets. Token values are allowed only in the Reddit
-secret-store path described above, never in normal config, history, audit logs,
+OAuth grants, account secrets, and Reddit tokens. If Reddit OAuth is implemented
+later, token values must never be stored in normal config, history, audit logs,
 or cleanup plans.

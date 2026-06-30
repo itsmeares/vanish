@@ -132,15 +132,15 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 	redditView := m.View().Content
 	for _, want := range []string{
 		"Reddit",
-		"Official API planner prototype for v0.5",
-		"Status: prototype",
-		"Scan own comments/posts: prototype",
+		"Official API planner planned for v0.5",
+		"Status: planned",
+		"Scan own comments/posts: planned",
 		"Scan saved items: planned",
 		"Scan votes: planned",
-		"Generate dry-run plans: prototype",
-		"OAuth: prototype",
-		"Network/API access: prototype",
-		"manual installed-",
+		"Generate dry-run plans: planned",
+		"OAuth: planned",
+		"Network/API access: no",
+		"Not implemented in v0.4",
 	} {
 		if !strings.Contains(redditView, want) {
 			t.Fatalf("expected Reddit detail to contain %q, got:\n%s", want, redditView)
@@ -174,18 +174,20 @@ func TestHomeEnterOpensPlatformDetail(t *testing.T) {
 }
 
 func TestPlatformDetailRendersSectionsInFixedOrder(t *testing.T) {
-	m := NewModel()
-	m.openPlatformDetail(0)
-	plain := stripANSI(m.View().Content)
-	actions := strings.Index(plain, "Actions")
-	status := strings.Index(plain, "Status")
-	capabilities := strings.Index(plain, "Capabilities")
-	notes := strings.Index(plain, "Notes / Guide")
-	if actions < 0 || status < 0 || capabilities < 0 || notes < 0 {
-		t.Fatalf("expected all platform sections, got:\n%s", plain)
-	}
-	if !(actions < status && status < capabilities && capabilities < notes) {
-		t.Fatalf("expected Actions, Status, Capabilities, Notes / Guide order, got:\n%s", plain)
+	for _, index := range []int{0, 1} {
+		m := NewModel()
+		m.openPlatformDetail(index)
+		plain := stripANSI(m.View().Content)
+		actions := strings.Index(plain, "Actions")
+		status := strings.Index(plain, "Status")
+		capabilities := strings.Index(plain, "Capabilities")
+		notes := strings.Index(plain, "Notes / Guide")
+		if actions < 0 || status < 0 || capabilities < 0 || notes < 0 {
+			t.Fatalf("expected all platform sections, got:\n%s", plain)
+		}
+		if !(actions < status && status < capabilities && capabilities < notes) {
+			t.Fatalf("expected Actions, Status, Capabilities, Notes / Guide order, got:\n%s", plain)
+		}
 	}
 }
 
@@ -292,79 +294,26 @@ func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestRedditConnectActionShowsManualOAuthSetupAndMissingClientID(t *testing.T) {
-	t.Setenv(reddit.ClientIDEnv, "")
+func TestRedditActionsStayDisabled(t *testing.T) {
+	for _, actionID := range []string{platform.ActionConnectAccount, platform.ActionScanActivity} {
+		m := NewModel()
+		m.openPlatformDetail(1)
+		m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), actionID)
 
-	m := NewModel()
-	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionConnectAccount)
-
-	updated, cmd := m.Update(keyPress("enter"))
-	if cmd != nil {
-		t.Fatalf("expected connect setup screen not to return a command")
-	}
-	next := requireModel(t, updated)
-	if next.current != screenRedditConnect || next.selectedPlatformID != platform.PlatformReddit {
-		t.Fatalf("expected Reddit connect screen, screen=%v id=%q", next.current, next.selectedPlatformID)
-	}
-	view := next.View().Content
-	for _, want := range []string{
-		"Reddit",
-		"Connect and scan",
-		"Status: not connected",
-		"Set VANISH_REDDIT_CLIENT_ID before connecting Reddit.",
-		"Manual OAuth only",
-		"Enter returned code",
-		"Scan supported activity",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("expected Reddit connect screen to contain %q, got:\n%s", want, view)
+		updated, cmd := m.Update(keyPress("enter"))
+		if cmd != nil {
+			t.Fatalf("expected disabled action %q not to return a command", actionID)
 		}
-	}
-}
-
-func TestRedditScanActionRequiresConnection(t *testing.T) {
-	t.Setenv(reddit.ClientIDEnv, "test-client")
-
-	m := NewModel()
-	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionScanActivity)
-
-	next := updateModel(t, m, keyPress("enter"))
-	if next.current != screenRedditConnect {
-		t.Fatalf("expected scan without connection to open connect screen, got %v", next.current)
-	}
-	if !strings.Contains(next.View().Content, "Connect Reddit before scanning.") {
-		t.Fatalf("expected connect-required message, got:\n%s", next.View().Content)
-	}
-}
-
-func TestRedditConnectEnterCodeOpensManualOAuthForm(t *testing.T) {
-	t.Setenv(reddit.ClientIDEnv, "test-client")
-
-	m := NewModel()
-	m.openPlatformDetail(1)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionConnectAccount)
-	next := updateModel(t, m, keyPress("enter"))
-	next.redditConnectCursor = redditConnectEnterCode
-
-	updated, cmd := next.Update(keyPress("enter"))
-	if cmd == nil {
-		t.Fatalf("expected code input focus command")
-	}
-	next = requireModel(t, updated)
-	if next.current != screenRedditAuthCode {
-		t.Fatalf("expected Reddit auth code screen, got %v", next.current)
-	}
-	view := next.View().Content
-	for _, want := range []string{
-		"Reddit OAuth",
-		"Open this Reddit authorization URL",
-		"Requested scopes: identity history",
-		"No password, cookie, session, or browser automation is used.",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("expected Reddit auth form to contain %q, got:\n%s", want, view)
+		next := requireModel(t, updated)
+		if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformReddit {
+			t.Fatalf("expected disabled action %q to stay on Reddit detail, screen=%v id=%q", actionID, next.current, next.selectedPlatformID)
+		}
+		view := next.View().Content
+		if !strings.Contains(view, "Planned for v0.5") {
+			t.Fatalf("expected disabled action %q to show planned reason, got:\n%s", actionID, view)
+		}
+		if strings.Contains(view, "Open this Reddit authorization URL") || strings.Contains(view, "Connect Reddit before scanning.") {
+			t.Fatalf("expected disabled action %q not to open OAuth or scan flow, got:\n%s", actionID, view)
 		}
 	}
 }
@@ -394,10 +343,10 @@ func TestRedditNotesActionAndBack(t *testing.T) {
 		t.Fatalf("expected Reddit notes screen, got %v", next.current)
 	}
 	for _, want := range []string{
-		"Official API planner prototype targets v0.5",
-		"own comments/posts scan",
-		"The TUI can connect with manual OAuth",
-		"No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists.",
+		"Official API planner planned for v0.5",
+		"v0.4 has no Reddit OAuth, API client, network access",
+		"Planned scope: scan own comments/posts, saved items, and votes",
+		"Apply cleanup is later.",
 	} {
 		if !strings.Contains(next.View().Content, want) {
 			t.Fatalf("expected Reddit notes to contain %q, got:\n%s", want, next.View().Content)
