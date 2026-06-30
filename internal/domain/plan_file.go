@@ -45,11 +45,13 @@ func SummarizeCleanupPlan(plan CleanupPlan) CleanupPlanSummary {
 		TotalActions: len(plan.Actions),
 		ActionCounts: make(map[ActionType]int),
 		StatusCounts: map[ActionStatus]int{
-			ActionStatusPending: 0,
-			ActionStatusRunning: 0,
-			ActionStatusDone:    0,
-			ActionStatusFailed:  0,
-			ActionStatusSkipped: 0,
+			ActionStatusPending:   0,
+			ActionStatusRunning:   0,
+			ActionStatusDone:      0,
+			ActionStatusFailed:    0,
+			ActionStatusSkipped:   0,
+			ActionStatusStopped:   0,
+			ActionStatusCancelled: 0,
 		},
 	}
 

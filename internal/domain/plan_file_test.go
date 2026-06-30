@@ -86,22 +86,26 @@ func TestSummarizeCleanupPlanCountsTypesAndStatuses(t *testing.T) {
 		validActionWithTypeAndStatus(createdAt, "action-3", ActionDeleteComment, ActionStatusFailed),
 		validActionWithTypeAndStatus(createdAt, "action-4", ActionUnfollow, ActionStatusSkipped),
 		validActionWithTypeAndStatus(createdAt, "action-5", ActionUnfollow, ActionStatusRunning),
+		validActionWithTypeAndStatus(createdAt, "action-6", ActionUnfollow, ActionStatusStopped),
+		validActionWithTypeAndStatus(createdAt, "action-7", ActionUnfollow, ActionStatusCancelled),
 	}
 	plan := NewCleanupPlan("plan-1", PlatformInstagram, "instagram-export", createdAt, actions)
 
 	summary := SummarizeCleanupPlan(plan)
 
-	if summary.TotalActions != 5 {
-		t.Fatalf("expected 5 actions, got %d", summary.TotalActions)
+	if summary.TotalActions != 7 {
+		t.Fatalf("expected 7 actions, got %d", summary.TotalActions)
 	}
-	if summary.ActionCounts[ActionUnlike] != 1 || summary.ActionCounts[ActionDeleteComment] != 2 || summary.ActionCounts[ActionUnfollow] != 2 {
+	if summary.ActionCounts[ActionUnlike] != 1 || summary.ActionCounts[ActionDeleteComment] != 2 || summary.ActionCounts[ActionUnfollow] != 4 {
 		t.Fatalf("unexpected action counts: %#v", summary.ActionCounts)
 	}
 	if summary.StatusCounts[ActionStatusPending] != 1 ||
 		summary.StatusCounts[ActionStatusRunning] != 1 ||
 		summary.StatusCounts[ActionStatusDone] != 1 ||
 		summary.StatusCounts[ActionStatusFailed] != 1 ||
-		summary.StatusCounts[ActionStatusSkipped] != 1 {
+		summary.StatusCounts[ActionStatusSkipped] != 1 ||
+		summary.StatusCounts[ActionStatusStopped] != 1 ||
+		summary.StatusCounts[ActionStatusCancelled] != 1 {
 		t.Fatalf("unexpected status counts: %#v", summary.StatusCounts)
 	}
 }
@@ -119,7 +123,9 @@ func TestSummarizeCleanupPlanHandlesEmptyActions(t *testing.T) {
 		summary.StatusCounts[ActionStatusRunning] != 0 ||
 		summary.StatusCounts[ActionStatusDone] != 0 ||
 		summary.StatusCounts[ActionStatusFailed] != 0 ||
-		summary.StatusCounts[ActionStatusSkipped] != 0 {
+		summary.StatusCounts[ActionStatusSkipped] != 0 ||
+		summary.StatusCounts[ActionStatusStopped] != 0 ||
+		summary.StatusCounts[ActionStatusCancelled] != 0 {
 		t.Fatalf("expected zero status counts, got %#v", summary.StatusCounts)
 	}
 }

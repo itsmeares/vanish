@@ -67,8 +67,9 @@ Recent plan history helps users reopen dry-run cleanup plans. History may store:
 - Action counts and status counts.
 - Platform and plan summary metadata.
 
-Cleanup plan JSON files are still dry-run review artifacts. Vanish does not
-execute them in the current alpha.
+Cleanup plan JSON files are still dry-run review artifacts. Vanish can preview
+and run them through a no-op apply executor, but it does not change platform
+content or account state.
 
 ## Audit Log
 
@@ -78,6 +79,8 @@ did locally. Audit entries may include events such as:
 - Import started, completed, or failed.
 - Plan exported.
 - Plan loaded.
+- Apply previewed, confirmed, started, action-result recorded, skipped,
+  stopped, cancelled, or finished.
 - Local data viewed.
 - Local data wiped.
 

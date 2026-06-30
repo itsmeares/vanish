@@ -46,11 +46,13 @@ const (
 type ActionStatus string
 
 const (
-	ActionStatusPending ActionStatus = "pending"
-	ActionStatusRunning ActionStatus = "running"
-	ActionStatusDone    ActionStatus = "done"
-	ActionStatusFailed  ActionStatus = "failed"
-	ActionStatusSkipped ActionStatus = "skipped"
+	ActionStatusPending   ActionStatus = "pending"
+	ActionStatusRunning   ActionStatus = "running"
+	ActionStatusDone      ActionStatus = "done"
+	ActionStatusFailed    ActionStatus = "failed"
+	ActionStatusSkipped   ActionStatus = "skipped"
+	ActionStatusStopped   ActionStatus = "stopped"
+	ActionStatusCancelled ActionStatus = "cancelled"
 )
 
 // PlanMode separates today's safe dry-run files from a future apply mode.

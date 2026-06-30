@@ -176,7 +176,7 @@ func (m Model) activeTab() string {
 		return "Import"
 	case screenItemsBrowser, screenReviewEmpty, screenFilters, screenSelectionSummary, screenSelectedItems:
 		return "Review"
-	case screenPlanPreview, screenPlanExportPath, screenPlanLoadPath, screenLoadedPlanSummary, screenLoadedPlanActions:
+	case screenPlanPreview, screenPlanExportPath, screenPlanLoadPath, screenLoadedPlanSummary, screenLoadedPlanActions, screenApplyPreview, screenApplyConfirm, screenApplyRunning, screenApplyResult:
 		return "Plans"
 	case screenLocalDataOverview, screenRecentImports, screenRecentPlans, screenAuditLog, screenWipeLocalDataConfirm:
 		return "Local"

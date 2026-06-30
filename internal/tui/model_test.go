@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/itsmeares/vanish/internal/apply"
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
@@ -1130,6 +1131,7 @@ func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
 		"pending: 1",
 		"done: 1",
 		"skipped: 1",
+		"Apply preview",
 		"View actions",
 		"Back home",
 	} {
@@ -1138,6 +1140,7 @@ func TestPlanLoadSuccessShowsSummaryAndActionsBrowser(t *testing.T) {
 		}
 	}
 
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	if next.current != screenLoadedPlanActions {
 		t.Fatalf("expected actions browser, got %v", next.current)
@@ -1876,8 +1879,136 @@ func TestRedditSelectionGeneratesDryRunPlan(t *testing.T) {
 	}
 }
 
+func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	next := NewModelWithWorkspace(w, nil)
+	next = updateModel(t, next, importFinishedMsg{result: fakeImportResultWithRelationships(), source: "demo instagram export"})
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, keyPress("a"))
+	next = updateModel(t, next, keyPress("s"))
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenPlanPreview {
+		t.Fatalf("expected plan preview, got %v", next.current)
+	}
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenApplyPreview {
+		t.Fatalf("expected apply preview, got %v", next.current)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Apply Preview",
+		"Platform: instagram",
+		"Executor: noop",
+		"Status: Ready",
+		"Reddit account: ready",
+		"Pending: 3",
+		"Unsupported: 0",
+		"Run no-op apply",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected apply preview to contain %q, got:\n%s", want, view)
+		}
+	}
+	requireAuditEvent(t, w, string(apply.EventPreviewed))
+
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenApplyConfirm {
+		t.Fatalf("expected apply confirm, got %v", next.current)
+	}
+	if !strings.Contains(next.View().Content, "Run no-op apply for 3 pending actions?") ||
+		!strings.Contains(next.View().Content, "No real deletion happens.") {
+		t.Fatalf("expected short confirmation copy, got:\n%s", next.View().Content)
+	}
+
+	next = updateModel(t, next, keyPress("up"))
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatalf("expected no-op apply command")
+	}
+	next = requireModel(t, updated)
+	if next.current != screenApplyRunning {
+		t.Fatalf("expected apply running, got %v", next.current)
+	}
+	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.redditConnected())())
+
+	if next.current != screenApplyResult || next.applyExecution.State != apply.ExecutionStateDone {
+		t.Fatalf("expected apply result, screen=%v execution=%#v", next.current, next.applyExecution)
+	}
+	if next.applyExecution.Counts.Done != 3 || next.applyExecution.Counts.Pending != 0 {
+		t.Fatalf("unexpected no-op result counts: %#v", next.applyExecution.Counts)
+	}
+	for _, action := range next.planResult.Plan.Actions {
+		if action.Status != domain.ActionStatusDone {
+			t.Fatalf("expected no-op action status done, got %#v", next.planResult.Plan.Actions)
+		}
+	}
+	resultView := next.View().Content
+	for _, want := range []string{
+		"Apply Result",
+		"State: done",
+		"No real deletion: yes",
+		"Done: 3",
+		"Back to plan",
+	} {
+		if !strings.Contains(resultView, want) {
+			t.Fatalf("expected apply result to contain %q, got:\n%s", want, resultView)
+		}
+	}
+	requireAuditEvent(t, w, string(apply.EventConfirmed))
+	requireAuditEvent(t, w, string(apply.EventExecutionStarted))
+	actionEvent := requireAuditEvent(t, w, string(apply.EventActionResult))
+	if _, ok := actionEvent.Fields["target_url"]; ok {
+		t.Fatalf("apply action audit should not include target URL: %#v", actionEvent.Fields)
+	}
+	if _, ok := actionEvent.Fields["username"]; ok {
+		t.Fatalf("apply action audit should not include username: %#v", actionEvent.Fields)
+	}
+	requireAuditEvent(t, w, string(apply.EventExecutionFinished))
+}
+
+func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
+	next := NewModel()
+	next.loadedPlan = redditApplyTestPlan()
+	next.loadedPlanSummary = domain.SummarizeCleanupPlan(next.loadedPlan)
+	next.current = screenLoadedPlanSummary
+
+	next = updateModel(t, next, keyPress("enter"))
+
+	if next.current != screenApplyPreview || next.applyPreview.CanApply {
+		t.Fatalf("expected blocked apply preview, screen=%v preview=%#v", next.current, next.applyPreview)
+	}
+	view := next.View().Content
+	for _, want := range []string{
+		"Status: Blocked",
+		"Reddit account: not ready",
+		"Connect Reddit before applying this plan.",
+		"Back",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected blocked reddit preview to contain %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Run no-op apply") {
+		t.Fatalf("blocked preview should not offer run action, got:\n%s", view)
+	}
+
+	next.localConfig.Reddit = &workspace.RedditConfig{Username: "test_user"}
+	next.openApplyPreview(applySourceLoaded)
+	if !next.applyPreview.CanApply || !next.applyPreview.AccountReady {
+		t.Fatalf("expected connected reddit preview to be ready: %#v", next.applyPreview)
+	}
+	if !strings.Contains(next.View().Content, "Reddit account: ready") {
+		t.Fatalf("expected ready reddit account label, got:\n%s", next.View().Content)
+	}
+}
+
 func TestPlanExportPathDefaultsAndWritesReadableJSON(t *testing.T) {
 	next := planPreviewModel(t)
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 
 	if next.current != screenPlanExportPath {
@@ -1952,6 +2083,7 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	}
 	requireAuditEvent(t, w, "plan_generated")
 
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	outputPath := filepath.Join(t.TempDir(), "exported-plan.json")
 	next.planPathInput.SetValue(outputPath)
@@ -2042,6 +2174,7 @@ func TestPlanExportConfigWriteFailureIsNonFatalWarning(t *testing.T) {
 	next = updateModel(t, next, keyPress("a"))
 	next = updateModel(t, next, keyPress("s"))
 	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	outputPath := filepath.Join(t.TempDir(), "exported-plan.json")
 	next.planPathInput.SetValue(outputPath)
@@ -2206,7 +2339,20 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 	selected.selectionCursor = selectionViewSelected
 	selectedItems := updateModel(t, selected, keyPress("enter"))
 	preview := planPreviewModel(t)
-	exportPath := updateModel(t, preview, keyPress("enter"))
+	applyPreview := updateModel(t, preview, keyPress("enter"))
+	applyConfirm := updateModel(t, applyPreview, keyPress("enter"))
+	applyRunning := applyConfirm
+	applyRunning.current = screenApplyRunning
+	applyResult := applyPreview
+	applyResult.current = screenApplyResult
+	applyResult.applyExecution = apply.Execution{
+		State:  apply.ExecutionStateDone,
+		Counts: apply.ResultCounts{Done: 3},
+		Results: []apply.ActionResult{
+			{ActionID: "action-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, Status: domain.ActionStatusDone},
+		},
+	}
+	exportPath := updateModel(t, updateModel(t, preview, keyPress("down")), keyPress("enter"))
 	plan := fakeCleanupPlan()
 	loadedSummary := NewModel()
 	loadedSummary.current = screenLoadedPlanSummary
@@ -2262,6 +2408,10 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 		{name: "selection summary", model: selected},
 		{name: "selected items", model: selectedItems},
 		{name: "plan preview", model: preview},
+		{name: "apply preview", model: applyPreview},
+		{name: "apply confirm", model: applyConfirm},
+		{name: "apply running", model: applyRunning},
+		{name: "apply result", model: applyResult},
 		{name: "plan export", model: exportPath},
 		{name: "plan load", model: func() Model {
 			return openPlanLoadPath(t, NewModel())
@@ -2464,6 +2614,22 @@ func fakeCleanupPlan() domain.CleanupPlan {
 		},
 	}
 	return domain.NewCleanupPlan("plan-loaded", domain.PlatformInstagram, "instagram-export", createdAt, actions)
+}
+
+func redditApplyTestPlan() domain.CleanupPlan {
+	createdAt := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	return domain.NewCleanupPlan("reddit-plan-loaded", domain.PlatformReddit, "reddit-api", createdAt, []domain.CleanupAction{
+		{
+			ID:                   "reddit-action-1",
+			Platform:             domain.PlatformReddit,
+			Type:                 domain.ActionRedditDeleteComment,
+			TargetURL:            "https://www.reddit.com/r/test/comments/p/comment/c1/",
+			TargetID:             "t1_c1",
+			SourceActivityItemID: "reddit-comment-1",
+			Status:               domain.ActionStatusPending,
+			CreatedAt:            createdAt,
+		},
+	})
 }
 
 func writeTUIPlan(t *testing.T, plan domain.CleanupPlan) string {

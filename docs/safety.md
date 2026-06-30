@@ -14,7 +14,8 @@ platform.
 - No platform password login.
 - No browser automation.
 - No private API calls.
-- No deletion or account changes.
+- No real deletion or account changes.
+- Apply preview and confirmation may run a no-op executor for lifecycle testing.
 
 ## Reddit v0.5 Official API Boundary
 
@@ -26,8 +27,8 @@ exception to the current no-network rule, and it stays narrow:
 - Installed-app OAuth only, with an environment-provided client ID.
 - Minimum read-only scopes for the prototype: `identity` and `history`.
 - No Reddit content or account activity mutations.
-- No apply, delete, edit, save, unsave, vote, submit, or permission-changing
-  behavior.
+- No real apply, delete, edit, save, unsave, vote, submit, or
+  permission-changing behavior.
 - No browser automation, embedded browser, webview, scraping, private APIs,
   password collection, or cookie/session paste flow.
 - OAuth token revoke is allowed only as an explicit disconnect/auth cleanup
@@ -98,22 +99,23 @@ Cleanup plans are local JSON documents. In v0.1.0-alpha they are dry-run only:
 
 - They can be exported.
 - They can be loaded and inspected.
-- They cannot be executed by Vanish.
+- They can be previewed through the no-op apply foundation.
+- No no-op execution changes platform content or account state.
 
 Treat plan files as review artifacts. They may still include usernames, target
 URLs, target IDs, timestamps, and action intent.
 
 ## Future Apply Risk
 
-Future apply modes may carry platform and account risk:
+Future real apply modes may carry platform and account risk:
 
 - Platforms can rate-limit or flag automated behavior.
 - Some cleanup actions may be irreversible.
 - Login/session handling must stay local and explicit.
 - Users must be able to inspect, revoke, or wipe stored sessions.
 
-Any future apply mode should be clearly labeled as experimental until proven
-safe.
+Any future real apply mode should be clearly labeled as experimental until
+proven safe.
 
 ## Reporting Safety Issues
 

@@ -135,7 +135,7 @@ func validationError(format string, args ...any) error {
 
 func isKnownActionStatus(status ActionStatus) bool {
 	switch status {
-	case ActionStatusPending, ActionStatusRunning, ActionStatusDone, ActionStatusFailed, ActionStatusSkipped:
+	case ActionStatusPending, ActionStatusRunning, ActionStatusDone, ActionStatusFailed, ActionStatusSkipped, ActionStatusStopped, ActionStatusCancelled:
 		return true
 	default:
 		return false
