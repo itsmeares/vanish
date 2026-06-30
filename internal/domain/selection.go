@@ -10,6 +10,7 @@ type ActivitySelectionCounts struct {
 	Total     int
 	Likes     int
 	Comments  int
+	Posts     int
 	Following int
 	Followers int
 }
@@ -88,6 +89,8 @@ func (selection ActivitySelection) Counts(items []ActivityItem) ActivitySelectio
 			counts.Likes++
 		case ActivityFilterComment:
 			counts.Comments++
+		case ActivityFilterPost:
+			counts.Posts++
 		case ActivityFilterFollowing:
 			counts.Following++
 		case ActivityFilterFollower:

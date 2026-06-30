@@ -7,13 +7,43 @@ platform.
 ## Current Alpha Guarantees
 
 - Dry-run only.
-- Local files only.
+- Local files by default, with the explicit Reddit official API prototype
+  exception described below.
 - No cloud backend.
 - No telemetry by default.
-- No platform login.
+- No platform password login.
 - No browser automation.
 - No private API calls.
 - No deletion or account changes.
+
+## Reddit v0.5 Official API Boundary
+
+Vanish v0.5 adds an official Reddit API planner prototype. This is the only
+exception to the current no-network rule, and it stays narrow:
+
+- Official Reddit OAuth and OAuth API calls only.
+- Network code only in reviewed Reddit OAuth/API files.
+- Installed-app OAuth only, with an environment-provided client ID.
+- Minimum read-only scopes for the prototype: `identity` and `history`.
+- No Reddit content or account activity mutations.
+- No apply, delete, edit, save, unsave, vote, submit, or permission-changing
+  behavior.
+- No browser automation, embedded browser, webview, scraping, private APIs,
+  password collection, or cookie/session paste flow.
+- OAuth token revoke is allowed only as an explicit disconnect/auth cleanup
+  action. It must not run silently and is not a content cleanup action.
+
+Reddit tokens must never be stored in normal config, logs, audit logs, cleanup
+plans, recent history, or errors. If the system credential store is available,
+Vanish must use it. If unavailable, a local token file fallback may be used only
+after explicit user confirmation, only inside the Vanish app directory, with a
+`0700` directory and `0600` file. If the credential store later becomes
+available, the fallback token must migrate to it and the fallback file must be
+deleted after successful migration.
+
+Allowed non-secret Reddit metadata in config includes the Reddit username,
+connection timestamp, requested scopes, token storage mode, credential store
+mode, and expiry metadata.
 
 ## Data Vanish Avoids Storing
 

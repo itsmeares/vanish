@@ -39,7 +39,12 @@ Use this checklist before publishing the first alpha.
 Suggested static check:
 
 ```bash
-rg -n "net/http|http\\.Get|http\\.Post|NewRequest|chromedp|selenium|playwright|agouti|rod|webdriver" --glob "*.go"
+rg -n "net/http|http\\.(NewRequest|NewRequestWithContext|Client|Transport)|ListenAndServe|HandleFunc" --glob "*.go" --glob "!*_test.go"
+rg -n "http\\.(Get|Post|DefaultClient)" --glob "*.go" --glob "!*_test.go"
+rg -n "chromedp|selenium|playwright|agouti|webdriver|webview|puppeteer|colly|goquery|htmlquery|github\\.com/go-rod/rod" --glob "*.go" --glob "!*_test.go"
+rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authorization|auth_header|password|passwd|cookie|session|session_id)[^\"]*\"" --glob "*.go" --glob "!*_test.go"
+rg -n "\"/api/(del|editusertext|save|unsave|vote|submit|setpermissions)\"" --glob "*.go" --glob "!*_test.go"
+rg -n -i "(scope|scopes)[^[:cntrl:]]*(edit|save|vote|submit|privatemessages|mod[a-z_]*)" --glob "*.go" --glob "!*_test.go"
 ```
 
 ## v0.2 Local Workspace Verification
@@ -68,9 +73,44 @@ announcement.
 Suggested v0.2 static checks:
 
 ```bash
-rg -n "net/http|http\\.Get|http\\.Post|NewRequest|chromedp|selenium|playwright|agouti|rod|webdriver" --glob "*.go"
-rg -n "password|cookie|token|session|authorization|Authorization|oauth|credential" --glob "*.go"
+rg -n "net/http|http\\.(NewRequest|NewRequestWithContext|Client|Transport)|ListenAndServe|HandleFunc" --glob "*.go" --glob "!*_test.go"
+rg -n "http\\.(Get|Post|DefaultClient)" --glob "*.go" --glob "!*_test.go"
+rg -n "chromedp|selenium|playwright|agouti|webdriver|webview|puppeteer|colly|goquery|htmlquery|github\\.com/go-rod/rod" --glob "*.go" --glob "!*_test.go"
+rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authorization|auth_header|password|passwd|cookie|session|session_id)[^\"]*\"" --glob "*.go" --glob "!*_test.go"
 rg -n "VANISH_APP_DIR|UserConfigDir|UserHomeDir|XDG_CONFIG_HOME|Application Support|APPDATA" --glob "*.go"
+```
+
+## v0.5 Reddit Planner Safety Verification
+
+Use this section for the Reddit Official API Planner Prototype branch. It is
+not a release announcement until the feature is complete.
+
+- [ ] Reddit remains dry-run planning only.
+- [ ] Reddit network code is limited to official OAuth/API code.
+- [ ] Network imports/usages exist only in `internal/reddit/oauth.go` or
+  `internal/reddit/client.go`.
+- [ ] Reddit code uses an injected HTTP client, not `http.Get`, `http.Post`,
+  or `http.DefaultClient`.
+- [ ] No browser automation, webview, scraping library, private API, password
+  collection, or cookie/session paste flow was added.
+- [ ] Normal config, logs, audit logs, cleanup plans, recent history, and errors
+  do not store Reddit tokens or authorization headers.
+- [ ] Allowed config metadata is limited to Reddit username, connection time,
+  scopes, token storage mode, credential store mode, and expiry metadata.
+- [ ] Requested OAuth scopes are limited to `identity` and `history`.
+- [ ] No Reddit content/account mutation endpoints are present.
+- [ ] `/api/v1/revoke_token` is used only for explicit disconnect/auth cleanup,
+  if implemented in a later phase.
+
+Suggested v0.5 static checks mirror CI:
+
+```bash
+rg -n "net/http|http\\.(NewRequest|NewRequestWithContext|Client|Transport)|ListenAndServe|HandleFunc" --glob "*.go" --glob "!*_test.go"
+rg -n "http\\.(Get|Post|DefaultClient)" --glob "*.go" --glob "!*_test.go"
+rg -n "chromedp|selenium|playwright|agouti|webdriver|webview|puppeteer|colly|goquery|htmlquery|github\\.com/go-rod/rod" --glob "*.go" --glob "!*_test.go"
+rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authorization|auth_header|password|passwd|cookie|session|session_id)[^\"]*\"" --glob "*.go" --glob "!*_test.go"
+rg -n "\"/api/(del|editusertext|save|unsave|vote|submit|setpermissions)\"" --glob "*.go" --glob "!*_test.go"
+rg -n -i "(scope|scopes)[^[:cntrl:]]*(edit|save|vote|submit|privatemessages|mod[a-z_]*)" --glob "*.go" --glob "!*_test.go"
 ```
 
 ## GitHub Release

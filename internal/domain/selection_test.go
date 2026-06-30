@@ -105,13 +105,18 @@ func TestActivitySelectionResetByNewSelection(t *testing.T) {
 }
 
 func TestActivitySelectionCountsByType(t *testing.T) {
-	items := filterTestItems()
+	items := append(filterTestItems(), ActivityItem{
+		ID:       "post-1",
+		Platform: PlatformReddit,
+		Type:     ItemTypePost,
+		TargetID: "t3_post",
+	})
 	var selection ActivitySelection
 	selection.SelectItems(items)
 
 	counts := selection.Counts(items)
 
-	if counts.Total != 4 || counts.Likes != 1 || counts.Comments != 1 || counts.Following != 1 || counts.Followers != 1 {
+	if counts.Total != 5 || counts.Likes != 1 || counts.Comments != 1 || counts.Posts != 1 || counts.Following != 1 || counts.Followers != 1 {
 		t.Fatalf("unexpected counts: %#v", counts)
 	}
 }

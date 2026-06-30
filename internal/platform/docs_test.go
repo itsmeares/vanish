@@ -11,13 +11,13 @@ func TestPlatformDocsStateCurrentSupportAndBoundaries(t *testing.T) {
 	text := readRepoFile(t, "docs", "platforms.md")
 	for _, want := range []string{
 		"| Instagram Export | prototype |",
-		"| Reddit | planned |",
-		"Official API planner planned for v0.5.",
-		"Scan own comments/posts",
+		"| Reddit | prototype |",
+		"Official API planner prototype targets v0.5.",
+		"own comments and submitted posts",
 		"Scan saved items",
-		"Scan votes",
-		"Use OAuth for official API access.",
-		"not implemented in v0.4",
+		"Scan vote history",
+		"Use installed-app OAuth with `identity history` scopes.",
+		"Connect through the TUI with manual OAuth",
 		"does not delete platform content or apply account changes",
 	} {
 		if !strings.Contains(text, want) {
@@ -32,7 +32,7 @@ func TestReadmeLinksPlatformDocsAndAvoidsOverstatingSupport(t *testing.T) {
 		"[docs/platforms.md](docs/platforms.md)",
 		"Instagram Export prototype",
 		"Reddit official API planner",
-		"planned for v0.5 only",
+		"manual installed-app OAuth",
 		"does not delete platform content or apply account changes",
 	} {
 		if !strings.Contains(text, want) {

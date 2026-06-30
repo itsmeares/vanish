@@ -86,6 +86,59 @@ func TestConfigRoundTripPreservesCreatedAt(t *testing.T) {
 	}
 }
 
+func TestConfigRoundTripPreservesRedditMetadataOnly(t *testing.T) {
+	w, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+
+	connectedAt := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	expiresAt := time.Date(2026, 6, 29, 13, 0, 0, 0, time.UTC)
+	config, err := w.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	config.Reddit = &RedditConfig{
+		Username:         " test_user ",
+		OAuthConnectedAt: &connectedAt,
+		Scopes:           []string{"identity", "", "history"},
+		TokenStorageMode: " keyring ",
+		CredentialStore:  " windows-credential-manager ",
+		ExpiresAt:        &expiresAt,
+	}
+
+	if err := w.SaveConfig(config); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+
+	got, err := w.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if got.Reddit == nil {
+		t.Fatal("reddit config was not preserved")
+	}
+	if got.Reddit.Username != "test_user" || got.Reddit.TokenStorageMode != "keyring" || got.Reddit.CredentialStore != "windows-credential-manager" {
+		t.Fatalf("reddit metadata was not sanitized: %#v", got.Reddit)
+	}
+	if len(got.Reddit.Scopes) != 2 || got.Reddit.Scopes[0] != "identity" || got.Reddit.Scopes[1] != "history" {
+		t.Fatalf("reddit scopes = %#v", got.Reddit.Scopes)
+	}
+	if !got.Reddit.OAuthConnectedAt.Equal(connectedAt) || !got.Reddit.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("reddit timestamps not preserved: %#v", got.Reddit)
+	}
+
+	data, err := os.ReadFile(filepath.Join(w.Dir(), configFileName))
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	for _, forbidden := range []string{"access_token", "refresh_token", "client_secret", "authorization", "auth_header", "password", "cookie", "session_id"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("config contains forbidden secret field %q: %s", forbidden, string(data))
+		}
+	}
+}
+
 func TestMalformedConfigReturnsError(t *testing.T) {
 	w, err := Open(t.TempDir())
 	if err != nil {
@@ -115,8 +168,9 @@ func TestRecentImportsDedupedAndBounded(t *testing.T) {
 			ItemCount:      i,
 			LikeCount:      i + 1,
 			CommentCount:   i + 2,
-			FollowingCount: i + 3,
-			FollowerCount:  i + 4,
+			PostCount:      i + 3,
+			FollowingCount: i + 4,
+			FollowerCount:  i + 5,
 			WarningCount:   i % 3,
 			SkippedCount:   i % 2,
 		}
@@ -132,8 +186,9 @@ func TestRecentImportsDedupedAndBounded(t *testing.T) {
 		ItemCount:      99,
 		LikeCount:      11,
 		CommentCount:   12,
-		FollowingCount: 13,
-		FollowerCount:  14,
+		PostCount:      13,
+		FollowingCount: 14,
+		FollowerCount:  15,
 	}
 	if err := w.UpsertRecentImport(replacement); err != nil {
 		t.Fatalf("UpsertRecentImport replacement returned error: %v", err)
@@ -170,7 +225,8 @@ func TestRecentImportRoundTripPreservesPerTypeCounts(t *testing.T) {
 		ItemCount:      10,
 		LikeCount:      4,
 		CommentCount:   3,
-		FollowingCount: 2,
+		PostCount:      1,
+		FollowingCount: 1,
 		FollowerCount:  1,
 		WarningCount:   5,
 		SkippedCount:   6,
@@ -186,7 +242,7 @@ func TestRecentImportRoundTripPreservesPerTypeCounts(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("recent import count = %d, want 1", len(got))
 	}
-	if got[0].LikeCount != want.LikeCount || got[0].CommentCount != want.CommentCount || got[0].FollowingCount != want.FollowingCount || got[0].FollowerCount != want.FollowerCount {
+	if got[0].LikeCount != want.LikeCount || got[0].CommentCount != want.CommentCount || got[0].PostCount != want.PostCount || got[0].FollowingCount != want.FollowingCount || got[0].FollowerCount != want.FollowerCount {
 		t.Fatalf("recent import counts = %#v, want %#v", got[0], want)
 	}
 }

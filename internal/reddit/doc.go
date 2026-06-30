@@ -1,2 +1,2 @@
-// Package reddit contains planned-only metadata for future Reddit support.
+// Package reddit contains Reddit platform metadata and official API foundation.
 package reddit

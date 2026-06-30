@@ -11,6 +11,7 @@ type ActivityFilterType string
 const (
 	ActivityFilterLike      ActivityFilterType = "like"
 	ActivityFilterComment   ActivityFilterType = "comment"
+	ActivityFilterPost      ActivityFilterType = "post"
 	ActivityFilterFollowing ActivityFilterType = "following"
 	ActivityFilterFollower  ActivityFilterType = "follower"
 )
@@ -94,6 +95,8 @@ func ActivityFilterTypeForItem(item ActivityItem) ActivityFilterType {
 		return ActivityFilterLike
 	case ItemTypeComment:
 		return ActivityFilterComment
+	case ItemTypePost:
+		return ActivityFilterPost
 	case ItemTypeFollow:
 		if strings.EqualFold(strings.TrimSpace(item.Metadata["relationship"]), "follower") {
 			return ActivityFilterFollower

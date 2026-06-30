@@ -58,20 +58,20 @@ func TestInstagramPlatformCapabilitiesAndActions(t *testing.T) {
 	}
 }
 
-func TestRedditPlatformPlannedAndDisabledActions(t *testing.T) {
+func TestRedditPlatformPrototypeActions(t *testing.T) {
 	current := reddit.Platform()
-	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPlanned {
+	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPrototype {
 		t.Fatalf("unexpected Reddit platform identity: %#v", current)
 	}
 
 	wantCapabilities := map[string]platform.CapabilitySupport{
-		"Scan own comments/posts": platform.SupportPlanned,
+		"Scan own comments/posts": platform.SupportPrototype,
 		"Scan saved items":        platform.SupportPlanned,
 		"Scan votes":              platform.SupportPlanned,
-		"Generate dry-run plans":  platform.SupportPlanned,
+		"Generate dry-run plans":  platform.SupportPrototype,
 		"Apply cleanup":           platform.SupportLater,
-		"OAuth":                   platform.SupportPlanned,
-		"Network/API access":      platform.SupportNo,
+		"OAuth":                   platform.SupportPrototype,
+		"Network/API access":      platform.SupportPrototype,
 	}
 	assertCapabilities(t, current.Capabilities, wantCapabilities)
 
@@ -83,18 +83,9 @@ func TestRedditPlatformPlannedAndDisabledActions(t *testing.T) {
 	}
 	assertActionIDs(t, current.Actions, wantActions)
 
-	disabled := map[string]bool{}
 	for _, action := range current.Actions {
 		if action.Disabled {
-			if action.Reason == "" {
-				t.Fatalf("expected disabled action %q to include reason", action.ID)
-			}
-			disabled[action.ID] = true
-		}
-	}
-	for _, actionID := range []string{platform.ActionConnectAccount, platform.ActionScanActivity} {
-		if !disabled[actionID] {
-			t.Fatalf("expected Reddit action %q to be disabled", actionID)
+			t.Fatalf("expected Reddit prototype action %q to be enabled", action.ID)
 		}
 	}
 }
