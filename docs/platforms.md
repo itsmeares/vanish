@@ -23,7 +23,7 @@ support honestly.
 | Platform | Status | Comments/posts | Saved items | Votes | Dry-run plans | Apply cleanup | OAuth | Network/API access |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Instagram Export | prototype | n/a | n/a | n/a | prototype | no | no | no |
-| Reddit | planned | planned | planned | planned | planned | later | planned | no |
+| Reddit | prototype | prototype | planned | planned | prototype | later | prototype | prototype |
 
 ## Instagram Export
 
@@ -36,31 +36,38 @@ delete platform content, or apply account changes.
 
 ## Reddit
 
-Official API planner planned for v0.5.
+Official API planner prototype targets v0.5.
 
-Reddit is a planned platform in v0.4. Vanish does not implement Reddit OAuth,
-tokens, API clients, network access, scraping, browser automation, or cleanup
-apply behavior.
+Reddit now has a TUI-accessible prototype for installed-app OAuth, secure
+refresh-token storage, official API requests, own comments/posts scanning, and
+local dry-run planning.
 
-Planned capability labels:
+Implemented prototype flow:
 
-- Scan own comments/posts: planned.
-- Scan saved items: planned.
-- Scan votes: planned.
-- Generate dry-run plans: planned.
-- Apply cleanup: later.
-- OAuth: planned.
-- Network/API access: not implemented in v0.4.
+- Use installed-app OAuth with `identity history` scopes.
+- Connect through the TUI with manual OAuth: Vanish shows the authorization URL
+  and accepts the returned code or redirect URL.
+- Store refresh tokens through the Vanish secret store, not normal config.
+- Scan own comments and submitted posts through Reddit's official API.
+- Normalize supported activity into Vanish activity items for the existing
+  review, filter, and selection screens.
+- Generate local dry-run plans with Reddit-specific planned actions.
 
-The intended v0.5 direction is the official Reddit API planner. Do not imply
-that Reddit works today.
+Deferred directions:
+
+- Scan saved items.
+- Scan vote history.
+- Apply, delete, edit, save, vote, submit, or permission-changing behavior.
+
+Apply cleanup is later. It is not part of the v0.5 planner prototype and should
+not be implied to work today.
 
 ## Safety Boundaries
 
 - Vanish reads local files you choose.
 - Vanish stores only local app metadata and dry-run plan files.
-- Vanish does not store Reddit OAuth refresh tokens in v0.4 because Reddit
-  OAuth is not implemented.
+- Vanish stores OAuth refresh tokens only through the configured secret store.
+  Normal config stores only non-secret metadata.
 - Vanish does not collect passwords, cookies, pasted sessions, private API data,
   or authorization headers.
 - Vanish does not delete platform content or apply account changes.

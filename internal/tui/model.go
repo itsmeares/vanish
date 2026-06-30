@@ -1643,10 +1643,10 @@ func (m Model) instagramExportGuideView() string {
 
 func (m Model) redditNotesView() string {
 	lines := []string{
-		m.styles.body.Render("Official API planner planned for v0.5."),
-		m.styles.body.Render("v0.4 has no Reddit OAuth, API client, network access, scraping, browser automation, or apply behavior."),
-		m.styles.body.Render("Planned scope: scan own comments/posts, saved items, and votes; generate dry-run plans."),
-		m.styles.body.Render("Apply cleanup is later."),
+		m.styles.body.Render("Official API planner prototype targets v0.5."),
+		m.styles.body.Render("OAuth/API, own comments/posts scan, and dry-run planning foundations exist."),
+		m.styles.body.Render("The TUI can connect with manual OAuth, scan own comments/posts, and build dry-run plans."),
+		m.styles.body.Render("No Reddit content mutation, scraping, browser automation, password collection, cookie paste, or session paste exists."),
 		"",
 		m.styles.separator.Render("Implementation notes"),
 	}

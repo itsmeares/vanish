@@ -7,23 +7,19 @@ platform.
 ## Current Alpha Guarantees
 
 - Dry-run only.
-- Local files only.
+- Local files by default, with the explicit Reddit official API prototype
+  exception described below.
 - No cloud backend.
 - No telemetry by default.
 - No platform password login.
 - No browser automation.
 - No private API calls.
-- No Reddit OAuth or API client in v0.4.
-- No network calls in v0.4.
 - No deletion or account changes.
 
-## Reddit v0.5 Official API Plan
+## Reddit v0.5 Official API Boundary
 
-Official API planner planned for v0.5. Vanish v0.4 does not implement Reddit
-OAuth, tokens, API clients, network access, scraping, browser automation, or
-cleanup apply behavior.
-
-The planned v0.5 boundary should stay narrow:
+Vanish v0.5 adds an official Reddit API planner prototype. This is the only
+exception to the current no-network rule, and it stays narrow:
 
 - Official Reddit OAuth and OAuth API calls only.
 - Network code only in reviewed Reddit OAuth/API files.
@@ -37,7 +33,7 @@ The planned v0.5 boundary should stay narrow:
 - OAuth token revoke is allowed only as an explicit disconnect/auth cleanup
   action. It must not run silently and is not a content cleanup action.
 
-If Reddit OAuth is implemented later, tokens must never be stored in normal config, logs, audit logs, cleanup
+Reddit tokens must never be stored in normal config, logs, audit logs, cleanup
 plans, recent history, or errors. If the system credential store is available,
 Vanish must use it. If unavailable, a local token file fallback may be used only
 after explicit user confirmation, only inside the Vanish app directory, with a
@@ -45,7 +41,7 @@ after explicit user confirmation, only inside the Vanish app directory, with a
 available, the fallback token must migrate to it and the fallback file must be
 deleted after successful migration.
 
-Future allowed non-secret Reddit metadata in config includes the Reddit username,
+Allowed non-secret Reddit metadata in config includes the Reddit username,
 connection timestamp, requested scopes, token storage mode, credential store
 mode, and expiry metadata.
 

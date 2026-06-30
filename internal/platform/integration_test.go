@@ -58,23 +58,20 @@ func TestInstagramPlatformCapabilitiesAndActions(t *testing.T) {
 	}
 }
 
-func TestRedditPlatformPlannedActions(t *testing.T) {
+func TestRedditPlatformPrototypeActions(t *testing.T) {
 	current := reddit.Platform()
-	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPlanned {
+	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPrototype {
 		t.Fatalf("unexpected Reddit platform identity: %#v", current)
-	}
-	if current.Summary != "Official API planner planned for v0.5." {
-		t.Fatalf("unexpected Reddit summary: %q", current.Summary)
 	}
 
 	wantCapabilities := map[string]platform.CapabilitySupport{
-		"Scan own comments/posts": platform.SupportPlanned,
+		"Scan own comments/posts": platform.SupportPrototype,
 		"Scan saved items":        platform.SupportPlanned,
 		"Scan votes":              platform.SupportPlanned,
-		"Generate dry-run plans":  platform.SupportPlanned,
+		"Generate dry-run plans":  platform.SupportPrototype,
 		"Apply cleanup":           platform.SupportLater,
-		"OAuth":                   platform.SupportPlanned,
-		"Network/API access":      platform.SupportNo,
+		"OAuth":                   platform.SupportPrototype,
+		"Network/API access":      platform.SupportPrototype,
 	}
 	assertCapabilities(t, current.Capabilities, wantCapabilities)
 
@@ -87,18 +84,8 @@ func TestRedditPlatformPlannedActions(t *testing.T) {
 	assertActionIDs(t, current.Actions, wantActions)
 
 	for _, action := range current.Actions {
-		switch action.ID {
-		case platform.ActionConnectAccount, platform.ActionScanActivity:
-			if !action.Disabled {
-				t.Fatalf("expected Reddit action %q to stay disabled", action.ID)
-			}
-			if action.Reason == "" {
-				t.Fatalf("expected disabled Reddit action %q to explain why", action.ID)
-			}
-		default:
-			if action.Disabled {
-				t.Fatalf("expected Reddit action %q to be enabled", action.ID)
-			}
+		if action.Disabled {
+			t.Fatalf("expected Reddit prototype action %q to be enabled", action.ID)
 		}
 	}
 }

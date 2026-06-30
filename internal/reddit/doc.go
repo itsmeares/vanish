@@ -1,2 +1,2 @@
-// Package reddit contains Reddit platform metadata for the planned official API planner.
+// Package reddit contains Reddit platform metadata and official API foundation.
 package reddit
