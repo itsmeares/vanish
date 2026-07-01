@@ -181,7 +181,7 @@ const (
 )
 
 var applyPreviewMenuItems = []string{
-	"Run no-op apply",
+	"Simulate no-op run",
 	"Back",
 }
 
@@ -195,7 +195,7 @@ const (
 )
 
 var applyConfirmMenuItems = []string{
-	"Run no-op apply",
+	"Simulate no-op run",
 	"Cancel",
 }
 
@@ -1772,7 +1772,8 @@ func (m Model) renderContent() string {
 func (m Model) homeView() string {
 	spec := layoutSpec(m.width, m.height)
 	platforms := m.platforms()
-	menu := append([]string{""}, m.menuRows(platformLabels(platforms), m.homeCursor, spec.sidebarWidth, hitHomeAction)...)
+	menuWidth, _ := twoPaneWidths(spec, "Platforms")
+	menu := m.menuRows(platformLabels(platforms), m.homeCursor, menuWidth, hitHomeAction)
 	detailTitle, detailLines := m.homeDetail()
 
 	body := m.twoPane(
@@ -1945,7 +1946,7 @@ func (m Model) importPathView() string {
 	offset := ensureOffset(cursor, m.importPickerOffset, len(m.importPickerEntries), visibleRows)
 
 	listLines := []string{
-		m.styles.muted.Render(truncateMiddle(emptyFallback(m.importPickerDir, "."), maxInt(10, listWidth-4))),
+		m.styles.muted.Render(truncateMiddle(emptyFallback(m.importPickerDir, "."), maxInt(10, paneTextWidth(listWidth)))),
 		"",
 	}
 	if strings.TrimSpace(m.importPickerError) != "" {
@@ -2048,15 +2049,12 @@ func (m Model) itemsBrowserView() string {
 	if m.itemFilter.Active() {
 		filterStatus = "active"
 	}
+	listInnerWidth := maxInt(10, paneTextWidth(listWidth))
+	statusLine := parsedItemsStatusLine(viewport, len(items), total, m.selection.Len(), filterStatus, listInnerWidth)
+	sourceLine := fmt.Sprintf("Page %d/%d · Source: %s", viewport.Page, viewport.Pages, emptyFallback(m.importSource, m.activitySourceFallback()))
 	listLines := []string{
-		m.styles.muted.Render(fmt.Sprintf("%s · Matching %s/%s · Selected %s · Filters %s",
-			viewport.ShowingLabel(),
-			compactCount(len(items)),
-			compactCount(total),
-			compactCount(m.selection.Len()),
-			filterStatus,
-		)),
-		m.styles.muted.Render(fmt.Sprintf("Page %d/%d · Source: %s", viewport.Page, viewport.Pages, emptyFallback(m.importSource, m.activitySourceFallback()))),
+		m.styles.muted.Render(truncateEnd(statusLine, listInnerWidth)),
+		m.styles.muted.Render(truncateEnd(sourceLine, listInnerWidth)),
 		"",
 	}
 	if m.itemFilter.Active() {
@@ -2068,7 +2066,7 @@ func (m Model) itemsBrowserView() string {
 	} else {
 		rows := make([]string, 0, len(items))
 		for _, item := range items {
-			rows = append(rows, m.selectableItemRow(item))
+			rows = append(rows, m.selectableItemRowForWidth(item, listWidth))
 		}
 		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth, hitParsedItemRow)...)
 	}
@@ -2079,19 +2077,64 @@ func (m Model) itemsBrowserView() string {
 	} else {
 		detailLines = append(detailLines, m.detailRows(parsedItemDetailLines(items[cursor]), detailWidth)...)
 	}
-	detailLines = append(detailLines, m.parsedItemsCockpitLines(detailWidth)...)
+	actionLines := m.parsedItemsCockpitLines(detailWidth)
 
-	body := m.twoPaneFocused(
-		spec,
-		"Parsed Items", "Review and toggle", listLines, m.itemFocus == itemFocusList,
-		"Details", "Highlighted item", detailLines, m.itemFocus == itemFocusActions,
-	)
+	body := m.parsedItemsBody(spec, listWidth, detailWidth, listLines, detailLines, actionLines)
 	return m.appShell("Parsed Items", body, m.footer(footerParsedItems))
+}
+
+func (m Model) parsedItemsBody(spec layoutMetrics, listWidth, detailWidth int, listLines, detailLines, actionLines []string) string {
+	listHeight := parsedItemsPaneHeight(spec)
+	if spec.narrow {
+		list := m.paneFocused("Parsed Items", "Review and toggle", strings.Join(listLines, "\n"), spec.contentWidth, listHeight, m.itemFocus == itemFocusList)
+		detail := m.pane("Details", "Highlighted item", strings.Join(detailLines, "\n"), spec.contentWidth, twoPaneBodyHeight(spec))
+		actions := m.paneFocused("Actions", "Selection and plan", strings.Join(actionLines, "\n"), spec.contentWidth, twoPaneBodyHeight(spec), m.itemFocus == itemFocusActions)
+		return lipgloss.JoinVertical(lipgloss.Left, list, detail, actions)
+	}
+
+	list := m.paneFocused("Parsed Items", "Review and toggle", strings.Join(listLines, "\n"), listWidth, listHeight, m.itemFocus == itemFocusList)
+	rightHeight := blockHeight(list)
+	detailHeight := maxInt(8, minInt(rightHeight/3, rightHeight-8))
+	detail := m.paneRenderedHeight("Details", "Highlighted item", strings.Join(detailLines, "\n"), detailWidth, detailHeight)
+	actionHeight := maxInt(5, rightHeight-blockHeight(detail))
+	actions := m.paneFocusedRenderedHeight("Actions", "Selection and plan", strings.Join(actionLines, "\n"), detailWidth, actionHeight, m.itemFocus == itemFocusActions)
+	return lipgloss.JoinHorizontal(lipgloss.Top, list, strings.Repeat(" ", spec.gap), lipgloss.JoinVertical(lipgloss.Left, detail, actions))
+}
+
+func parsedItemsPaneHeight(spec layoutMetrics) int {
+	if spec.narrow {
+		return twoPaneBodyHeight(spec)
+	}
+	return maxInt(5, spec.bodyHeight-1)
+}
+
+func parsedItemsStatusLine(viewport listViewport, matching, total, selected int, filterStatus string, width int) string {
+	full := fmt.Sprintf("%s · Matching %s/%s · Selected %s · Filters %s",
+		viewport.ShowingLabel(),
+		compactCount(matching),
+		compactCount(total),
+		compactCount(selected),
+		filterStatus,
+	)
+	if lipgloss.Width(full) <= width {
+		return full
+	}
+	rangeLabel := "0/0"
+	if viewport.Total > 0 {
+		rangeLabel = fmt.Sprintf("%d-%d/%d", viewport.Start, viewport.End, viewport.Total)
+	}
+	return fmt.Sprintf("%s · Match %s/%s · Sel %s · Filters %s",
+		rangeLabel,
+		compactCount(matching),
+		compactCount(total),
+		compactCount(selected),
+		filterStatus,
+	)
 }
 
 func (m Model) parsedItemsCockpitLines(width int) []string {
 	counts := m.selection.Counts(m.importResult.Items)
-	lines := []string{""}
+	lines := []string{}
 	lines = append(lines, m.warningBanner(m.selectionMessage, width)...)
 	lines = append(lines, m.section("Selection", m.keyValueRows([]keyValue{
 		{Key: "Selected", Value: compactCount(counts.Total)},
@@ -2102,7 +2145,6 @@ func (m Model) parsedItemsCockpitLines(width int) []string {
 		{Key: "Followers", Value: compactCount(counts.Followers)},
 	}))...)
 	lines = append(lines, "")
-	lines = append(lines, m.styles.separator.Render("Actions"))
 	lines = append(lines, m.parsedItemActionRows(width)...)
 	return lines
 }
@@ -2192,9 +2234,10 @@ func (m Model) selectionSummaryView() string {
 	spec := layoutSpec(m.width, m.height)
 	counts := m.selection.Counts(m.importResult.Items)
 	visibleCount := len(m.visibleItems())
+	_, dashboardWidth := twoPaneWidths(spec, "Actions")
 	summaryLines := m.dashboardSections(
-		spec.detailWidth,
-		m.warningBanner(m.selectionMessage, spec.detailWidth),
+		dashboardWidth,
+		m.warningBanner(m.selectionMessage, dashboardWidth),
 		m.section("Selection Totals", m.keyValueRows([]keyValue{
 			{Key: "Total selected", Value: compactCount(counts.Total)},
 			{Key: "Visible items", Value: compactCount(visibleCount)},
@@ -2237,7 +2280,7 @@ func (m Model) selectedItemsView() string {
 	} else {
 		rows := make([]string, 0, len(items))
 		for _, item := range items {
-			rows = append(rows, m.selectableItemRow(item))
+			rows = append(rows, m.selectableItemRowForWidth(item, listWidth))
 		}
 		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth, hitSelectedItemRow)...)
 	}
@@ -2257,7 +2300,7 @@ func (m Model) planPreviewView() string {
 	spec := layoutSpec(m.width, m.height)
 	result := m.planResult
 	summaryWidth, actionWidth := twoPaneWidths(spec, "Plan Summary")
-	rows := planPreviewRows(result.Plan.Actions, result.Skipped)
+	rows := planPreviewRowsForWidth(result.Plan.Actions, result.Skipped, actionWidth)
 	visibleRows := m.planListHeight()
 	offset := ensureOffset(0, m.planListOffset, len(rows), visibleRows)
 
@@ -2367,7 +2410,7 @@ func (m Model) loadedPlanActionsView() string {
 	} else {
 		rows := make([]string, 0, len(actions))
 		for _, action := range actions {
-			rows = append(rows, planActionRow(action))
+			rows = append(rows, planActionRowForWidth(action, listWidth))
 		}
 		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth, hitLoadedPlanRow)...)
 	}
@@ -2387,6 +2430,7 @@ func (m Model) applyPreviewView() string {
 	spec := layoutSpec(m.width, m.height)
 	preview := m.applyPreview
 	menuItems := m.currentApplyPreviewMenuItems()
+	_, actionWidth := twoPaneWidths(spec, "Actions")
 
 	status := "Ready"
 	if !preview.CanApply {
@@ -2414,16 +2458,16 @@ func (m Model) applyPreviewView() string {
 	summaryLines = append(summaryLines, "")
 	summaryLines = append(summaryLines, m.menuRows(menuItems, m.applyPreviewCursor, spec.detailWidth, hitApplyPreviewAction)...)
 
-	actionLines := m.applyActionSummaryLines(preview)
-	body := m.twoPane(spec, "Actions", "No-op apply", summaryLines, "Pending Work", "What would run", actionLines)
+	actionLines := m.applyActionSummaryLines(preview, actionWidth)
+	body := m.twoPane(spec, "Actions", "No-op simulation", summaryLines, "Pending Work", "What would be simulated", actionLines)
 	return m.appShell("Apply Preview", body, m.footer(footerActionMenu))
 }
 
 func (m Model) applyConfirmView() string {
 	spec := layoutSpec(m.width, m.height)
 	lines := []string{
-		m.styles.body.Render(fmt.Sprintf("Run no-op apply for %d pending actions?", m.applyPreview.PendingCount)),
-		m.styles.body.Render("No real deletion happens."),
+		m.styles.body.Render(fmt.Sprintf("Simulate no-op run for %d pending actions?", m.applyPreview.PendingCount)),
+		m.styles.body.Render("No platform content changes."),
 		"",
 	}
 	lines = append(lines, m.menuRows(applyConfirmMenuItems, m.applyConfirmCursor, spec.contentWidth, hitApplyConfirmAction)...)
@@ -2432,10 +2476,10 @@ func (m Model) applyConfirmView() string {
 
 func (m Model) applyRunningView() string {
 	lines := []string{
-		m.styles.body.Render(fmt.Sprintf("%s Running no-op apply...", m.spinner.View())),
-		m.styles.muted.Render("One action at a time."),
+		m.styles.body.Render(fmt.Sprintf("%s Simulating no-op run...", m.spinner.View())),
+		m.styles.muted.Render("No platform content changes."),
 	}
-	return m.centeredPaneFooter("Applying", "No real deletion", lines, m.footer(footerBusy))
+	return m.centeredPaneFooter("Applying", "No-op simulation", lines, m.footer(footerBusy))
 }
 
 func (m Model) applyResultView() string {
@@ -2446,7 +2490,7 @@ func (m Model) applyResultView() string {
 		m.section("Result", m.keyValueRows([]keyValue{
 			{Key: "State", Value: string(execution.State)},
 			{Key: "Executor", Value: apply.ExecutorNoop},
-			{Key: "No real deletion", Value: "yes"},
+			{Key: "No platform changes", Value: "yes"},
 		})),
 		m.section("Counts", m.keyValueRows([]keyValue{
 			{Key: "Done", Value: compactCount(execution.Counts.Done)},
@@ -2470,7 +2514,7 @@ func (m Model) applyResultView() string {
 		}
 		resultLines = append(resultLines, m.plainRows(rows, 0, m.planActionListHeight(), spec.mainWidth)...)
 	}
-	body := m.twoPane(spec, "Apply Result", "No-op execution", lines, "Action Results", "Safe summary", resultLines)
+	body := m.twoPane(spec, "Apply Result", "No-op simulation", lines, "Action Results", "Safe summary", resultLines)
 	return m.appShell("Apply Result", body, m.footer(footerActionMenu))
 }
 
@@ -3083,6 +3127,10 @@ func (m Model) redditConnectionRows() []string {
 	}
 	if strings.TrimSpace(m.redditError) != "" {
 		lines = append(lines, m.notice("error", m.redditError), "")
+		if redditClientIDMissing() || strings.Contains(m.redditError, reddit.ClientIDEnv) {
+			lines = append(lines, m.redditSetupHintLines()...)
+			lines = append(lines, "")
+		}
 		if strings.TrimSpace(m.redditAuthURL) != "" {
 			lines = append(lines, m.styles.muted.Render(m.redditAuthURL), "")
 		}
@@ -3090,11 +3138,28 @@ func (m Model) redditConnectionRows() []string {
 	config := m.localConfig.Reddit
 	if config == nil || strings.TrimSpace(config.Username) == "" {
 		lines = append(lines, m.styles.body.Render("Sign in to scan your Reddit activity."))
+		if redditClientIDMissing() && strings.TrimSpace(m.redditError) == "" {
+			lines = append(lines, "")
+			lines = append(lines, m.redditSetupHintLines()...)
+		}
 	} else {
 		lines = append(lines, m.styles.body.Render(fmt.Sprintf("Signed in as u/%s", config.Username)))
 		lines = append(lines, m.styles.muted.Render("Ready to scan your comments and posts."))
 	}
 	return lines
+}
+
+func (m Model) redditSetupHintLines() []string {
+	return []string{
+		m.styles.separator.Render("Setup"),
+		m.styles.body.Render("Create a Reddit installed app."),
+		m.styles.body.Render("Set " + reddit.ClientIDEnv + " to its client ID."),
+		m.styles.body.Render("Redirect URI: " + reddit.DefaultRedirectURI),
+	}
+}
+
+func redditClientIDMissing() bool {
+	return strings.TrimSpace(os.Getenv(reddit.ClientIDEnv)) == ""
 }
 
 func (m Model) startRedditScan() (tea.Model, tea.Cmd) {
@@ -3410,7 +3475,7 @@ func (m Model) parsedItemsViewport() listViewport {
 
 func (m Model) parsedItemsListHeight(itemCount, cursor, offset int) int {
 	spec := layoutSpec(m.width, m.height)
-	bodyCapacity := paneBodyLineCapacity(twoPaneBodyHeight(spec), "Parsed Items", "Review and toggle")
+	bodyCapacity := paneBodyLineCapacity(parsedItemsPaneHeight(spec), "Parsed Items", "Review and toggle")
 	headerLines := 3
 	if m.itemFilter.Active() {
 		headerLines += 2
@@ -4036,25 +4101,77 @@ func startSpinnerCmd(spinnerModel spinner.Model) tea.Cmd {
 }
 
 func itemRow(item domain.ActivityItem) string {
+	return itemRowForWidth(item, defaultTerminalWidth)
+}
+
+func itemRowForWidth(item domain.ActivityItem, width int) string {
+	innerWidth := paneTextWidth(width)
+	if innerWidth >= 40 {
+		remaining := innerWidth - 22
+		actorWidth := minInt(18, maxInt(8, remaining/2))
+		targetWidth := maxInt(8, remaining-actorWidth)
+		return fixedWidthRow(
+			fixedColumn{Text: activityTypeLabel(item), Width: 9},
+			fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: actorWidth},
+			fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: targetWidth},
+			fixedColumn{Text: compactTime(item.OccurredAt), Width: 10},
+		)
+	}
+	if innerWidth >= 32 {
+		remaining := innerWidth - 11
+		actorWidth := minInt(16, maxInt(8, remaining/2))
+		targetWidth := maxInt(8, remaining-actorWidth)
+		return fixedWidthRow(
+			fixedColumn{Text: activityTypeLabel(item), Width: 9},
+			fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: actorWidth},
+			fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: targetWidth},
+		)
+	}
+	actorWidth := maxInt(8, innerWidth-10)
 	return fixedWidthRow(
 		fixedColumn{Text: activityTypeLabel(item), Width: 9},
-		fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: 18},
-		fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: 26},
-		fixedColumn{Text: compactTime(item.OccurredAt), Width: 10},
+		fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: actorWidth},
 	)
 }
 
 func (m Model) selectableItemRow(item domain.ActivityItem) string {
+	return m.selectableItemRowForWidth(item, defaultTerminalWidth)
+}
+
+func (m Model) selectableItemRowForWidth(item domain.ActivityItem, width int) string {
 	marker := "[ ]"
 	if m.selection.Contains(item.ID) {
 		marker = "[x]"
 	}
+	innerWidth := paneTextWidth(width)
+	if innerWidth >= 46 {
+		remaining := innerWidth - 26
+		actorWidth := minInt(18, maxInt(8, remaining/2))
+		targetWidth := maxInt(8, remaining-actorWidth)
+		return fixedWidthRow(
+			fixedColumn{Text: marker, Width: 3},
+			fixedColumn{Text: activityTypeLabel(item), Width: 9},
+			fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: actorWidth},
+			fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: targetWidth},
+			fixedColumn{Text: compactTime(item.OccurredAt), Width: 10},
+		)
+	}
+	if innerWidth >= 36 {
+		remaining := innerWidth - 15
+		actorWidth := minInt(16, maxInt(8, remaining/2))
+		targetWidth := maxInt(8, remaining-actorWidth)
+		return fixedWidthRow(
+			fixedColumn{Text: marker, Width: 3},
+			fixedColumn{Text: activityTypeLabel(item), Width: 9},
+			fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: actorWidth},
+			fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: targetWidth},
+		)
+	}
+	actorWidth := maxInt(8, innerWidth-14)
 	return fixedWidthRow(
 		fixedColumn{Text: marker, Width: 3},
 		fixedColumn{Text: activityTypeLabel(item), Width: 9},
-		fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: 18},
-		fixedColumn{Text: targetListLabel(item.TargetURL, item.TargetID), Width: 26},
-		fixedColumn{Text: compactTime(item.OccurredAt), Width: 10},
+		fixedColumn{Text: emptyFallback(item.Actor, "-"), Width: actorWidth},
 	)
 }
 
@@ -4095,26 +4212,30 @@ func itemDetailLines(item domain.ActivityItem) []string {
 }
 
 func planPreviewRows(actions []domain.CleanupAction, skipped []planBuildSkip) []string {
+	return planPreviewRowsForWidth(actions, skipped, defaultTerminalWidth)
+}
+
+func planPreviewRowsForWidth(actions []domain.CleanupAction, skipped []planBuildSkip, width int) []string {
 	rows := make([]string, 0, len(actions)+len(skipped))
 	for _, action := range actions {
-		rows = append(rows, planActionListRow(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID))
+		rows = append(rows, planActionListRowForWidth(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID, width))
 	}
 	for _, skip := range skipped {
-		rows = append(rows, fixedWidthRow(
-			fixedColumn{Text: "skipped", Width: 14},
-			fixedColumn{Text: emptyFallback(skip.Reason, "unsupported"), Width: 12},
-			fixedColumn{Text: emptyFallback(skip.TargetRef, "-"), Width: 26},
-			fixedColumn{Text: emptyFallback(skip.SourceActivityItemID, "-"), Width: 16},
-		))
+		rows = append(rows, skippedPlanRowForWidth(skip, width))
 	}
 	return rows
 }
 
 func planActionRow(action domain.CleanupAction) string {
-	return planActionListRow(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID)
+	return planActionRowForWidth(action, defaultTerminalWidth)
 }
 
-func (m Model) applyActionSummaryLines(preview apply.Preview) []string {
+func planActionRowForWidth(action domain.CleanupAction, width int) string {
+	return planActionListRowForWidth(action.Type, action.Status, action.TargetURL, action.TargetID, action.SourceActivityItemID, width)
+}
+
+func (m Model) applyActionSummaryLines(preview apply.Preview, width int) []string {
+	innerWidth := maxInt(10, paneTextWidth(width))
 	rows := []string{
 		m.styles.body.Render(fmt.Sprintf("Pending: %d", preview.PendingCount)),
 		m.styles.body.Render(fmt.Sprintf("Unsupported: %d", preview.UnsupportedCount)),
@@ -4122,7 +4243,8 @@ func (m Model) applyActionSummaryLines(preview apply.Preview) []string {
 	if preview.UnsupportedCount > 0 && len(preview.Unsupported) > 0 {
 		rows = append(rows, "")
 		for _, unsupported := range preview.Unsupported {
-			rows = append(rows, m.styles.body.Render(fmt.Sprintf("%s | %s | %s", unsupported.Status, unsupported.Type, unsupported.Reason)))
+			row := fmt.Sprintf("%s | %s | %s", unsupported.Status, unsupported.Type, unsupported.Reason)
+			rows = append(rows, m.styles.body.Render(truncateEnd(row, innerWidth)))
 			if len(rows) >= 7 {
 				break
 			}
@@ -4170,12 +4292,46 @@ func planActionDetailLines(action domain.CleanupAction) []string {
 }
 
 func planActionListRow(actionType domain.ActionType, status domain.ActionStatus, targetURL, targetID, sourceID string) string {
-	return fixedWidthRow(
-		fixedColumn{Text: string(actionType), Width: 14},
-		fixedColumn{Text: string(status), Width: 9},
-		fixedColumn{Text: targetListLabel(targetURL, targetID), Width: 26},
-		fixedColumn{Text: shortID(sourceID), Width: 16},
-	)
+	return planActionListRowForWidth(actionType, status, targetURL, targetID, sourceID, defaultTerminalWidth)
+}
+
+func planActionListRowForWidth(actionType domain.ActionType, status domain.ActionStatus, targetURL, targetID, sourceID string, width int) string {
+	innerWidth := paneTextWidth(width)
+	if innerWidth >= 68 {
+		return fixedWidthRow(
+			fixedColumn{Text: string(actionType), Width: 14},
+			fixedColumn{Text: string(status), Width: 9},
+			fixedColumn{Text: targetListLabel(targetURL, targetID), Width: 26},
+			fixedColumn{Text: shortID(sourceID), Width: 16},
+		)
+	}
+	parts := []string{string(actionType), string(status)}
+	if innerWidth >= 36 {
+		parts = append(parts, targetListLabel(targetURL, targetID))
+	}
+	if innerWidth >= 58 && strings.TrimSpace(sourceID) != "" {
+		parts = append(parts, shortID(sourceID))
+	}
+	return truncateEnd(strings.Join(parts, " · "), innerWidth)
+}
+
+func skippedPlanRowForWidth(skip planBuildSkip, width int) string {
+	innerWidth := paneTextWidth(width)
+	reason := emptyFallback(skip.Reason, "unsupported")
+	target := emptyFallback(skip.TargetRef, "-")
+	if innerWidth >= 68 {
+		return fixedWidthRow(
+			fixedColumn{Text: "skipped", Width: 14},
+			fixedColumn{Text: reason, Width: 12},
+			fixedColumn{Text: target, Width: 26},
+			fixedColumn{Text: emptyFallback(skip.SourceActivityItemID, "-"), Width: 16},
+		)
+	}
+	parts := []string{"skipped", reason}
+	if innerWidth >= 58 {
+		parts = append(parts, target)
+	}
+	return truncateEnd(strings.Join(parts, " · "), innerWidth)
 }
 
 func actionRowAnchor(action domain.CleanupAction) string {
@@ -5259,7 +5415,7 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 	case screenLoadedPlanSummary:
 		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanAction, 0, loadedPlanSummaryMenuItems)...)
 	case screenLoadedPlanActions:
-		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, m.loadedActionOffset, planActionRows(m.loadedPlan.Actions))...)
+		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, m.loadedActionOffset, planActionAnchors(m.loadedPlan.Actions))...)
 	case screenApplyPreview:
 		boxes = append(boxes, rowHitBoxes(content, hitApplyPreviewAction, 0, m.currentApplyPreviewMenuItems())...)
 	case screenApplyConfirm:
@@ -5522,6 +5678,14 @@ func planActionRows(actions []domain.CleanupAction) []string {
 	return rows
 }
 
+func planActionAnchors(actions []domain.CleanupAction) []string {
+	rows := make([]string, 0, len(actions))
+	for _, action := range actions {
+		rows = append(rows, actionRowAnchor(action))
+	}
+	return rows
+}
+
 func recentImportRows(entries []workspace.RecentImport) []string {
 	rows := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -5627,6 +5791,7 @@ func normalizeAnchor(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.ReplaceAll(value, " ", "")
 	value = strings.ReplaceAll(value, "\t", "")
+	value = strings.ReplaceAll(value, "·", "")
 	return value
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/itsmeares/vanish/internal/apply"
 	"github.com/itsmeares/vanish/internal/domain"
@@ -118,6 +119,9 @@ func TestTabAndSelectedRowStylesUseBackgrounds(t *testing.T) {
 	if !strings.Contains(row, "Import Instagram export ZIP") {
 		t.Fatalf("expected selected row to keep label, got %q", row)
 	}
+	if got, want := lipgloss.Width(stripANSI(row)), paneTextWidth(48); got != want {
+		t.Fatalf("expected selected row to fill width %d, got %d in %q", want, got, stripANSI(row))
+	}
 }
 
 func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
@@ -147,6 +151,24 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 		if strings.Contains(redditView, unwanted) {
 			t.Fatalf("expected Reddit home detail not to show %q, got:\n%s", unwanted, redditView)
 		}
+	}
+}
+
+func TestHomeRendersBorderedFullHeightPanesAtTallSize(t *testing.T) {
+	next := updateModel(t, NewModel(), tea.WindowSizeMsg{Width: 160, Height: 60})
+
+	view := next.View().Content
+	for _, want := range []string{"Platforms", "Instagram Export", "Reddit", "Enter to continue."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected home to contain %q, got:\n%s", want, view)
+		}
+	}
+	if lines := strings.Count(view, "\n") + 1; lines < 54 {
+		t.Fatalf("expected home shell to use terminal height, got %d lines:\n%s", lines, view)
+	}
+	plain := stripANSI(view)
+	if strings.Count(plain, "└") < 2 {
+		t.Fatalf("expected bordered home panes, got:\n%s", view)
 	}
 }
 
@@ -306,6 +328,9 @@ func TestRedditNotConnectedShowsSimpleSignInState(t *testing.T) {
 	for _, want := range []string{
 		"Reddit",
 		"Sign in to scan your Reddit activity.",
+		"Create a Reddit installed app.",
+		"Set VANISH_REDDIT_CLIENT_ID to its client ID.",
+		"Redirect URI: http://127.0.0.1:53682/reddit/oauth/callback",
 		"Sign in with Reddit",
 		"Back",
 	} {
@@ -332,6 +357,15 @@ func TestRedditSignInWithoutClientIDShowsShortError(t *testing.T) {
 	}
 	if !strings.Contains(next.View().Content, "Reddit sign-in is not configured. Set VANISH_REDDIT_CLIENT_ID and try again.") {
 		t.Fatalf("expected short configuration error, got:\n%s", next.View().Content)
+	}
+	for _, want := range []string{
+		"Create a Reddit installed app.",
+		"Set VANISH_REDDIT_CLIENT_ID to its client ID.",
+		"Redirect URI: http://127.0.0.1:53682/reddit/oauth/callback",
+	} {
+		if !strings.Contains(next.View().Content, want) {
+			t.Fatalf("expected Reddit setup hint %q, got:\n%s", want, next.View().Content)
+		}
 	}
 }
 
@@ -531,6 +565,8 @@ func TestHomeHitBoxesMapVisibleRowsWithFrameOffsets(t *testing.T) {
 	m := NewModel()
 	boxes := hitBoxesForTest(t, m)
 	homeTab := requireHitBox(t, boxes, hitTab, -1, "Home")
+	spec := layoutSpec(m.width, m.height)
+	homeMenuWidth, _ := twoPaneWidths(spec, "Platforms")
 
 	for index, label := range platformLabels(m.platforms()) {
 		box := requireHitBox(t, boxes, hitHomeAction, index, "")
@@ -538,8 +574,15 @@ func TestHomeHitBoxesMapVisibleRowsWithFrameOffsets(t *testing.T) {
 			t.Fatalf("expected home row %q to include header/tab offset, tab y=%d row y=%d", label, homeTab.Y, box.Y)
 		}
 		line := renderedLineAt(m.View().Content, box.Y)
-		if !strings.Contains(stripANSI(firstPaneSegment(line)), label) {
+		segment := firstPaneSegment(line)
+		if !strings.Contains(stripANSI(segment), label) {
 			t.Fatalf("expected hit box for row %d to point at %q, got line %q", index, label, stripANSI(line))
+		}
+		if index == m.homeCursor {
+			want := paneTextWidth(homeMenuWidth) + 2
+			if got := lipgloss.Width(stripANSI(segment)); got != want {
+				t.Fatalf("expected selected home row to fill width %d, got %d in %q", want, got, stripANSI(segment))
+			}
 		}
 		target := hitTargetAt(boxes, box.X, box.Y)
 		if target.Kind != hitHomeAction || target.Index != index {
@@ -689,7 +732,7 @@ func TestQuitConfirmationEscReturnsToPreviousScreen(t *testing.T) {
 	}
 }
 
-func TestQuitConfirmationRendersCompactlyAtTallSize(t *testing.T) {
+func TestQuitConfirmationUsesTerminalHeightAtTallSize(t *testing.T) {
 	next := updateModel(t, NewModel(), keyPress("ctrl+q"))
 	next = updateModel(t, next, tea.WindowSizeMsg{Width: 160, Height: 60})
 
@@ -699,8 +742,8 @@ func TestQuitConfirmationRendersCompactlyAtTallSize(t *testing.T) {
 			t.Fatalf("expected quit confirmation to contain %q, got:\n%s", want, view)
 		}
 	}
-	if lines := strings.Count(view, "\n") + 1; lines > 20 {
-		t.Fatalf("expected quit confirmation to stay compact, got %d lines:\n%s", lines, view)
+	if lines := strings.Count(view, "\n") + 1; lines < 54 {
+		t.Fatalf("expected quit confirmation to use terminal height, got %d lines:\n%s", lines, view)
 	}
 }
 
@@ -1371,6 +1414,80 @@ func TestItemsBrowserShowsVisibleAndTotalCount(t *testing.T) {
 	}
 }
 
+func TestItemsBrowserRowsHideLowPriorityColumnsWhenTight(t *testing.T) {
+	next := importedModel(t, fakeImportResult())
+	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, tea.WindowSizeMsg{Width: 84, Height: 28})
+
+	view := next.View().Content
+	row := lineContaining(t, view, "[ ]", "demo_artist")
+	segment := strings.TrimSpace(stripANSI(firstPaneSegment(row)))
+	for _, unwanted := range []string{"2024-03-09", "https://"} {
+		if strings.Contains(segment, unwanted) {
+			t.Fatalf("expected tight parsed row to hide %q, got %q in:\n%s", unwanted, segment, view)
+		}
+	}
+	listWidth, _ := twoPaneWidths(layoutSpec(next.width, next.height), "Parsed Items")
+	if lipgloss.Width(segment) > maxInt(1, paneTextWidth(listWidth)) {
+		t.Fatalf("tight parsed row width %d exceeds pane content width %d: %q", lipgloss.Width(segment), paneTextWidth(listWidth), segment)
+	}
+}
+
+func TestItemsBrowserRowsExposeDatesAtMediumWidth(t *testing.T) {
+	for _, width := range []int{120, 132} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			next := importedModel(t, fakeImportResultWithManyItems(24))
+			next = updateModel(t, next, keyPress("enter"))
+			next = updateModel(t, next, tea.WindowSizeMsg{Width: width, Height: 36})
+
+			view := next.View().Content
+			foundDate := false
+			for _, line := range strings.Split(view, "\n") {
+				segment := strings.TrimSpace(stripANSI(firstPaneSegment(line)))
+				if !strings.Contains(segment, "[ ]") {
+					continue
+				}
+				if strings.Contains(segment, "2024-") {
+					foundDate = true
+				}
+				if strings.Contains(segment, "2024-") && strings.HasSuffix(segment, "-") {
+					t.Fatalf("expected date to stay single-line, got %q in:\n%s", segment, view)
+				}
+			}
+			if !foundDate {
+				t.Fatalf("expected medium parsed rows to show date column, got:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestItemsBrowserRightColumnFillsListHeight(t *testing.T) {
+	for _, size := range []tea.WindowSizeMsg{
+		{Width: 132, Height: 36},
+		{Width: 160, Height: 60},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.Width, size.Height), func(t *testing.T) {
+			next := importedModel(t, fakeImportResultWithManyItems(24))
+			next = updateModel(t, next, keyPress("enter"))
+			next = updateModel(t, next, size)
+
+			lines := strings.Split(stripANSI(next.View().Content), "\n")
+			lastPaneBottom := -1
+			for i, line := range lines {
+				if strings.Contains(line, "└") {
+					lastPaneBottom = i
+				}
+			}
+			if lastPaneBottom < 0 {
+				t.Fatalf("expected pane bottom borders, got:\n%s", next.View().Content)
+			}
+			if strings.Count(lines[lastPaneBottom], "└") < 2 {
+				t.Fatalf("expected parsed list and action pane bottoms to align on one line, got line %d %q in:\n%s", lastPaneBottom, lines[lastPaneBottom], next.View().Content)
+			}
+		})
+	}
+}
+
 func TestItemsBrowserSelectionRowsAndToggleWithSpace(t *testing.T) {
 	m := importedModel(t, fakeImportResult())
 	next := updateModel(t, m, keyPress("enter"))
@@ -1434,8 +1551,8 @@ func TestItemsBrowserFillsAvailablePaneAndShowsPageRange(t *testing.T) {
 
 	plain := stripANSI(next.View().Content)
 	for _, want := range []string{
-		fmt.Sprintf("Showing 1-%d of 24", viewport.End),
-		"Matching 24/24",
+		fmt.Sprintf("1-%d/24", viewport.End),
+		"Match 24/24",
 		"Page 1/",
 	} {
 		if !strings.Contains(plain, want) {
@@ -1907,7 +2024,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 		"Reddit account: ready",
 		"Pending: 3",
 		"Unsupported: 0",
-		"Run no-op apply",
+		"Simulate no-op run",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected apply preview to contain %q, got:\n%s", want, view)
@@ -1919,8 +2036,8 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	if next.current != screenApplyConfirm {
 		t.Fatalf("expected apply confirm, got %v", next.current)
 	}
-	if !strings.Contains(next.View().Content, "Run no-op apply for 3 pending actions?") ||
-		!strings.Contains(next.View().Content, "No real deletion happens.") {
+	if !strings.Contains(next.View().Content, "Simulate no-op run for 3 pending actions?") ||
+		!strings.Contains(next.View().Content, "No platform content changes.") {
 		t.Fatalf("expected short confirmation copy, got:\n%s", next.View().Content)
 	}
 
@@ -1950,7 +2067,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	for _, want := range []string{
 		"Apply Result",
 		"State: done",
-		"No real deletion: yes",
+		"No platform changes: yes",
 		"Done: 3",
 		"Back to plan",
 	} {
@@ -1992,7 +2109,7 @@ func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
 			t.Fatalf("expected blocked reddit preview to contain %q, got:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Run no-op apply") {
+	if strings.Contains(view, "Simulate no-op run") {
 		t.Fatalf("blocked preview should not offer run action, got:\n%s", view)
 	}
 
@@ -2440,6 +2557,139 @@ func TestMajorScreensRenderAtSmallAndWideSizes(t *testing.T) {
 				}
 				if !strings.Contains(view, "Vanish") {
 					t.Fatalf("expected shell header at %dx%d, got:\n%s", size.Width, size.Height, view)
+				}
+			})
+		}
+	}
+}
+
+func TestScreensUseTerminalHeight(t *testing.T) {
+	platformDetail := NewModel()
+	platformDetail.openPlatformDetail(0)
+	instagramGuide := platformDetail
+	instagramGuide.platformActionCursor = platformActionIndex(t, instagramGuide.selectedPlatform(), platform.ActionExportGuide)
+	instagramGuide = updateModel(t, instagramGuide, keyPress("enter"))
+	redditNotes := NewModel()
+	redditNotes.current = screenRedditNotes
+	redditNotes.selectedPlatformID = platform.PlatformReddit
+
+	imported := importedModel(t, fakeImportResultWithRelationships())
+	items := updateModel(t, imported, keyPress("enter"))
+	filters := updateModel(t, items, keyPress("f"))
+	selected := updateModel(t, updateModel(t, items, keyPress("a")), keyPress("s"))
+	selected.selectionCursor = selectionViewSelected
+	selectedItems := updateModel(t, selected, keyPress("enter"))
+	preview := planPreviewModel(t)
+	planExport := updateModel(t, updateModel(t, preview, keyPress("down")), keyPress("enter"))
+	applyPreview := updateModel(t, preview, keyPress("enter"))
+	applyConfirm := updateModel(t, applyPreview, keyPress("enter"))
+	applyRunning := applyConfirm
+	applyRunning.current = screenApplyRunning
+	applyResult := applyPreview
+	applyResult.current = screenApplyResult
+	applyResult.applyExecution = apply.Execution{
+		State:  apply.ExecutionStateDone,
+		Counts: apply.ResultCounts{Done: 3},
+		Results: []apply.ActionResult{
+			{ActionID: "action-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, Status: domain.ActionStatusDone},
+		},
+	}
+	plan := fakeCleanupPlan()
+	loadedSummary := NewModel()
+	loadedSummary.current = screenLoadedPlanSummary
+	loadedSummary.loadedPlan = plan
+	loadedSummary.loadedPlanSummary = domain.SummarizeCleanupPlan(plan)
+	loadedActions := loadedSummary
+	loadedActions.current = screenLoadedPlanActions
+	localData := NewModel()
+	localData.current = screenLocalDataOverview
+	recentImports := localData
+	recentImports.current = screenRecentImports
+	recentPlans := localData
+	recentPlans.current = screenRecentPlans
+	auditLog := localData
+	auditLog.current = screenAuditLog
+	wipeConfirm := localData
+	wipeConfirm.current = screenWipeLocalDataConfirm
+	wipeConfirm.wipeLocalDataCursor = wipeLocalDataCancel
+	importing := NewModel()
+	importing.current = screenImporting
+	importing.importSource = "demo instagram export"
+	importFailure := NewModel()
+	updated, _ := importFailure.Update(importFinishedMsg{
+		err:    errors.New("open instagram export zip: not found"),
+		source: "missing.zip",
+	})
+	importFailure = requireModel(t, updated)
+	warnings := imported
+	warnings.current = screenWarnings
+	reviewEmpty := NewModel()
+	reviewEmpty.current = screenReviewEmpty
+	t.Setenv(reddit.ClientIDEnv, "")
+	redditConnect := NewModel()
+	redditConnect.current = screenRedditConnect
+	redditConnect.selectedPlatformID = platform.PlatformReddit
+	redditAuth := redditConnect
+	redditAuth.current = screenRedditSigningIn
+	redditAuth.redditAuthURL = "https://www.reddit.com/api/v1/authorize?client_id=test"
+	redditBusy := redditConnect
+	redditBusy.current = screenRedditBusy
+	redditBusy.redditBusyTitle = "Scanning Reddit"
+	redditBusy.redditBusyDetail = "Reading own comments and submitted posts."
+	quitConfirm := updateModel(t, NewModel(), keyPress("ctrl+q"))
+
+	cases := []struct {
+		name  string
+		model Model
+	}{
+		{name: "home", model: NewModel()},
+		{name: "platform detail", model: platformDetail},
+		{name: "instagram guide", model: instagramGuide},
+		{name: "reddit notes", model: redditNotes},
+		{name: "help", model: updateModel(t, NewModel(), keyPress("?"))},
+		{name: "import zip", model: clickTab(t, NewModel(), "Import")},
+		{name: "importing", model: importing},
+		{name: "import failure", model: importFailure},
+		{name: "parsed items", model: items},
+		{name: "review empty", model: reviewEmpty},
+		{name: "filters", model: filters},
+		{name: "selection summary", model: selected},
+		{name: "selected items", model: selectedItems},
+		{name: "plan preview", model: preview},
+		{name: "plan export", model: planExport},
+		{name: "plan load", model: openPlanLoadPath(t, NewModel())},
+		{name: "loaded plan", model: loadedSummary},
+		{name: "loaded actions", model: loadedActions},
+		{name: "apply preview", model: applyPreview},
+		{name: "apply confirm", model: applyConfirm},
+		{name: "apply running", model: applyRunning},
+		{name: "apply result", model: applyResult},
+		{name: "warnings", model: warnings},
+		{name: "local data", model: localData},
+		{name: "recent imports", model: recentImports},
+		{name: "recent plans", model: recentPlans},
+		{name: "audit log", model: auditLog},
+		{name: "wipe confirm", model: wipeConfirm},
+		{name: "reddit setup", model: redditConnect},
+		{name: "reddit auth", model: redditAuth},
+		{name: "reddit busy", model: redditBusy},
+		{name: "quit confirm", model: quitConfirm},
+	}
+
+	for _, size := range []tea.WindowSizeMsg{
+		{Width: 132, Height: 36},
+		{Width: 160, Height: 60},
+	} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s_%dx%d", tc.name, size.Width, size.Height), func(t *testing.T) {
+				next := updateModel(t, tc.model, size)
+				view := next.View().Content
+				lines := strings.Count(view, "\n") + 1
+				if lines < size.Height-1 || lines > size.Height+1 {
+					t.Fatalf("expected screen to match terminal height, got %d lines at %dx%d:\n%s", lines, size.Width, size.Height, view)
+				}
+				if strings.Count(stripANSI(view), "└") < 1 {
+					t.Fatalf("expected screen to render full pane frame, got:\n%s", view)
 				}
 			})
 		}
