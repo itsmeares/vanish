@@ -73,7 +73,7 @@ func layoutSpec(width, height int) layoutMetrics {
 	height = maxInt(height, minTerminalHeight)
 
 	contentWidth := maxInt(20, width-4)
-	bodyHeight := maxInt(5, height-8)
+	bodyHeight := maxInt(5, height-4)
 	spec := layoutMetrics{
 		width:        width,
 		height:       height,
@@ -216,55 +216,39 @@ func (m Model) paneFocused(title, subtitle, body string, width, height int, focu
 	return style.Width(innerWidth).Height(innerHeight).Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) paneFocusedRenderedHeight(title, subtitle, body string, width, height int, focused bool) string {
+	height = maxInt(height, 4)
+	renderHeight := height
+	rendered := m.paneFocused(title, subtitle, body, width, renderHeight, focused)
+	for i := 0; i < 8 && blockHeight(rendered) < height; i++ {
+		renderHeight += height - blockHeight(rendered)
+		rendered = m.paneFocused(title, subtitle, body, width, renderHeight, focused)
+	}
+	return rendered
+}
+
+func (m Model) paneRenderedHeight(title, subtitle, body string, width, height int) string {
+	return m.paneFocusedRenderedHeight(title, subtitle, body, width, height, false)
+}
+
 func (m Model) singlePane(section, subtitle string, lines []string, bindings ...key.Binding) string {
 	return m.singlePaneFooter(section, subtitle, lines, m.contextFooter(bindings...))
 }
 
 func (m Model) singlePaneFooter(section, subtitle string, lines []string, footer string) string {
 	spec := layoutSpec(m.width, m.height)
-	body := m.pane(section, subtitle, strings.Join(lines, "\n"), spec.contentWidth, compactPaneHeight(lines, spec.bodyHeight))
+	body := m.pane(section, subtitle, strings.Join(lines, "\n"), spec.contentWidth, spec.bodyHeight)
 	return m.appShell(section, body, footer)
 }
 
 func (m Model) centeredPaneFooter(section, subtitle string, lines []string, footer string) string {
 	spec := layoutSpec(m.width, m.height)
-	width := clampWidth(minInt(spec.contentWidth, maxInt(48, spec.contentWidth*3/5)))
-	body := m.pane(section, subtitle, strings.Join(lines, "\n"), width, compactPaneHeight(lines, spec.bodyHeight))
-	placed := placeBlock(body, spec.contentWidth, spec.bodyHeight)
-	return m.appShell(section, placed, footer)
-}
-
-func placeBlock(block string, width, height int) string {
-	blockWidth := lipgloss.Width(block)
-	blockHeight := strings.Count(block, "\n") + 1
-	left := maxInt(0, (width-blockWidth)/2)
-	top := maxInt(0, (height-blockHeight)/2)
-	prefix := strings.Repeat(" ", left)
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
-		lines[i] = prefix + line
-	}
-	if top == 0 {
-		return strings.Join(lines, "\n")
-	}
-	padding := strings.Repeat("\n", top)
-	return padding + strings.Join(lines, "\n")
+	body := m.pane(section, subtitle, strings.Join(lines, "\n"), spec.contentWidth, spec.bodyHeight)
+	return m.appShell(section, body, footer)
 }
 
 func centeredActionWidth(width int) int {
-	spec := layoutSpec(width, defaultTerminalHeight)
-	return clampWidth(minInt(spec.contentWidth, maxInt(48, spec.contentWidth*3/5)))
-}
-
-func compactPaneHeight(lines []string, maxHeight int) int {
-	height := len(lines) + 4
-	if height < 6 {
-		height = 6
-	}
-	if height > maxHeight {
-		return maxHeight
-	}
-	return height
+	return layoutSpec(width, defaultTerminalHeight).contentWidth
 }
 
 func twoPaneBodyHeight(spec layoutMetrics) int {
@@ -340,6 +324,13 @@ func compactPaneContentHeight(title, subtitle string, lines []string, maxHeight 
 	return height
 }
 
+func blockHeight(block string) int {
+	if block == "" {
+		return 0
+	}
+	return strings.Count(block, "\n") + 1
+}
+
 func (m Model) dashboardSections(width int, sections ...[]string) []string {
 	lines := []string{}
 	for _, section := range sections {
@@ -386,7 +377,7 @@ func (m Model) warningBanner(message string, width int) []string {
 	if message == "" {
 		return nil
 	}
-	innerWidth := maxInt(10, width-4)
+	innerWidth := paneTextWidth(width)
 	return []string{m.styles.warning.Render(truncateEnd("Warning: "+message, innerWidth))}
 }
 
@@ -497,7 +488,7 @@ func (m Model) plainRows(rows []string, offset, visible, width int) []string {
 	visible = maxInt(1, visible)
 	offset = ensureOffset(0, offset, len(rows), visible)
 	end := minInt(len(rows), offset+visible)
-	innerWidth := maxInt(10, width-4)
+	innerWidth := paneTextWidth(width)
 
 	out := []string{}
 	if offset > 0 {
@@ -516,7 +507,7 @@ func (m Model) detailRows(lines []string, width int) []string {
 	if len(lines) == 0 {
 		return []string{}
 	}
-	innerWidth := maxInt(10, width-4)
+	innerWidth := paneTextWidth(width)
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, m.styles.body.Render(truncateMiddle(line, innerWidth)))
@@ -589,25 +580,40 @@ func (m Model) controlRowState(value string, state rowState, width int, hint str
 	case state.Hovered:
 		style = m.styles.hoveredRow
 	}
-	innerWidth := maxInt(4, width-4)
+	innerWidth := paneTextWidth(width)
 	content := rowContent(value, hint, innerWidth)
 	return style.Width(innerWidth).Render(content)
+}
+
+func paneTextWidth(width int) int {
+	return maxInt(4, width-8)
 }
 
 func rowContent(value, hint string, width int) string {
 	value = strings.TrimSpace(value)
 	hint = strings.TrimSpace(hint)
 	if hint == "" {
-		return truncateEnd(value, width)
+		return padRight(truncateEnd(value, width), width)
 	}
 	hintWidth := lipgloss.Width(hint)
 	if hintWidth+2 >= width {
-		return truncateEnd(value, width)
+		return padRight(truncateEnd(value, width), width)
 	}
 	valueWidth := maxInt(1, width-hintWidth-1)
 	left := truncateEnd(value, valueWidth)
 	gap := maxInt(1, width-lipgloss.Width(left)-hintWidth)
 	return left + strings.Repeat(" ", gap) + hint
+}
+
+func padRight(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	valueWidth := lipgloss.Width(value)
+	if valueWidth >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-valueWidth)
 }
 
 func twoPaneWidths(spec layoutMetrics, leftTitle string) (int, int) {
