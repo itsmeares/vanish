@@ -32,7 +32,7 @@ func TestImportZIPParsesDemoExport(t *testing.T) {
 	if result.Summary.Skipped < 2 {
 		t.Fatalf("expected skipped unknown files, got %#v", result.Summary)
 	}
-	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "unsupported Instagram JSON skipped") {
+	if result.Warnings.Total == 0 || warningGroupWith(result.Warnings, "instagram-json", "unsupported activity file") == nil {
 		t.Fatalf("expected unsupported JSON warning, got %#v", result.Warnings)
 	}
 
@@ -146,7 +146,7 @@ func TestImportZIPSkipsUnknownJSONWithoutFailing(t *testing.T) {
 	if result.Summary.Total != 1 || result.Summary.Likes != 1 {
 		t.Fatalf("expected one like, got %#v", result.Summary)
 	}
-	if result.Summary.Skipped != 1 || len(result.Warnings) != 1 {
+	if result.Summary.Skipped != 1 || result.Warnings.Total != 1 || len(result.Warnings.Groups) != 1 {
 		t.Fatalf("expected one skipped unknown file and warning, got summary=%#v warnings=%#v", result.Summary, result.Warnings)
 	}
 }
@@ -185,8 +185,263 @@ func TestImportZIPWarnsAndContinuesOnMalformedJSON(t *testing.T) {
 	if result.Summary.Total != 1 || result.Summary.Likes != 1 {
 		t.Fatalf("expected valid file to be parsed, got %#v", result.Summary)
 	}
-	if result.Summary.Skipped != 1 || len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "malformed JSON skipped") {
+	if result.Summary.Skipped != 1 || result.Warnings.Total != 1 || warningGroupWith(result.Warnings, "comment", "malformed JSON") == nil {
 		t.Fatalf("expected malformed JSON warning, got summary=%#v warnings=%#v", result.Summary, result.Warnings)
+	}
+}
+
+func TestImportZIPParsesCurrentLikedPostSchema(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"your_instagram_activity/likes/liked_posts.json": `[
+  {
+    "fbid": "10000001",
+    "timestamp": 1710000000,
+    "media": [],
+    "label_values": [
+      {
+        "label": "URI",
+        "href": "https://www.instagram.com/reel/SYNTHETICCURRENT1/",
+        "value": "synthetic_actor"
+      }
+    ]
+  }
+]`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected current schema import to succeed: %v", err)
+	}
+	if result.Summary.Total != 1 || result.Summary.Likes != 1 || result.Summary.Skipped != 0 {
+		t.Fatalf("expected one current-schema like, got %#v", result.Summary)
+	}
+	if result.Warnings.Total != 0 || len(result.Warnings.Groups) != 0 {
+		t.Fatalf("expected no warnings, got %#v", result.Warnings)
+	}
+	item := result.Items[0]
+	if item.TargetURL != "https://www.instagram.com/reel/SYNTHETICCURRENT1/" {
+		t.Fatalf("expected trusted media target, got %q", item.TargetURL)
+	}
+	if item.TargetID != "" || item.Actor != "" {
+		t.Fatalf("expected ambiguous ID and actor fields to stay empty, got %#v", item)
+	}
+	if item.OccurredAt == nil || item.OccurredAt.Unix() != 1710000000 {
+		t.Fatalf("expected root timestamp, got %#v", item.OccurredAt)
+	}
+}
+
+func TestImportZIPPreservesLegacyLikedPostSchema(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"likes/liked_posts.json": `{
+  "likes_media_likes": [
+    {
+      "title": "synthetic_legacy_actor",
+      "string_list_data": [
+        {
+          "href": "https://www.instagram.com/p/SYNTHETICLEGACY1/",
+          "value": "synthetic_legacy_actor",
+          "timestamp": 1710000000
+        }
+      ]
+    }
+  ]
+}`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected legacy schema import to succeed: %v", err)
+	}
+	if result.Summary.Likes != 1 || result.Items[0].Actor != "synthetic_legacy_actor" {
+		t.Fatalf("expected legacy liked post to remain supported, got %#v", result)
+	}
+}
+
+func TestImportZIPDoesNotTreatLikedCommentsAsLikedPosts(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"your_instagram_activity/likes/liked_comments.json": `{
+  "likes_comment_likes": [
+    {
+      "title": "synthetic_comment_actor",
+      "string_list_data": [
+        {
+          "href": "https://www.instagram.com/p/SYNTHETICCOMMENT1/",
+          "value": "synthetic_comment_actor",
+          "timestamp": 1710000000
+        }
+      ]
+    }
+  ]
+}`,
+		"your_instagram_activity/likes/liked_posts.json": `[
+  {
+    "timestamp": 1710000000,
+    "label_values": [
+      {"href": "https://www.instagram.com/p/SYNTHETICPOST1/"}
+    ]
+  }
+]`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected partial import to succeed: %v", err)
+	}
+	if result.Summary.Likes != 1 || result.Summary.Total != 1 {
+		t.Fatalf("expected only liked_posts data, got %#v", result.Summary)
+	}
+	group := warningGroupWith(result.Warnings, "liked-comment", "unsupported activity category")
+	if group == nil || group.Count != 1 || group.Unit != WarningUnitRecord {
+		t.Fatalf("expected grouped liked-comment warning, got %#v", result.Warnings)
+	}
+}
+
+func TestImportZIPContinuesAfterUnsupportedCategory(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"your_instagram_activity/likes/liked_comments.json": `{"likes_comment_likes":[{}]}`,
+		"your_instagram_activity/comments/post_comments_1.json": `{
+  "comments_media_comments": [
+    {
+      "media_owner": "synthetic_owner",
+      "comment": "synthetic comment body",
+      "timestamp": 1710000000
+    }
+  ]
+}`,
+		"followers_and_following/following.json": `{
+  "relationships_following": [
+    {
+      "string_list_data": [
+        {"href": "https://www.instagram.com/synthetic_following/", "value": "synthetic_following"}
+      ]
+    }
+  ]
+}`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected available categories to import: %v", err)
+	}
+	if result.Summary.Comments != 1 || result.Summary.Following != 1 || result.Summary.Total != 2 {
+		t.Fatalf("expected supported categories to remain available, got %#v", result.Summary)
+	}
+}
+
+func TestImportWarningsStayBoundedForLargeRejectedDataset(t *testing.T) {
+	const rejected = 150_000
+	const privateSentinel = "synthetic-private-value-must-not-appear"
+	var collector warningCollector
+	exampleCalls := 0
+	for range rejected {
+		collector.add(
+			"your_instagram_activity/likes/liked_posts.json",
+			"liked-post",
+			"unsupported target shape",
+			WarningUnitRecord,
+			1,
+			func() string {
+				exampleCalls++
+				return "object{label_values:array,timestamp:number}"
+			},
+		)
+	}
+	summary := collector.finish()
+	if summary.Total != rejected || len(summary.Groups) != 1 || summary.Groups[0].Count != rejected {
+		t.Fatalf("expected exact grouped count, got %#v", summary)
+	}
+	if len(summary.Groups[0].Examples) > maxImportWarningExamplesPerGroup || exampleCalls > maxImportWarningExamplesPerGroup {
+		t.Fatalf("expected bounded warning details, examples=%d calls=%d", len(summary.Groups[0].Examples), exampleCalls)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", summary), privateSentinel) {
+		t.Fatal("warning summary retained a private value")
+	}
+}
+
+func TestImportWarningsNeverContainRejectedRecordValues(t *testing.T) {
+	const privateSentinel = "synthetic-private-value-must-not-appear"
+	zipPath := writeTestZip(t, map[string]string{
+		"your_instagram_activity/likes/liked_posts.json": `[
+  {
+    "timestamp": 1710000000,
+    "label_values": [
+      {"label": "Owner", "value": "` + privateSentinel + `"}
+    ]
+  }
+]`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected rejected record to be summarized: %v", err)
+	}
+	if result.Warnings.Total != 1 {
+		t.Fatalf("expected one rejected record, got %#v", result.Warnings)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", result.Warnings), privateSentinel) {
+		t.Fatalf("warning summary exposed rejected record value: %#v", result.Warnings)
+	}
+}
+
+func TestCurrentLikedPostRequiresOneTrustedMediaURL(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"your_instagram_activity/likes/liked_posts.json": `[
+  {
+    "timestamp": 1710000000,
+    "label_values": [{"href": "https://example.com/p/SYNTHETIC1/"}]
+  },
+  {
+    "timestamp": 1710000000,
+    "label_values": [{"href": "https://www.instagram.com/synthetic_profile/"}]
+  },
+  {
+    "timestamp": 1710000000,
+    "label_values": [
+      {"href": "https://www.instagram.com/p/SYNTHETIC2/"},
+      {"href": "https://www.instagram.com/reel/SYNTHETIC3/"}
+    ]
+  },
+  {
+    "timestamp": 1710000000,
+    "label_values": [{"href": "http://www.instagram.com/tv/SYNTHETIC4/"}]
+  }
+]`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected unsafe targets to be summarized: %v", err)
+	}
+	if result.Summary.Likes != 0 || result.Summary.Skipped != 4 || result.Warnings.Total != 4 {
+		t.Fatalf("expected every unsafe target to be rejected, summary=%#v warnings=%#v", result.Summary, result.Warnings)
+	}
+	group := warningGroupWith(result.Warnings, "liked-post", "unsupported target shape")
+	if group == nil || group.Count != 4 {
+		t.Fatalf("expected one grouped target warning, got %#v", result.Warnings)
+	}
+}
+
+func TestImportWarningGroupStorageHasGlobalBound(t *testing.T) {
+	var collector warningCollector
+	for index := range 500 {
+		collector.add(
+			"unknown.json",
+			fmt.Sprintf("synthetic-category-%d", index),
+			"unsupported activity file",
+			WarningUnitFile,
+			1,
+			nil,
+		)
+	}
+	summary := collector.finish()
+	if summary.Total != 500 {
+		t.Fatalf("expected exact warning total, got %d", summary.Total)
+	}
+	if len(summary.Groups) != maxImportWarningGroups {
+		t.Fatalf("expected %d bounded groups, got %d", maxImportWarningGroups, len(summary.Groups))
+	}
+	if summary.Groups[len(summary.Groups)-1].Reason != "additional warning groups omitted" {
+		t.Fatalf("expected overflow summary last, got %#v", summary.Groups[len(summary.Groups)-1])
 	}
 }
 
@@ -306,4 +561,14 @@ func assertNoForbiddenKeys(t *testing.T, metadata map[string]string) {
 			}
 		}
 	}
+}
+
+func warningGroupWith(summary ImportWarningSummary, category, reason string) *ImportWarningGroup {
+	for i := range summary.Groups {
+		group := &summary.Groups[i]
+		if group.Category == category && group.Reason == reason {
+			return group
+		}
+	}
+	return nil
 }

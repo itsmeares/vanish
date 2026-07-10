@@ -1255,7 +1255,16 @@ func TestImportResultViewShowsSummaryCountsAndActions(t *testing.T) {
 			Followers: 1,
 			Skipped:   1,
 		},
-		Warnings: []string{"settings/unknown_shape.json: unsupported Instagram JSON skipped"},
+		Warnings: instagram.ImportWarningSummary{
+			Total: 1,
+			Groups: []instagram.ImportWarningGroup{{
+				SourceFile: "settings/unknown_shape.json",
+				Category:   "instagram-json",
+				Reason:     "unsupported activity file",
+				Unit:       instagram.WarningUnitFile,
+				Count:      1,
+			}},
+		},
 	}
 
 	updated, cmd := m.Update(importFinishedMsg{result: result, source: "demo instagram export"})
@@ -1331,7 +1340,7 @@ func TestImportResultActionsOpenItemsAndWarnings(t *testing.T) {
 		t.Fatalf("expected enter to open warnings, got %v", next.current)
 	}
 	warningView := next.View().Content
-	if !strings.Contains(warningView, "Import Warnings") || !strings.Contains(warningView, "unsupported Instagram JSON skipped") {
+	if !strings.Contains(warningView, "Import Warnings") || !strings.Contains(warningView, "unsupported activity file") {
 		t.Fatalf("expected warnings view, got:\n%s", warningView)
 	}
 
@@ -2422,7 +2431,7 @@ func TestInvalidFilterDateShowsFriendlyErrorAndDoesNotApply(t *testing.T) {
 
 func TestWarningsViewShowsEmptyState(t *testing.T) {
 	result := fakeImportResult()
-	result.Warnings = nil
+	result.Warnings = instagram.ImportWarningSummary{}
 	m := importedModel(t, result)
 	m.resultCursor = resultViewWarnings
 
@@ -2729,7 +2738,16 @@ func fakeImportResult() instagram.ImportResult {
 			Comments: 1,
 			Skipped:  1,
 		},
-		Warnings: []string{"settings/unknown_shape.json: unsupported Instagram JSON skipped"},
+		Warnings: instagram.ImportWarningSummary{
+			Total: 1,
+			Groups: []instagram.ImportWarningGroup{{
+				SourceFile: "settings/unknown_shape.json",
+				Category:   "instagram-json",
+				Reason:     "unsupported activity file",
+				Unit:       instagram.WarningUnitFile,
+				Count:      1,
+			}},
+		},
 	}
 }
 
