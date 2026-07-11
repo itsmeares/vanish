@@ -481,6 +481,31 @@ func (m Model) tableRowsWithDisabled(rows []string, disabled map[int]bool, curso
 	return out
 }
 
+func (m Model) windowedTableRows(total, cursor, offset, visible, width int, kind hitKind, row func(int) string) []string {
+	if total <= 0 || row == nil {
+		return []string{}
+	}
+	visible = maxInt(1, visible)
+	cursor = clampCursor(cursor, total)
+	offset = ensureOffset(cursor, offset, total, visible)
+	end := minInt(total, offset+visible)
+
+	out := make([]string, 0, visible+2)
+	if offset > 0 {
+		out = append(out, m.styles.muted.Render("..."))
+	}
+	for i := offset; i < end; i++ {
+		out = append(out, m.controlRowState(row(i), rowState{
+			Selected: i == cursor,
+			Hovered:  m.hoverTarget.Kind == kind && m.hoverTarget.Index == i,
+		}, width, ""))
+	}
+	if end < total {
+		out = append(out, m.styles.muted.Render("..."))
+	}
+	return out
+}
+
 func (m Model) plainRows(rows []string, offset, visible, width int) []string {
 	if len(rows) == 0 {
 		return []string{}
@@ -498,6 +523,28 @@ func (m Model) plainRows(rows []string, offset, visible, width int) []string {
 		out = append(out, m.styles.body.Render(truncateEnd(rows[i], innerWidth)))
 	}
 	if end < len(rows) {
+		out = append(out, m.styles.muted.Render("..."))
+	}
+	return out
+}
+
+func (m Model) windowedPlainRows(total, offset, visible, width int, row func(int) string) []string {
+	if total <= 0 || row == nil {
+		return []string{}
+	}
+	visible = maxInt(1, visible)
+	offset = ensureOffset(0, offset, total, visible)
+	end := minInt(total, offset+visible)
+	innerWidth := paneTextWidth(width)
+
+	out := make([]string, 0, visible+2)
+	if offset > 0 {
+		out = append(out, m.styles.muted.Render("..."))
+	}
+	for i := offset; i < end; i++ {
+		out = append(out, m.styles.body.Render(truncateEnd(row(i), innerWidth)))
+	}
+	if end < total {
 		out = append(out, m.styles.muted.Render("..."))
 	}
 	return out
@@ -689,6 +736,19 @@ func compactCount(count int) string {
 		return fmt.Sprintf("%.1fk", float64(count)/1000)
 	}
 	return fmt.Sprintf("%dk", count/1000)
+}
+
+func exactCount(count int) string {
+	digits := fmt.Sprintf("%d", count)
+	sign := ""
+	if strings.HasPrefix(digits, "-") {
+		sign = "-"
+		digits = strings.TrimPrefix(digits, "-")
+	}
+	for index := len(digits) - 3; index > 0; index -= 3 {
+		digits = digits[:index] + "," + digits[index:]
+	}
+	return sign + digits
 }
 
 func clipBodyLines(lines []string, maxLines int) []string {

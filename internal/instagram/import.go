@@ -2,12 +2,16 @@ package instagram
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -22,7 +26,7 @@ import (
 type ImportResult struct {
 	Items    []domain.ActivityItem
 	Summary  ImportSummary
-	Warnings []string
+	Warnings ImportWarningSummary
 }
 
 // ImportSummary gives the TUI a compact count view without having to know the
@@ -39,11 +43,12 @@ type ImportSummary struct {
 type activityKind string
 
 const (
-	kindUnknown   activityKind = ""
-	kindLike      activityKind = "liked_post"
-	kindComment   activityKind = "comment"
-	kindFollowing activityKind = "following"
-	kindFollower  activityKind = "follower"
+	kindUnknown      activityKind = ""
+	kindLike         activityKind = "liked_post"
+	kindComment      activityKind = "comment"
+	kindFollowing    activityKind = "following"
+	kindFollower     activityKind = "follower"
+	kindLikedComment activityKind = "liked_comment"
 )
 
 // ImportZIP parses supported Instagram activity from a local export ZIP. It
@@ -56,35 +61,242 @@ func ImportZIP(zipPath string) (ImportResult, error) {
 
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return ImportResult{}, fmt.Errorf("open instagram export zip: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return ImportResult{}, fmt.Errorf("open instagram export zip: file not found")
+		}
+		return ImportResult{}, fmt.Errorf("open instagram export zip: unreadable or invalid ZIP")
 	}
 	defer reader.Close()
 
 	importedAt := time.Now().UTC()
 	var result ImportResult
+	var warnings warningCollector
+	skippedFiles := 0
 
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() || !strings.EqualFold(path.Ext(file.Name), ".json") {
 			continue
 		}
 
+		if isChunkedJSONFile(path.Base(file.Name), "liked_posts") {
+			items, handled, parseErr := parseLikedPostsArrayFile(file, &importedAt, &warnings)
+			if parseErr != nil {
+				warnings.add(file.Name, "liked-post", "malformed JSON", WarningUnitFile, 1, nil)
+				skippedFiles++
+				continue
+			}
+			if handled {
+				if len(items) == 0 {
+					skippedFiles++
+				}
+				result.Items = appendOwnedItems(result.Items, items)
+				continue
+			}
+		}
+
 		raw, err := readJSONFile(file)
 		if err != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: malformed JSON skipped: %v", file.Name, err))
-			result.Summary.Skipped++
+			warnings.add(file.Name, warningCategoryForFileName(file.Name), "malformed JSON", WarningUnitFile, 1, nil)
+			skippedFiles++
 			continue
 		}
 
-		items, warnings, handled := parseJSONActivityFile(file.Name, raw, importedAt)
-		result.Warnings = append(result.Warnings, warnings...)
+		items, handled := parseJSONActivityFile(file.Name, raw, &importedAt, &warnings)
 		if !handled || len(items) == 0 {
-			result.Summary.Skipped++
+			skippedFiles++
 		}
-		result.Items = append(result.Items, items...)
+		result.Items = appendOwnedItems(result.Items, items)
 	}
 
-	result.Summary = summarize(result.Items, result.Summary.Skipped)
+	result.Warnings = warnings.finish()
+	result.Summary = summarize(result.Items, skippedFiles)
 	return result, nil
+}
+
+func appendOwnedItems(existing, added []domain.ActivityItem) []domain.ActivityItem {
+	if len(existing) == 0 {
+		return added
+	}
+	return append(existing, added...)
+}
+
+type likedPostArrayRecord struct {
+	Title          string                     `json:"title"`
+	Username       string                     `json:"username"`
+	Href           string                     `json:"href"`
+	URL            string                     `json:"url"`
+	Timestamp      any                        `json:"timestamp"`
+	StringListData []likedPostArrayStringData `json:"string_list_data"`
+	LabelValues    []likedPostArrayLabelValue `json:"label_values"`
+}
+
+type likedPostArrayStringData struct {
+	Value     string `json:"value"`
+	Text      string `json:"text"`
+	Href      string `json:"href"`
+	URL       string `json:"url"`
+	Timestamp any    `json:"timestamp"`
+}
+
+type likedPostArrayLabelValue struct {
+	Href string `json:"href"`
+}
+
+func parseLikedPostsArrayFile(file *zip.File, importedAt *time.Time, warnings *warningCollector) ([]domain.ActivityItem, bool, error) {
+	rc, err := file.Open()
+	if err != nil {
+		return nil, true, err
+	}
+	defer rc.Close()
+
+	decoder := json.NewDecoder(bufio.NewReaderSize(rc, 64*1024))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, true, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '[' {
+		return nil, false, nil
+	}
+
+	items := make([]domain.ActivityItem, 0)
+	recordCount := 0
+	for decoder.More() {
+		recordCount++
+		var record likedPostArrayRecord
+		if err := decoder.Decode(&record); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				warnings.add(file.Name, "liked-post", "unsupported record shape", WarningUnitRecord, 1, func() string {
+					return "non-object or incompatible liked-post record"
+				})
+				continue
+			}
+			return nil, true, err
+		}
+
+		item, ok := activityItemFromLikedPostArrayRecord(file.Name, record, importedAt)
+		if !ok {
+			warnings.add(file.Name, "liked-post", "unsupported target shape", WarningUnitRecord, 1, func() string {
+				return "object{label_values:array,timestamp:number}"
+			})
+			continue
+		}
+		items = appendValidItem(items, file.Name, item, "liked-post", warnings)
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, true, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, true, fmt.Errorf("unexpected trailing JSON value")
+		}
+		return nil, true, err
+	}
+	if recordCount == 0 {
+		warnings.add(file.Name, "liked-post", "no supported records", WarningUnitFile, 1, nil)
+	}
+	return items, true, nil
+}
+
+func activityItemFromLikedPostArrayRecord(fileName string, record likedPostArrayRecord, importedAt *time.Time) (domain.ActivityItem, bool) {
+	if record.LabelValues != nil {
+		targetURL, ok := uniqueTrustedInstagramMediaURL(record.LabelValues)
+		if !ok {
+			return domain.ActivityItem{}, false
+		}
+		return newActivityItem(
+			kindLike,
+			fileName,
+			targetURL,
+			"",
+			"",
+			parseTimeValue(record.Timestamp),
+			importedAt,
+			nil,
+			nil,
+		), true
+	}
+
+	listData := firstLikedPostArrayStringData(record.StringListData)
+	username := firstNonEmpty(listData.Value, record.Title, record.Username)
+	targetURL := firstNonEmpty(listData.Href, record.Href, record.URL)
+	targetID := firstNonEmpty(username, targetURL)
+	if targetURL == "" && targetID == "" {
+		return domain.ActivityItem{}, false
+	}
+	metadata := map[string]string{"instagram_kind": string(kindLike)}
+	addIfNotEmpty(metadata, "username", username)
+	return newActivityItem(
+		kindLike,
+		fileName,
+		targetURL,
+		targetID,
+		username,
+		firstTime(listData.Timestamp, parseTimeValue(record.Timestamp)),
+		importedAt,
+		metadata,
+		nil,
+	), true
+}
+
+func uniqueTrustedInstagramMediaURL(values []likedPostArrayLabelValue) (string, bool) {
+	candidate := ""
+	for _, value := range values {
+		trusted, ok := trustedInstagramMediaURL(value.Href)
+		if !ok {
+			continue
+		}
+		if candidate == "" {
+			candidate = trusted
+			continue
+		}
+		if candidate != trusted {
+			return "", false
+		}
+	}
+	return candidate, candidate != ""
+}
+
+func trustedInstagramMediaURL(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" {
+		return "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "instagram.com" && host != "www.instagram.com" {
+		return "", false
+	}
+	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(segments) != 2 || segments[1] == "" {
+		return "", false
+	}
+	switch strings.ToLower(segments[0]) {
+	case "p", "reel", "tv":
+		return value, true
+	default:
+		return "", false
+	}
+}
+
+func firstLikedPostArrayStringData(entries []likedPostArrayStringData) extractedStringData {
+	for _, entry := range entries {
+		data := extractedStringData{
+			Value:     firstNonEmpty(entry.Value, entry.Text),
+			Href:      firstNonEmpty(entry.Href, entry.URL),
+			Timestamp: parseTimeValue(entry.Timestamp),
+		}
+		if data.Value != "" || data.Href != "" || data.Timestamp != nil {
+			return data
+		}
+	}
+	return extractedStringData{}
 }
 
 func readJSONFile(file *zip.File) (any, error) {
@@ -108,19 +320,28 @@ func readJSONFile(file *zip.File) (any, error) {
 	return raw, nil
 }
 
-func parseJSONActivityFile(fileName string, raw any, importedAt time.Time) ([]domain.ActivityItem, []string, bool) {
+func parseJSONActivityFile(fileName string, raw any, importedAt *time.Time, warnings *warningCollector) ([]domain.ActivityItem, bool) {
 	kind := detectKind(fileName, raw)
 	switch kind {
 	case kindLike:
-		return parseLikes(fileName, raw, importedAt)
+		return parseLikes(fileName, raw, importedAt, warnings), true
 	case kindComment:
-		return parseComments(fileName, raw, importedAt)
+		return parseComments(fileName, raw, importedAt, warnings), true
 	case kindFollowing:
-		return parseRelationships(fileName, raw, importedAt, kindFollowing)
+		return parseRelationships(fileName, raw, importedAt, kindFollowing, warnings), true
 	case kindFollower:
-		return parseRelationships(fileName, raw, importedAt, kindFollower)
+		return parseRelationships(fileName, raw, importedAt, kindFollower, warnings), true
+	case kindLikedComment:
+		records := rootRecords(raw, "likes_comment_likes")
+		if len(records) == 0 {
+			warnings.add(fileName, "liked-comment", "unsupported activity category", WarningUnitFile, 1, nil)
+		} else {
+			warnings.add(fileName, "liked-comment", "unsupported activity category", WarningUnitRecord, len(records), nil)
+		}
+		return nil, true
 	default:
-		return nil, []string{fmt.Sprintf("%s: unsupported Instagram JSON skipped", fileName)}, false
+		warnings.add(fileName, "instagram-json", "unsupported activity file", WarningUnitFile, 1, nil)
+		return nil, false
 	}
 }
 
@@ -132,35 +353,79 @@ func detectKind(fileName string, raw any) activityKind {
 		return kindFollowing
 	case hasTopLevelKey(raw, "relationships_followers"):
 		return kindFollower
+	case hasTopLevelKey(raw, "likes_comment_likes"):
+		return kindLikedComment
 	case hasTopLevelKey(raw, "likes_media_likes"), hasTopLevelKey(raw, "media_likes"):
 		return kindLike
 	case hasTopLevelKey(raw, "comments_media_comments"), hasTopLevelKey(raw, "media_comments"):
 		return kindComment
-	case strings.Contains(base, "following") && !strings.Contains(base, "follower"):
+	case isChunkedJSONFile(base, "following"):
 		return kindFollowing
-	case strings.Contains(base, "follower"):
+	case isChunkedJSONFile(base, "followers"):
 		return kindFollower
-	case strings.Contains(base, "liked") || strings.Contains(base, "like"):
+	case isChunkedJSONFile(base, "liked_posts"):
 		return kindLike
-	case strings.Contains(base, "comment"):
+	case isChunkedJSONFile(base, "post_comments"), isChunkedJSONFile(base, "comments"):
 		return kindComment
 	default:
 		return kindUnknown
 	}
 }
 
-func parseLikes(fileName string, raw any, importedAt time.Time) ([]domain.ActivityItem, []string, bool) {
+func isChunkedJSONFile(base, stem string) bool {
+	base = strings.ToLower(strings.TrimSpace(base))
+	stem = strings.ToLower(strings.TrimSpace(stem))
+	if base == stem+".json" {
+		return true
+	}
+	prefix := stem + "_"
+	if !strings.HasPrefix(base, prefix) || !strings.HasSuffix(base, ".json") {
+		return false
+	}
+	chunk := strings.TrimSuffix(strings.TrimPrefix(base, prefix), ".json")
+	if chunk == "" {
+		return false
+	}
+	for _, char := range chunk {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func warningCategoryForFileName(fileName string) string {
+	base := strings.ToLower(path.Base(fileName))
+	switch {
+	case isChunkedJSONFile(base, "liked_posts"):
+		return "liked-post"
+	case base == "liked_comments.json":
+		return "liked-comment"
+	case isChunkedJSONFile(base, "post_comments"), isChunkedJSONFile(base, "comments"):
+		return "comment"
+	case isChunkedJSONFile(base, "following"):
+		return "following"
+	case isChunkedJSONFile(base, "followers"):
+		return "follower"
+	default:
+		return "instagram-json"
+	}
+}
+
+func parseLikes(fileName string, raw any, importedAt *time.Time, warnings *warningCollector) []domain.ActivityItem {
 	records := rootRecords(raw, "likes_media_likes", "media_likes", "liked_posts")
 	if len(records) == 0 {
-		return nil, []string{fmt.Sprintf("%s: liked posts file had no supported records", fileName)}, true
+		warnings.add(fileName, "liked-post", "no supported records", WarningUnitFile, 1, nil)
+		return nil
 	}
 
-	var items []domain.ActivityItem
-	var warnings []string
-	for i, record := range records {
+	items := make([]domain.ActivityItem, 0, len(records))
+	for _, record := range records {
 		rec, ok := record.(map[string]any)
 		if !ok {
-			warnings = append(warnings, fmt.Sprintf("%s: liked post record %d skipped: unsupported shape", fileName, i+1))
+			warnings.add(fileName, "liked-post", "unsupported record shape", WarningUnitRecord, 1, func() string {
+				return structuralShape(record)
+			})
 			continue
 		}
 
@@ -171,7 +436,9 @@ func parseLikes(fileName string, raw any, importedAt time.Time) ([]domain.Activi
 		occurredAt := firstTime(listData.Timestamp, parseTimeValue(rec["timestamp"]))
 
 		if targetURL == "" && targetID == "" {
-			warnings = append(warnings, fmt.Sprintf("%s: liked post record %d skipped: no safe target", fileName, i+1))
+			warnings.add(fileName, "liked-post", "unsupported target shape", WarningUnitRecord, 1, func() string {
+				return structuralShape(record)
+			})
 			continue
 		}
 
@@ -179,24 +446,26 @@ func parseLikes(fileName string, raw any, importedAt time.Time) ([]domain.Activi
 		addIfNotEmpty(metadata, "username", username)
 
 		item := newActivityItem(kindLike, fileName, targetURL, targetID, username, occurredAt, importedAt, metadata, nil)
-		items, warnings = appendValidItem(items, warnings, fileName, i+1, item)
+		items = appendValidItem(items, fileName, item, "liked-post", warnings)
 	}
 
-	return items, warnings, true
+	return items
 }
 
-func parseComments(fileName string, raw any, importedAt time.Time) ([]domain.ActivityItem, []string, bool) {
+func parseComments(fileName string, raw any, importedAt *time.Time, warnings *warningCollector) []domain.ActivityItem {
 	records := rootRecords(raw, "comments_media_comments", "media_comments", "comments")
 	if len(records) == 0 {
-		return nil, []string{fmt.Sprintf("%s: comments file had no supported records", fileName)}, true
+		warnings.add(fileName, "comment", "no supported records", WarningUnitFile, 1, nil)
+		return nil
 	}
 
-	var items []domain.ActivityItem
-	var warnings []string
-	for i, record := range records {
+	items := make([]domain.ActivityItem, 0, len(records))
+	for _, record := range records {
 		rec, ok := record.(map[string]any)
 		if !ok {
-			warnings = append(warnings, fmt.Sprintf("%s: comment record %d skipped: unsupported shape", fileName, i+1))
+			warnings.add(fileName, "comment", "unsupported record shape", WarningUnitRecord, 1, func() string {
+				return structuralShape(record)
+			})
 			continue
 		}
 
@@ -231,7 +500,9 @@ func parseComments(fileName string, raw any, importedAt time.Time) ([]domain.Act
 		)
 
 		if targetURL == "" && targetID == "" {
-			warnings = append(warnings, fmt.Sprintf("%s: comment record %d skipped: no safe target", fileName, i+1))
+			warnings.add(fileName, "comment", "unsupported target shape", WarningUnitRecord, 1, func() string {
+				return structuralShape(record)
+			})
 			continue
 		}
 
@@ -239,13 +510,13 @@ func parseComments(fileName string, raw any, importedAt time.Time) ([]domain.Act
 		addIfNotEmpty(metadata, "media_owner", mediaOwner)
 
 		item := newActivityItem(kindComment, fileName, targetURL, targetID, mediaOwner, occurredAt, importedAt, metadata, safeText)
-		items, warnings = appendValidItem(items, warnings, fileName, i+1, item)
+		items = appendValidItem(items, fileName, item, "comment", warnings)
 	}
 
-	return items, warnings, true
+	return items
 }
 
-func parseRelationships(fileName string, raw any, importedAt time.Time, kind activityKind) ([]domain.ActivityItem, []string, bool) {
+func parseRelationships(fileName string, raw any, importedAt *time.Time, kind activityKind, warnings *warningCollector) []domain.ActivityItem {
 	keys := []string{"relationships_following"}
 	relationship := "following"
 	if kind == kindFollower {
@@ -255,15 +526,17 @@ func parseRelationships(fileName string, raw any, importedAt time.Time, kind act
 
 	records := rootRecords(raw, keys...)
 	if len(records) == 0 {
-		return nil, []string{fmt.Sprintf("%s: %s file had no supported records", fileName, relationship)}, true
+		warnings.add(fileName, relationship, "no supported records", WarningUnitFile, 1, nil)
+		return nil
 	}
 
-	var items []domain.ActivityItem
-	var warnings []string
-	for i, record := range records {
+	items := make([]domain.ActivityItem, 0, len(records))
+	for _, record := range records {
 		rec, ok := record.(map[string]any)
 		if !ok {
-			warnings = append(warnings, fmt.Sprintf("%s: %s record %d skipped: unsupported shape", fileName, relationship, i+1))
+			warnings.add(fileName, relationship, "unsupported record shape", WarningUnitRecord, 1, func() string {
+				return structuralShape(record)
+			})
 			continue
 		}
 
@@ -274,7 +547,9 @@ func parseRelationships(fileName string, raw any, importedAt time.Time, kind act
 		occurredAt := firstTime(listData.Timestamp, parseTimeValue(rec["timestamp"]))
 
 		if targetURL == "" && targetID == "" {
-			warnings = append(warnings, fmt.Sprintf("%s: %s record %d skipped: no safe target", fileName, relationship, i+1))
+			warnings.add(fileName, relationship, "unsupported target shape", WarningUnitRecord, 1, func() string {
+				return structuralShape(record)
+			})
 			continue
 		}
 
@@ -285,21 +560,21 @@ func parseRelationships(fileName string, raw any, importedAt time.Time, kind act
 		addIfNotEmpty(metadata, "username", username)
 
 		item := newActivityItem(kind, fileName, targetURL, targetID, username, occurredAt, importedAt, metadata, nil)
-		items, warnings = appendValidItem(items, warnings, fileName, i+1, item)
+		items = appendValidItem(items, fileName, item, relationship, warnings)
 	}
 
-	return items, warnings, true
+	return items
 }
 
-func appendValidItem(items []domain.ActivityItem, warnings []string, fileName string, recordNumber int, item domain.ActivityItem) ([]domain.ActivityItem, []string) {
+func appendValidItem(items []domain.ActivityItem, fileName string, item domain.ActivityItem, category string, warnings *warningCollector) []domain.ActivityItem {
 	if err := item.Validate(); err != nil {
-		warnings = append(warnings, fmt.Sprintf("%s: record %d skipped: %v", fileName, recordNumber, err))
-		return items, warnings
+		warnings.add(fileName, category, "normalized item failed validation", WarningUnitRecord, 1, nil)
+		return items
 	}
-	return append(items, item), warnings
+	return append(items, item)
 }
 
-func newActivityItem(kind activityKind, fileName, targetURL, targetID, actor string, occurredAt *time.Time, importedAt time.Time, metadata map[string]string, safeText *domain.SafeTextReference) domain.ActivityItem {
+func newActivityItem(kind activityKind, fileName, targetURL, targetID, actor string, occurredAt, importedAt *time.Time, metadata map[string]string, safeText *domain.SafeTextReference) domain.ActivityItem {
 	itemType := domain.ItemTypeFollow
 	switch kind {
 	case kindLike:
@@ -308,7 +583,6 @@ func newActivityItem(kind activityKind, fileName, targetURL, targetID, actor str
 		itemType = domain.ItemTypeComment
 	}
 
-	sourceImportedAt := importedAt
 	item := domain.ActivityItem{
 		ID:         itemID(kind, fileName, targetURL, targetID, occurredAt, safeText),
 		Platform:   domain.PlatformInstagram,
@@ -319,7 +593,7 @@ func newActivityItem(kind activityKind, fileName, targetURL, targetID, actor str
 		OccurredAt: occurredAt,
 		Source: domain.SourceMetadata{
 			Name:       "instagram-export",
-			ImportedAt: &sourceImportedAt,
+			ImportedAt: importedAt,
 			FileName:   fileName,
 		},
 		Metadata: metadata,

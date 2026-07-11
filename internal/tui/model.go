@@ -336,7 +336,11 @@ type Model struct {
 	importResult         activityResult
 	importErr            error
 	itemFilter           domain.ActivityItemFilter
+	itemIndex            activityItemIndex
 	selection            domain.ActivitySelection
+	selectionCounts      domain.ActivitySelectionCounts
+	selectedItemIndexes  []int
+	selectedItemsDirty   bool
 	itemFocus            itemBrowserFocus
 	itemActionCursor     int
 	planResult           planBuildResult
@@ -464,9 +468,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(msg.Width)
 		m.planPathInput.SetWidth(inputWidth(msg.Width))
 		m.setFilterInputWidths(inputWidth(msg.Width))
-		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(m.visibleItems()), m.parsedItemsViewport().VisibleRows)
-		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItems()), m.itemListHeight())
-		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, m.visibleItemCount(), m.parsedItemsViewport().VisibleRows)
+		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, m.selection.Len(), m.itemListHeight())
+		_, m.warningOffset, _ = m.warningViewport()
 		m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
 		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
 		m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
@@ -485,6 +489,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.itemCursor = 0
 		m.itemOffset = 0
 		m.selection = domain.ActivitySelection{}
+		m.selectionCounts = domain.ActivitySelectionCounts{}
+		m.selectedItemIndexes = m.selectedItemIndexes[:0]
+		m.selectedItemsDirty = false
 		m.selectionCursor = 0
 		m.selectionMessage = ""
 		m.resetPlanState()
@@ -544,6 +551,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.itemCursor = 0
 		m.itemOffset = 0
 		m.selection = domain.ActivitySelection{}
+		m.selectionCounts = domain.ActivitySelectionCounts{}
+		m.selectedItemIndexes = m.selectedItemIndexes[:0]
+		m.selectedItemsDirty = false
 		m.selectionCursor = 0
 		m.selectionMessage = ""
 		m.resetPlanState()
@@ -886,14 +896,14 @@ func (m Model) updateImportResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.selectItem):
 		switch m.resultCursor {
 		case resultViewItems:
-			items := m.visibleItems()
-			m.itemCursor = clampCursor(m.itemCursor, len(items))
-			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.parsedItemsViewport().VisibleRows)
+			itemCount := m.visibleItemCount()
+			m.itemCursor = clampCursor(m.itemCursor, itemCount)
+			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 			m.itemFocus = itemFocusList
 			m.current = screenItemsBrowser
 		case resultViewWarnings:
 			m.warningCursor = clampCursor(m.warningCursor, len(m.importResult.Warnings))
-			m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+			_, m.warningOffset, _ = m.warningViewport()
 			m.current = screenWarnings
 		case resultReviewSelection:
 			m.selectionCursor = 0
@@ -907,7 +917,7 @@ func (m Model) updateImportResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateItemsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	items := m.visibleItems()
+	itemCount := m.visibleItemCount()
 	switch {
 	case msg.Code == tea.KeyTab:
 		if m.itemFocus == itemFocusActions {
@@ -928,13 +938,13 @@ func (m Model) updateItemsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.itemFocus == itemFocusActions {
 			m.itemActionCursor = m.moveParsedItemActionCursor(-1)
 		} else {
-			m.itemCursor = moveCursor(m.itemCursor, len(items), -1)
+			m.itemCursor = moveCursor(m.itemCursor, itemCount, -1)
 		}
 	case key.Matches(msg, m.keys.down):
 		if m.itemFocus == itemFocusActions {
 			m.itemActionCursor = m.moveParsedItemActionCursor(1)
 		} else {
-			m.itemCursor = moveCursor(m.itemCursor, len(items), 1)
+			m.itemCursor = moveCursor(m.itemCursor, itemCount, 1)
 		}
 	case key.Matches(msg, m.keys.filter):
 		m.beginFilterDraft()
@@ -943,20 +953,20 @@ func (m Model) updateItemsBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.itemFocus == itemFocusActions {
 			return m.activateParsedItemAction()
 		}
-		if len(items) > 0 {
-			m.selection.Toggle(items[clampCursor(m.itemCursor, len(items))].ID)
+		if itemCount > 0 {
+			m.toggleVisibleItemSelection(clampCursor(m.itemCursor, itemCount))
 		}
 	case key.Matches(msg, m.keys.selectVisible):
-		m.selection.SelectItems(items)
+		m.setVisibleItemsSelected(true)
 	case key.Matches(msg, m.keys.deselectVisible):
-		m.selection.DeselectItems(items)
+		m.setVisibleItemsSelected(false)
 	case key.Matches(msg, m.keys.selectionSummary):
 		m.selectionCursor = 0
 		m.current = screenSelectionSummary
 	case key.Matches(msg, m.keys.back):
 		m.current = screenImportResult
 	}
-	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.parsedItemsViewport().VisibleRows)
+	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 	return m, nil
 }
 
@@ -1028,18 +1038,18 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		case selectionGeneratePlan:
 			m.generatePlanFromSelection()
 		case selectionViewSelected:
-			items := m.selectedItems()
-			m.selectedCursor = clampCursor(m.selectedCursor, len(items))
-			m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+			m.rebuildSelectedItemIndexes()
+			m.selectedCursor = clampCursor(m.selectedCursor, len(m.selectedItemIndexes))
+			m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(m.selectedItemIndexes), m.itemListHeight())
 			m.current = screenSelectedItems
 		case selectionSelectVisible:
-			m.selection.SelectItems(m.visibleItems())
+			m.setVisibleItemsSelected(true)
 			m.selectionMessage = "Selected all visible items."
 		case selectionDeselectVisible:
-			m.selection.DeselectItems(m.visibleItems())
+			m.setVisibleItemsSelected(false)
 			m.selectionMessage = "Deselected all visible items."
 		case selectionClear:
-			m.selection.Clear()
+			m.clearSelection()
 			m.selectedCursor = 0
 			m.selectedOffset = 0
 			m.selectionMessage = "Selection cleared."
@@ -1052,7 +1062,7 @@ func (m Model) updateSelectionSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 }
 
 func (m *Model) generatePlanFromSelection() {
-	selected := m.selectedItems()
+	selected := m.selectedItemsCopy()
 	if len(selected) == 0 {
 		m.selectionMessage = "Select at least one item before generating a plan."
 		return
@@ -1258,16 +1268,16 @@ func (m Model) updateApplyResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateSelectedItems(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	items := m.selectedItems()
+	itemCount := len(m.selectedItemIndexes)
 	switch {
 	case key.Matches(msg, m.keys.up):
-		m.selectedCursor = moveCursor(m.selectedCursor, len(items), -1)
+		m.selectedCursor = moveCursor(m.selectedCursor, itemCount, -1)
 	case key.Matches(msg, m.keys.down):
-		m.selectedCursor = moveCursor(m.selectedCursor, len(items), 1)
+		m.selectedCursor = moveCursor(m.selectedCursor, itemCount, 1)
 	case key.Matches(msg, m.keys.back):
 		m.current = screenSelectionSummary
 	}
-	m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+	m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, itemCount, m.itemListHeight())
 	return m, nil
 }
 
@@ -1280,7 +1290,7 @@ func (m Model) updateWarnings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.back):
 		m.current = screenImportResult
 	}
-	m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+	_, m.warningOffset, _ = m.warningViewport()
 	return m, nil
 }
 
@@ -1577,19 +1587,19 @@ func (m Model) updateMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.importPickerCursor = moveCursor(m.importPickerCursor, len(m.importPickerEntries), delta)
 		m.importPickerOffset = ensureOffset(m.importPickerCursor, m.importPickerOffset, len(m.importPickerEntries), m.importPickerListHeight())
 	case screenItemsBrowser:
-		items := m.visibleItems()
-		m.itemCursor = moveCursor(m.itemCursor, len(items), delta)
-		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.parsedItemsViewport().VisibleRows)
+		itemCount := m.visibleItemCount()
+		m.itemCursor = moveCursor(m.itemCursor, itemCount, delta)
+		m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 	case screenSelectedItems:
-		items := m.selectedItems()
-		m.selectedCursor = moveCursor(m.selectedCursor, len(items), delta)
-		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+		itemCount := len(m.selectedItemIndexes)
+		m.selectedCursor = moveCursor(m.selectedCursor, itemCount, delta)
+		m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, itemCount, m.itemListHeight())
 	case screenLoadedPlanActions:
 		m.loadedActionCursor = moveCursor(m.loadedActionCursor, len(m.loadedPlan.Actions), delta)
 		m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
 	case screenWarnings:
 		m.warningCursor = moveCursor(m.warningCursor, len(m.importResult.Warnings), delta)
-		m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+		_, m.warningOffset, _ = m.warningViewport()
 	case screenRecentImports:
 		m.recentImportCursor = moveCursor(m.recentImportCursor, len(m.recentImports), delta)
 		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
@@ -1608,29 +1618,29 @@ func (m Model) updateMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateItemListClick(target hitTarget) (tea.Model, tea.Cmd) {
-	items := m.visibleItems()
+	itemCount := m.visibleItemCount()
 	index := target.Index
-	if target.Kind != hitParsedItemRow || index < 0 || index >= len(items) {
+	if target.Kind != hitParsedItemRow || index < 0 || index >= itemCount {
 		return m, nil
 	}
-	if index == clampCursor(m.itemCursor, len(items)) {
+	if index == clampCursor(m.itemCursor, itemCount) {
 		m.itemFocus = itemFocusList
 		return m.updateItemsBrowser(selectKeyPress())
 	}
 	m.itemFocus = itemFocusList
 	m.itemCursor = index
-	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.parsedItemsViewport().VisibleRows)
+	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 	return m, nil
 }
 
 func (m *Model) updateSelectedItemListClick(target hitTarget) {
-	items := m.selectedItems()
+	itemCount := len(m.selectedItemIndexes)
 	index := target.Index
-	if target.Kind != hitSelectedItemRow || index < 0 || index >= len(items) {
+	if target.Kind != hitSelectedItemRow || index < 0 || index >= itemCount {
 		return
 	}
 	m.selectedCursor = index
-	m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, len(items), m.itemListHeight())
+	m.selectedOffset = ensureOffset(m.selectedCursor, m.selectedOffset, itemCount, m.itemListHeight())
 }
 
 func (m *Model) updatePlanActionListClick(target hitTarget) {
@@ -1649,7 +1659,7 @@ func (m *Model) updateWarningListClick(target hitTarget) {
 		return
 	}
 	m.warningCursor = index
-	m.warningOffset = ensureOffset(m.warningCursor, m.warningOffset, len(m.importResult.Warnings), m.warningListHeight())
+	_, m.warningOffset, _ = m.warningViewport()
 }
 
 func (m *Model) updateRecentImportListClick(target hitTarget) {
@@ -2023,7 +2033,7 @@ func (m Model) importResultView() string {
 		})),
 		m.section("Import Notes", m.keyValueRows([]keyValue{
 			{Key: "Skipped or unknown", Value: compactCount(summary.Skipped)},
-			{Key: "Warnings", Value: compactCount(len(m.importResult.Warnings))},
+			{Key: "Warnings", Value: compactCount(m.importResult.WarningCount)},
 		})),
 	)
 	summaryLines = append(summaryLines, m.localDataMessages()...)
@@ -2037,12 +2047,12 @@ func (m Model) importResultView() string {
 
 func (m Model) itemsBrowserView() string {
 	spec := layoutSpec(m.width, m.height)
-	items := m.visibleItems()
+	itemCount := m.visibleItemCount()
 	listWidth, detailWidth := twoPaneWidths(spec, "Parsed Items")
 	total := len(m.importResult.Items)
 	viewport := m.parsedItemsViewport()
 	visibleRows := viewport.VisibleRows
-	cursor := clampCursor(m.itemCursor, len(items))
+	cursor := clampCursor(m.itemCursor, itemCount)
 	offset := viewport.Offset
 
 	filterStatus := "off"
@@ -2050,7 +2060,7 @@ func (m Model) itemsBrowserView() string {
 		filterStatus = "active"
 	}
 	listInnerWidth := maxInt(10, paneTextWidth(listWidth))
-	statusLine := parsedItemsStatusLine(viewport, len(items), total, m.selection.Len(), filterStatus, listInnerWidth)
+	statusLine := parsedItemsStatusLine(viewport, itemCount, total, m.selection.Len(), filterStatus, listInnerWidth)
 	sourceLine := fmt.Sprintf("Page %d/%d · Source: %s", viewport.Page, viewport.Pages, emptyFallback(m.importSource, m.activitySourceFallback()))
 	listLines := []string{
 		m.styles.muted.Render(truncateEnd(statusLine, listInnerWidth)),
@@ -2061,26 +2071,31 @@ func (m Model) itemsBrowserView() string {
 		listLines = append(listLines, m.notice("warning", "Filters active"), "")
 	}
 
-	if len(items) == 0 {
+	if itemCount == 0 {
 		listLines = append(listLines, m.emptyState("No parsed items."))
 	} else {
-		rows := make([]string, 0, len(items))
-		for _, item := range items {
-			rows = append(rows, m.selectableItemRowForWidth(item, listWidth))
-		}
-		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth, hitParsedItemRow)...)
+		listLines = append(listLines, m.parsedItemRows(itemCount, cursor, offset, visibleRows, listWidth, func(item domain.ActivityItem) string {
+			return m.selectableItemRowForWidth(item, listWidth)
+		})...)
 	}
 
 	detailLines := []string{}
-	if len(items) == 0 {
+	if itemCount == 0 {
 		detailLines = append(detailLines, m.emptyState("No matches. Clear filters or scan again."))
-	} else {
-		detailLines = append(detailLines, m.detailRows(parsedItemDetailLines(items[cursor]), detailWidth)...)
+	} else if item, ok := m.visibleItemAt(cursor); ok {
+		detailLines = append(detailLines, m.detailRows(parsedItemDetailLines(item), detailWidth)...)
 	}
 	actionLines := m.parsedItemsCockpitLines(detailWidth)
 
 	body := m.parsedItemsBody(spec, listWidth, detailWidth, listLines, detailLines, actionLines)
 	return m.appShell("Parsed Items", body, m.footer(footerParsedItems))
+}
+
+func (m Model) parsedItemRows(itemCount, cursor, offset, visibleRows, width int, format func(domain.ActivityItem) string) []string {
+	return m.windowedTableRows(itemCount, cursor, offset, visibleRows, width, hitParsedItemRow, func(index int) string {
+		item, _ := m.visibleItemAt(index)
+		return format(item)
+	})
 }
 
 func (m Model) parsedItemsBody(spec layoutMetrics, listWidth, detailWidth int, listLines, detailLines, actionLines []string) string {
@@ -2133,7 +2148,7 @@ func parsedItemsStatusLine(viewport listViewport, matching, total, selected int,
 }
 
 func (m Model) parsedItemsCockpitLines(width int) []string {
-	counts := m.selection.Counts(m.importResult.Items)
+	counts := m.selectionCounts
 	lines := []string{}
 	lines = append(lines, m.warningBanner(m.selectionMessage, width)...)
 	lines = append(lines, m.section("Selection", m.keyValueRows([]keyValue{
@@ -2207,9 +2222,9 @@ func (m Model) activateParsedItemAction() (tea.Model, tea.Cmd) {
 
 	switch m.itemActionCursor {
 	case parsedActionToggle:
-		items := m.visibleItems()
-		if len(items) > 0 {
-			m.selection.Toggle(items[clampCursor(m.itemCursor, len(items))].ID)
+		itemCount := m.visibleItemCount()
+		if itemCount > 0 {
+			m.toggleVisibleItemSelection(clampCursor(m.itemCursor, itemCount))
 		}
 	case parsedActionReviewSelection:
 		m.selectionCursor = 0
@@ -2232,8 +2247,8 @@ func (m Model) reviewEmptyView() string {
 
 func (m Model) selectionSummaryView() string {
 	spec := layoutSpec(m.width, m.height)
-	counts := m.selection.Counts(m.importResult.Items)
-	visibleCount := len(m.visibleItems())
+	counts := m.selectionCounts
+	visibleCount := m.visibleItemCount()
 	_, dashboardWidth := twoPaneWidths(spec, "Actions")
 	summaryLines := m.dashboardSections(
 		dashboardWidth,
@@ -2263,33 +2278,32 @@ func (m Model) selectionSummaryView() string {
 
 func (m Model) selectedItemsView() string {
 	spec := layoutSpec(m.width, m.height)
-	items := m.selectedItems()
+	itemCount := len(m.selectedItemIndexes)
 	listWidth, detailWidth := twoPaneWidths(spec, "Selected Items")
 	total := len(m.importResult.Items)
 	visibleRows := m.itemListHeight()
-	cursor := clampCursor(m.selectedCursor, len(items))
-	offset := ensureOffset(cursor, m.selectedOffset, len(items), visibleRows)
+	cursor := clampCursor(m.selectedCursor, itemCount)
+	offset := ensureOffset(cursor, m.selectedOffset, itemCount, visibleRows)
 
 	listLines := []string{
-		m.styles.muted.Render(fmt.Sprintf("Selected: %d / Total: %d", len(items), total)),
+		m.styles.muted.Render(fmt.Sprintf("Selected: %d / Total: %d", itemCount, total)),
 		"",
 	}
 
-	if len(items) == 0 {
+	if itemCount == 0 {
 		listLines = append(listLines, m.emptyState("No selected items yet."))
 	} else {
-		rows := make([]string, 0, len(items))
-		for _, item := range items {
-			rows = append(rows, m.selectableItemRowForWidth(item, listWidth))
-		}
-		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth, hitSelectedItemRow)...)
+		listLines = append(listLines, m.windowedTableRows(itemCount, cursor, offset, visibleRows, listWidth, hitSelectedItemRow, func(index int) string {
+			item, _ := m.selectedItemAt(index)
+			return m.selectableItemRowForWidth(item, listWidth)
+		})...)
 	}
 
 	detailLines := []string{}
-	if len(items) == 0 {
+	if itemCount == 0 {
 		detailLines = append(detailLines, m.emptyState("No item selected."))
-	} else {
-		detailLines = append(detailLines, m.detailRows(itemDetailLines(items[cursor]), detailWidth)...)
+	} else if item, ok := m.selectedItemAt(cursor); ok {
+		detailLines = append(detailLines, m.detailRows(itemDetailLines(item), detailWidth)...)
 	}
 
 	body := m.twoPane(spec, "Selected Items", "Chosen cleanup candidates", listLines, "Details", "Highlighted item", detailLines)
@@ -2300,9 +2314,9 @@ func (m Model) planPreviewView() string {
 	spec := layoutSpec(m.width, m.height)
 	result := m.planResult
 	summaryWidth, actionWidth := twoPaneWidths(spec, "Plan Summary")
-	rows := planPreviewRowsForWidth(result.Plan.Actions, result.Skipped, actionWidth)
+	rowCount := len(result.Plan.Actions) + len(result.Skipped)
 	visibleRows := m.planListHeight()
-	offset := ensureOffset(0, m.planListOffset, len(rows), visibleRows)
+	offset := ensureOffset(0, m.planListOffset, rowCount, visibleRows)
 
 	summaryLines := m.dashboardSections(
 		summaryWidth,
@@ -2323,10 +2337,15 @@ func (m Model) planPreviewView() string {
 	summaryLines = append(summaryLines, m.menuRows(planPreviewMenuItems, m.planPreviewCursor, summaryWidth, hitPlanPreviewAction)...)
 
 	actionLines := []string{}
-	if len(rows) == 0 {
+	if rowCount == 0 {
 		actionLines = append(actionLines, m.emptyState("No supported actions."))
 	} else {
-		actionLines = append(actionLines, m.plainRows(rows, offset, visibleRows, actionWidth)...)
+		actionLines = append(actionLines, m.windowedPlainRows(rowCount, offset, visibleRows, actionWidth, func(index int) string {
+			if index < len(result.Plan.Actions) {
+				return planActionRowForWidth(result.Plan.Actions[index], actionWidth)
+			}
+			return skippedPlanRowForWidth(result.Skipped[index-len(result.Plan.Actions)], actionWidth)
+		})...)
 	}
 
 	body := m.twoPane(spec, "Plan Summary", "Dry-run only", summaryLines, "Planned actions", "Supported and skipped", actionLines)
@@ -2408,11 +2427,9 @@ func (m Model) loadedPlanActionsView() string {
 	if len(actions) == 0 {
 		listLines = append(listLines, m.emptyState("No actions in this plan."))
 	} else {
-		rows := make([]string, 0, len(actions))
-		for _, action := range actions {
-			rows = append(rows, planActionRowForWidth(action, listWidth))
-		}
-		listLines = append(listLines, m.tableRows(rows, cursor, offset, visibleRows, listWidth, hitLoadedPlanRow)...)
+		listLines = append(listLines, m.windowedTableRows(len(actions), cursor, offset, visibleRows, listWidth, hitLoadedPlanRow, func(index int) string {
+			return planActionRowForWidth(actions[index], listWidth)
+		})...)
 	}
 
 	detailLines := []string{}
@@ -2424,6 +2441,20 @@ func (m Model) loadedPlanActionsView() string {
 
 	body := m.twoPane(spec, "Plan Actions", "Read-only", listLines, "Details", "Selected action", detailLines)
 	return m.appShell("Plan Actions", body, m.footer(footerList))
+}
+
+func (m Model) loadedPlanActionRowsForViewport() (int, []string) {
+	actions := m.loadedPlan.Actions
+	visibleRows := m.planActionListHeight()
+	cursor := clampCursor(m.loadedActionCursor, len(actions))
+	offset := ensureOffset(cursor, m.loadedActionOffset, len(actions), visibleRows)
+	end := minInt(len(actions), offset+visibleRows)
+	listWidth, _ := twoPaneWidths(layoutSpec(m.width, m.height), "Plan Actions")
+	rows := make([]string, 0, maxInt(0, end-offset))
+	for index := offset; index < end; index++ {
+		rows = append(rows, planActionRowForWidth(actions[index], listWidth))
+	}
+	return offset, rows
 }
 
 func (m Model) applyPreviewView() string {
@@ -2521,7 +2552,7 @@ func (m Model) applyResultView() string {
 func (m Model) filtersView() string {
 	spec := layoutSpec(m.width, m.height)
 	lines := []string{
-		m.styles.muted.Render(fmt.Sprintf("Matching: %d / %d | Filters: %s", len(m.visibleItems()), len(m.importResult.Items), activeLabel(m.itemFilter.Active()))),
+		m.styles.muted.Render(fmt.Sprintf("Matching: %d / %d | Filters: %s", m.visibleItemCount(), len(m.importResult.Items), activeLabel(m.itemFilter.Active()))),
 		"",
 	}
 
@@ -2548,22 +2579,93 @@ func (m Model) filtersView() string {
 func (m Model) warningsView() string {
 	spec := layoutSpec(m.width, m.height)
 	warnings := m.importResult.Warnings
-	visibleRows := m.warningListHeight()
-	cursor := clampCursor(m.warningCursor, len(warnings))
-	offset := ensureOffset(cursor, m.warningOffset, len(warnings), visibleRows)
+	cursor, offset, visibleRows := m.warningViewport()
 
 	lines := []string{
-		m.styles.muted.Render(fmt.Sprintf("%d warnings from %s", len(warnings), emptyFallback(m.importSource, "instagram export"))),
+		m.styles.muted.Render(fmt.Sprintf(
+			"%s warnings in %s groups from %s",
+			exactCount(m.importResult.WarningCount),
+			exactCount(len(warnings)),
+			emptyFallback(m.importSource, "instagram export"),
+		)),
 		"",
 	}
 
 	if len(warnings) == 0 {
 		lines = append(lines, m.emptyState("No warnings."))
 	} else {
-		lines = append(lines, m.tableRows(warnings, cursor, offset, visibleRows, spec.contentWidth, hitWarningRow)...)
+		lines = append(lines, m.windowedTableRows(len(warnings), cursor, offset, visibleRows, spec.contentWidth, hitWarningRow, func(index int) string {
+			return warningGroupRow(warnings[index])
+		})...)
+		selected := warnings[cursor]
+		if selected.SourceFile != "" || len(selected.Examples) > 0 {
+			lines = append(lines, "")
+		}
+		if selected.SourceFile != "" {
+			lines = append(lines, m.styles.muted.Render("Source: "+selected.SourceFile))
+		}
+		for _, example := range selected.Examples {
+			lines = append(lines, m.styles.muted.Render("Structure: "+example))
+		}
 	}
 
-	return m.singlePaneFooter("Import Warnings", "Skipped files", lines, m.footer(footerList))
+	return m.singlePaneFooter("Import Warnings", "Grouped skipped records and files", lines, m.footer(footerList))
+}
+
+func (m Model) warningViewport() (cursor, offset, visibleRows int) {
+	warnings := m.importResult.Warnings
+	cursor = clampCursor(m.warningCursor, len(warnings))
+	visibleRows = m.warningListHeight()
+	if len(warnings) > 0 {
+		detailLines := len(warnings[cursor].Examples)
+		if warnings[cursor].SourceFile != "" {
+			detailLines++
+		}
+		if detailLines > 0 {
+			visibleRows = maxInt(3, visibleRows-detailLines-1)
+		}
+	}
+	offset = ensureOffset(cursor, m.warningOffset, len(warnings), visibleRows)
+	return cursor, offset, visibleRows
+}
+
+func warningGroupRow(group activityWarningGroup) string {
+	count := maxInt(0, group.Count)
+	unit := strings.TrimSpace(group.Unit)
+	if unit == "" {
+		unit = "warning"
+	}
+	plural := ""
+	if count != 1 {
+		plural = "s"
+	}
+	category := strings.TrimSpace(group.Category)
+	if category == "" {
+		category = "activity"
+	}
+	if unit == "warning" {
+		return fmt.Sprintf("%s %s warning%s: %s", exactCount(count), category, plural, group.Reason)
+	}
+	return fmt.Sprintf("%s %s %s%s skipped: %s", exactCount(count), category, unit, plural, group.Reason)
+}
+
+func (m Model) warningRowsForViewport() (int, []string) {
+	_, offset, visibleRows := m.warningViewport()
+	end := minInt(len(m.importResult.Warnings), offset+visibleRows)
+	rows := make([]string, 0, maxInt(0, end-offset))
+	for index := offset; index < end; index++ {
+		rows = append(rows, warningGroupRow(m.importResult.Warnings[index]))
+	}
+	return offset, rows
+}
+
+func (m Model) warningAnchorsForViewport() (int, []string) {
+	offset, rows := m.warningRowsForViewport()
+	innerWidth := paneTextWidth(layoutSpec(m.width, m.height).contentWidth)
+	for index := range rows {
+		rows[index] = truncateEnd(rows[index], innerWidth)
+	}
+	return offset, rows
 }
 
 func (m Model) localDataOverviewView() string {
@@ -2745,6 +2847,9 @@ func (m Model) resetImportState() Model {
 	m.itemFocus = itemFocusList
 	m.itemActionCursor = 0
 	m.selection = domain.ActivitySelection{}
+	m.selectionCounts = domain.ActivitySelectionCounts{}
+	m.selectedItemIndexes = m.selectedItemIndexes[:0]
+	m.selectedItemsDirty = false
 	m.selectionCursor = 0
 	m.selectionMessage = ""
 	m.resetPlanState()
@@ -2879,9 +2984,9 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 		}
 	case "Review":
 		if m.hasImportData() {
-			items := m.visibleItems()
-			m.itemCursor = clampCursor(m.itemCursor, len(items))
-			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.parsedItemsViewport().VisibleRows)
+			itemCount := m.visibleItemCount()
+			m.itemCursor = clampCursor(m.itemCursor, itemCount)
+			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 			m.itemFocus = itemFocusList
 			m.current = screenItemsBrowser
 		} else {
@@ -2916,7 +3021,7 @@ func (m *Model) openLocalDataOverview() {
 }
 
 func (m Model) hasImportData() bool {
-	return len(m.importResult.Items) > 0 || m.importResult.Summary.Total > 0 || len(m.importResult.Warnings) > 0
+	return len(m.importResult.Items) > 0 || m.importResult.Summary.Total > 0 || m.importResult.WarningCount > 0
 }
 
 func (m Model) hasLoadedPlan() bool {
@@ -3269,7 +3374,7 @@ func (m *Model) recordActivityFinished(result activityResult, err error, source 
 		PostCount:      result.Summary.Posts,
 		FollowingCount: result.Summary.Following,
 		FollowerCount:  result.Summary.Followers,
-		WarningCount:   len(result.Warnings),
+		WarningCount:   result.WarningCount,
 		SkippedCount:   result.Summary.Skipped,
 	}
 	if m.localWorkspace != nil {
@@ -3447,8 +3552,7 @@ func (v listViewport) ShowingLabel() string {
 }
 
 func (m Model) parsedItemsViewport() listViewport {
-	items := m.visibleItems()
-	total := len(items)
+	total := m.visibleItemCount()
 	cursor := clampCursor(m.itemCursor, total)
 	visibleRows := m.parsedItemsListHeight(total, cursor, m.itemOffset)
 	offset := ensureOffset(cursor, m.itemOffset, total, visibleRows)
@@ -3510,15 +3614,15 @@ func paneBodyLineCapacity(height int, title, subtitle string) int {
 }
 
 func (m *Model) pageItems(delta int) {
-	items := m.visibleItems()
-	if len(items) == 0 {
+	itemCount := m.visibleItemCount()
+	if itemCount == 0 {
 		m.itemCursor = 0
 		m.itemOffset = 0
 		return
 	}
 	viewport := m.parsedItemsViewport()
 	visibleRows := viewport.VisibleRows
-	maxOffset := maxInt(0, len(items)-visibleRows)
+	maxOffset := maxInt(0, itemCount-visibleRows)
 	nextOffset := m.itemOffset + (delta * visibleRows)
 	if nextOffset < 0 {
 		nextOffset = 0
@@ -3530,7 +3634,7 @@ func (m *Model) pageItems(delta int) {
 		nextOffset = maxOffset
 	}
 	m.itemOffset = nextOffset
-	m.itemCursor = clampCursor(nextOffset, len(items))
+	m.itemCursor = clampCursor(nextOffset, itemCount)
 }
 
 func (m Model) itemListHeight() int {
@@ -3762,9 +3866,19 @@ type importFinishedMsg struct {
 }
 
 type activityResult struct {
-	Items    []domain.ActivityItem
-	Summary  activitySummary
-	Warnings []string
+	Items        []domain.ActivityItem
+	Summary      activitySummary
+	WarningCount int
+	Warnings     []activityWarningGroup
+}
+
+type activityWarningGroup struct {
+	SourceFile string
+	Category   string
+	Reason     string
+	Unit       string
+	Count      int
+	Examples   []string
 }
 
 type activitySummary struct {
@@ -3842,6 +3956,17 @@ func activityResultFromAny(value any) activityResult {
 }
 
 func activityResultFromInstagram(result instagram.ImportResult) activityResult {
+	warnings := make([]activityWarningGroup, 0, len(result.Warnings.Groups))
+	for _, group := range result.Warnings.Groups {
+		warnings = append(warnings, activityWarningGroup{
+			SourceFile: group.SourceFile,
+			Category:   group.Category,
+			Reason:     group.Reason,
+			Unit:       string(group.Unit),
+			Count:      group.Count,
+			Examples:   append([]string(nil), group.Examples...),
+		})
+	}
 	return activityResult{
 		Items: result.Items,
 		Summary: activitySummary{
@@ -3852,11 +3977,21 @@ func activityResultFromInstagram(result instagram.ImportResult) activityResult {
 			Followers: result.Summary.Followers,
 			Skipped:   result.Summary.Skipped,
 		},
-		Warnings: result.Warnings,
+		WarningCount: result.Warnings.Total,
+		Warnings:     warnings,
 	}
 }
 
 func activityResultFromReddit(result reddit.ScanResult) activityResult {
+	warnings := make([]activityWarningGroup, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, activityWarningGroup{
+			Category: "reddit",
+			Reason:   warning,
+			Unit:     "warning",
+			Count:    1,
+		})
+	}
 	return activityResult{
 		Items: result.Items,
 		Summary: activitySummary{
@@ -3865,7 +4000,8 @@ func activityResultFromReddit(result reddit.ScanResult) activityResult {
 			Posts:    result.Summary.Posts,
 			Skipped:  result.Summary.Skipped,
 		},
-		Warnings: result.Warnings,
+		WarningCount: len(result.Warnings),
+		Warnings:     warnings,
 	}
 }
 
@@ -4550,7 +4686,7 @@ func (m Model) filterSummaryLines() []string {
 
 func (m Model) selectionNextAction(selected int) string {
 	if selected == 0 {
-		if len(m.visibleItems()) == 0 {
+		if m.visibleItemCount() == 0 {
 			return "Clear filters or return to parsed items."
 		}
 		return "Select visible items or return to parsed items."
@@ -5021,12 +5157,80 @@ func friendlyPlanLoadError(err error) string {
 	return "Could not load plan: " + err.Error()
 }
 
-func (m Model) visibleItems() []domain.ActivityItem {
-	return domain.FilterActivityItems(m.importResult.Items, m.itemFilter)
+func (m Model) visibleItemCount() int {
+	return m.itemIndex.len(m.importResult.Items)
 }
 
-func (m Model) selectedItems() []domain.ActivityItem {
-	return m.selection.SelectedItems(m.importResult.Items)
+func (m Model) visibleItemAt(index int) (domain.ActivityItem, bool) {
+	return m.itemIndex.item(m.importResult.Items, index)
+}
+
+func (m *Model) toggleVisibleItemSelection(visibleIndex int) bool {
+	item, ok := m.visibleItemAt(visibleIndex)
+	if !ok {
+		return false
+	}
+	selected := m.selection.Toggle(item.ID)
+	if selected {
+		adjustSelectionCounts(&m.selectionCounts, item, 1)
+	} else {
+		adjustSelectionCounts(&m.selectionCounts, item, -1)
+	}
+	m.selectedItemsDirty = true
+	return selected
+}
+
+func (m *Model) setVisibleItemsSelected(selected bool) {
+	for visibleIndex := 0; visibleIndex < m.visibleItemCount(); visibleIndex++ {
+		item, ok := m.visibleItemAt(visibleIndex)
+		if !ok || m.selection.Contains(item.ID) == selected {
+			continue
+		}
+		if selected {
+			m.selection.Select(item.ID)
+			adjustSelectionCounts(&m.selectionCounts, item, 1)
+		} else {
+			m.selection.Deselect(item.ID)
+			adjustSelectionCounts(&m.selectionCounts, item, -1)
+		}
+	}
+	m.selectedItemsDirty = true
+}
+
+func (m *Model) clearSelection() {
+	m.selection.Clear()
+	m.selectionCounts = domain.ActivitySelectionCounts{}
+	m.selectedItemIndexes = m.selectedItemIndexes[:0]
+	m.selectedItemsDirty = false
+}
+
+func (m *Model) rebuildSelectedItemIndexes() {
+	m.selectedItemIndexes = m.selectedItemIndexes[:0]
+	m.selectionCounts = domain.ActivitySelectionCounts{}
+	for sourceIndex, item := range m.importResult.Items {
+		if !m.selection.Contains(item.ID) {
+			continue
+		}
+		m.selectedItemIndexes = append(m.selectedItemIndexes, sourceIndex)
+		adjustSelectionCounts(&m.selectionCounts, item, 1)
+	}
+	m.selectedItemsDirty = false
+}
+
+func (m Model) selectedItemAt(index int) (domain.ActivityItem, bool) {
+	if index < 0 || index >= len(m.selectedItemIndexes) {
+		return domain.ActivityItem{}, false
+	}
+	return m.importResult.Items[m.selectedItemIndexes[index]], true
+}
+
+func (m *Model) selectedItemsCopy() []domain.ActivityItem {
+	m.rebuildSelectedItemIndexes()
+	items := make([]domain.ActivityItem, 0, len(m.selectedItemIndexes))
+	for _, sourceIndex := range m.selectedItemIndexes {
+		items = append(items, m.importResult.Items[sourceIndex])
+	}
+	return items
 }
 
 func (m *Model) beginFilterDraft() {
@@ -5040,6 +5244,7 @@ func (m *Model) beginFilterDraft() {
 
 func (m *Model) clearFilterState() {
 	m.itemFilter = domain.ActivityItemFilter{}
+	m.itemIndex.reset()
 	m.draftFilter = domain.ActivityItemFilter{}
 	m.draftOlderDate = ""
 	m.draftNewerDate = ""
@@ -5123,10 +5328,11 @@ func (m *Model) applyDraftFilter() {
 	}
 
 	m.itemFilter = next
+	m.itemIndex.rebuild(m.importResult.Items, m.itemFilter)
 	m.filterError = ""
-	items := m.visibleItems()
-	m.itemCursor = clampCursor(m.itemCursor, len(items))
-	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, len(items), m.parsedItemsViewport().VisibleRows)
+	itemCount := m.visibleItemCount()
+	m.itemCursor = clampCursor(m.itemCursor, itemCount)
+	m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 	m.itemFocus = itemFocusList
 	m.current = screenItemsBrowser
 }
@@ -5415,7 +5621,8 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 	case screenLoadedPlanSummary:
 		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanAction, 0, loadedPlanSummaryMenuItems)...)
 	case screenLoadedPlanActions:
-		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, m.loadedActionOffset, planActionAnchors(m.loadedPlan.Actions))...)
+		offset, rows := m.loadedPlanActionRowsForViewport()
+		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, offset, rows)...)
 	case screenApplyPreview:
 		boxes = append(boxes, rowHitBoxes(content, hitApplyPreviewAction, 0, m.currentApplyPreviewMenuItems())...)
 	case screenApplyConfirm:
@@ -5427,7 +5634,8 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 			boxes = append(boxes, rowHitBoxes(content, hitFilterRow, 0, m.filterRows())...)
 		}
 	case screenWarnings:
-		boxes = append(boxes, rowHitBoxes(content, hitWarningRow, m.warningOffset, m.importResult.Warnings)...)
+		offset, rows := m.warningAnchorsForViewport()
+		boxes = append(boxes, rowHitBoxes(content, hitWarningRow, offset, rows)...)
 	case screenLocalDataOverview:
 		boxes = append(boxes, rowHitBoxes(content, hitLocalDataAction, 0, localDataMenuItems)...)
 	case screenRecentImports:
