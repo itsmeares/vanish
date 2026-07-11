@@ -2483,6 +2483,96 @@ func TestManualCleanupStartOverRequiresExplicitChoice(t *testing.T) {
 	}
 }
 
+func TestManualCleanupSameIDPlanMismatchRequiresStartOver(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*domain.CleanupPlan)
+	}{
+		{
+			name: "target",
+			mutate: func(plan *domain.CleanupPlan) {
+				plan.Actions[0].TargetURL = "https://www.instagram.com/changed_target/"
+				plan.Actions[0].TargetID = "changed_target"
+			},
+		},
+		{
+			name: "action status",
+			mutate: func(plan *domain.CleanupPlan) {
+				plan.Actions[1].Status = domain.ActionStatusStopped
+			},
+		},
+		{
+			name: "metadata",
+			mutate: func(plan *domain.CleanupPlan) {
+				plan.Actions[2].Metadata = map[string]string{"batch": "changed"}
+			},
+		},
+		{
+			name: "action ordering",
+			mutate: func(plan *domain.CleanupPlan) {
+				plan.Actions[0], plan.Actions[1] = plan.Actions[1], plan.Actions[0]
+			},
+		},
+		{
+			name: "action set",
+			mutate: func(plan *domain.CleanupPlan) {
+				plan.Actions = append(plan.Actions, domain.CleanupAction{
+					ID:                   "new-unsupported",
+					Platform:             domain.PlatformInstagram,
+					Type:                 domain.ActionDeletePost,
+					TargetURL:            "https://www.instagram.com/p/NEWPOST/",
+					TargetID:             "NEWPOST",
+					SourceActivityItemID: "new-post-item",
+					Status:               domain.ActionStatusPending,
+					CreatedAt:            now,
+				})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			w, err := workspace.Open(t.TempDir())
+			if err != nil {
+				t.Fatalf("open workspace: %v", err)
+			}
+			currentPlan := manualCleanupTestPlan(now)
+			storedSession, _, err := manualcleanup.New("old-same-id-session", currentPlan, manualCleanupTestItems(now, "old preview"), now)
+			if err != nil {
+				t.Fatalf("New stored session: %v", err)
+			}
+			store := manualcleanup.NewStore(w.Dir())
+			if err := store.Start(storedSession); err != nil {
+				t.Fatalf("Start stored session: %v", err)
+			}
+			test.mutate(&currentPlan)
+
+			m := NewModelWithWorkspace(w, nil)
+			m.planResult.Plan = currentPlan
+			m.importResult.Items = manualCleanupTestItems(now, "current preview")
+			m.current = screenPlanPreview
+			m.openManualCleanup(applySourceGenerated)
+			view := m.View().Content
+			if m.current != screenManualCleanupChoice || m.manualSessionLoaded || strings.Contains(view, "Resume manual cleanup") || !strings.Contains(view, "Manual cleanup progress could not be loaded.") {
+				t.Fatalf("mismatch offered stale resume: screen=%v loaded=%t view=\n%s", m.current, m.manualSessionLoaded, view)
+			}
+
+			next := updateModel(t, m, keyPress("enter"))
+			if next.current != screenManualCleanupAction || !next.manualSessionLoaded || next.manualSession.ID == storedSession.ID || next.manualError != "" {
+				t.Fatalf("Start over did not replace session: screen=%v loaded=%t id=%q error=%q", next.current, next.manualSessionLoaded, next.manualSession.ID, next.manualError)
+			}
+			loaded, ok, err := store.Load(currentPlan.ID)
+			if err != nil || !ok {
+				t.Fatalf("Load replacement ok=%t err=%v", ok, err)
+			}
+			matches, err := manualcleanup.PlansEqual(currentPlan, loaded.OriginalPlan())
+			if err != nil || !matches {
+				t.Fatalf("replacement snapshot differs: matches=%t err=%v\ngot:  %#v\nwant: %#v", matches, err, loaded.OriginalPlan(), currentPlan)
+			}
+		})
+	}
+}
+
 func TestManualCleanupCorruptProgressClearsStaleSession(t *testing.T) {
 	w, err := workspace.Open(t.TempDir())
 	if err != nil {

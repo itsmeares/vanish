@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -184,6 +185,40 @@ func (session Session) Counts() (done, skipped, pending int) {
 
 func (session Session) OriginalPlan() domain.CleanupPlan {
 	return clonePlan(session.PlanSnapshot)
+}
+
+func PlansEqual(left, right domain.CleanupPlan) (bool, error) {
+	if err := left.Validate(); err != nil {
+		return false, err
+	}
+	if err := right.Validate(); err != nil {
+		return false, err
+	}
+	if left.FormatVersion != right.FormatVersion ||
+		left.ID != right.ID ||
+		left.Platform != right.Platform ||
+		!left.CreatedAt.Equal(right.CreatedAt) ||
+		left.SourceName != right.SourceName ||
+		left.Mode != right.Mode ||
+		len(left.Actions) != len(right.Actions) {
+		return false, nil
+	}
+	for index := range left.Actions {
+		leftAction := left.Actions[index]
+		rightAction := right.Actions[index]
+		if leftAction.ID != rightAction.ID ||
+			leftAction.Platform != rightAction.Platform ||
+			leftAction.Type != rightAction.Type ||
+			leftAction.TargetURL != rightAction.TargetURL ||
+			leftAction.TargetID != rightAction.TargetID ||
+			leftAction.SourceActivityItemID != rightAction.SourceActivityItemID ||
+			leftAction.Status != rightAction.Status ||
+			!leftAction.CreatedAt.Equal(rightAction.CreatedAt) ||
+			!maps.Equal(leftAction.Metadata, rightAction.Metadata) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (session *Session) initializeProgress() {

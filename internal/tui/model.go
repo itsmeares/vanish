@@ -3390,6 +3390,13 @@ func (m *Model) openManualCleanup(source applyPlanSource) {
 		m.manualError = "Manual cleanup progress could not be loaded."
 		return
 	} else if found {
+		matches, err := manualcleanup.PlansEqual(plan, session.OriginalPlan())
+		if err != nil || !matches {
+			m.manualPreviews = nil
+			m.manualPreviewPlanID = ""
+			m.manualError = "Manual cleanup progress could not be loaded."
+			return
+		}
 		m.manualSession = session
 		m.manualSessionLoaded = true
 		return
@@ -3424,6 +3431,8 @@ func (m *Model) startNewManualCleanup(plan domain.CleanupPlan) {
 	m.manualUnavailable = len(unavailable)
 	m.manualPreviews = m.manualCommentPreviews(plan)
 	m.manualPreviewPlanID = plan.ID
+	m.manualError = ""
+	m.manualStatus = ""
 	m.appendAudit("manual_cleanup_session_started", m.manualAuditFields())
 	m.current = screenManualCleanupAction
 }

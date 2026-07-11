@@ -156,6 +156,185 @@ func TestReplayRejectsMismatchedOutcomeActionAndPosition(t *testing.T) {
 	}
 }
 
+func TestManifestBindsAssistedTargetsToPlanSnapshot(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan, items := testPlanAndItems(now)
+	plan.Actions[1].TargetURL = "https://instagram.com/p/POSTA/?utm_source=export#fragment"
+	plan.Actions[1].TargetID = "ignored-export-id"
+	session, _, err := New("manual-target-binding", plan, items, now)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := validateManifest(session.Manifest); err != nil {
+		t.Fatalf("unchanged canonical target rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{
+			name: "snapshot post A assisted post B",
+			mutate: func(manifest *Manifest) {
+				manifest.Actions[1].TargetURL = "https://www.instagram.com/p/POSTB/"
+				manifest.Actions[1].TargetID = "POSTB"
+				manifest.Actions[1].TargetKind = "post"
+			},
+		},
+		{
+			name: "snapshot profile A assisted profile B",
+			mutate: func(manifest *Manifest) {
+				manifest.Actions[0].TargetURL = "https://www.instagram.com/other_user/"
+				manifest.Actions[0].TargetID = "other_user"
+				manifest.Actions[0].TargetKind = "profile"
+			},
+		},
+		{
+			name: "changed target ID with unchanged URL",
+			mutate: func(manifest *Manifest) {
+				manifest.Actions[1].TargetID = "POSTB"
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := session.Manifest
+			manifest.Actions = append([]Action(nil), session.Actions...)
+			test.mutate(&manifest)
+			if err := validateManifest(manifest); err == nil {
+				t.Fatal("tampered assisted target accepted")
+			}
+		})
+	}
+}
+
+func TestStoreEnforcesSessionStateTransitions(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan, items := testPlanAndItems(now)
+
+	t.Run("Start Stop Mark fails", func(t *testing.T) {
+		session, _, err := New("manual-stop-mark", plan, items, now)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		store := NewStore(t.TempDir())
+		if err := store.Start(session); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if err := store.Stop(&session, now.Add(time.Minute)); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if _, err := store.Mark(&session, OutcomeDone, now.Add(2*time.Minute)); err == nil {
+			t.Fatal("stopped session accepted Mark")
+		}
+		loaded, ok, err := store.Load(plan.ID)
+		if err != nil || !ok || loaded.State != StateStopped || loaded.CurrentPosition != 0 {
+			t.Fatalf("failed Mark changed progress: loaded=%#v ok=%t err=%v", loaded, ok, err)
+		}
+	})
+
+	t.Run("active interrupted session resumes", func(t *testing.T) {
+		session, _, err := New("manual-active-resume", plan, items, now)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		store := NewStore(t.TempDir())
+		if err := store.Start(session); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		loaded, ok, err := store.Load(plan.ID)
+		if err != nil || !ok {
+			t.Fatalf("Load ok=%t err=%v", ok, err)
+		}
+		if err := store.Resume(&loaded, now.Add(time.Minute)); err != nil || loaded.State != StateActive {
+			t.Fatalf("Resume state=%q err=%v", loaded.State, err)
+		}
+	})
+
+	t.Run("completed session rejects Mark and Stop", func(t *testing.T) {
+		session, _, err := New("manual-completed", plan, items, now)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		store := NewStore(t.TempDir())
+		if err := store.Start(session); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		for range session.Actions {
+			if _, err := store.Mark(&session, OutcomeDone, now.Add(time.Minute)); err != nil {
+				t.Fatalf("Mark: %v", err)
+			}
+		}
+		if _, err := store.Mark(&session, OutcomeDone, now.Add(2*time.Minute)); err == nil {
+			t.Fatal("completed session accepted Mark")
+		}
+		if err := store.Stop(&session, now.Add(3*time.Minute)); err == nil {
+			t.Fatal("completed session accepted Stop")
+		}
+		loaded, ok, err := store.Load(plan.ID)
+		if err != nil || !ok || loaded.State != StateCompleted || loaded.CurrentPosition != len(loaded.Actions) {
+			t.Fatalf("failed completed transition changed progress: loaded=%#v ok=%t err=%v", loaded, ok, err)
+		}
+	})
+}
+
+func TestReplayEnforcesStoppedSessionTransitions(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan, items := testPlanAndItems(now)
+	tests := []struct {
+		name    string
+		events  func(Session) []progressEvent
+		wantErr bool
+	}{
+		{
+			name: "Stop then Done rejected",
+			events: func(session Session) []progressEvent {
+				return []progressEvent{
+					{ID: session.ID, At: now, Kind: "started", Position: 0, State: StateActive},
+					{ID: session.ID, At: now.Add(time.Minute), Kind: "stopped", Position: 0, State: StateStopped},
+					{ID: session.ID, At: now.Add(2 * time.Minute), Kind: "done", ActionID: session.Actions[0].ActionID, Outcome: OutcomeDone, Position: 1, State: StateActive},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "Stop Resume Done succeeds",
+			events: func(session Session) []progressEvent {
+				return []progressEvent{
+					{ID: session.ID, At: now, Kind: "started", Position: 0, State: StateActive},
+					{ID: session.ID, At: now.Add(time.Minute), Kind: "stopped", Position: 0, State: StateStopped},
+					{ID: session.ID, At: now.Add(2 * time.Minute), Kind: "resumed", Position: 0, State: StateActive},
+					{ID: session.ID, At: now.Add(3 * time.Minute), Kind: "done", ActionID: session.Actions[0].ActionID, Outcome: OutcomeDone, Position: 1, State: StateActive},
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session, _, err := New("manual-journal-state", plan, items, now)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			store := NewStore(t.TempDir())
+			if err := store.Start(session); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			_, progressPath := store.paths(plan.ID)
+			writeProgressEvents(t, progressPath, test.events(session)...)
+			loaded, ok, err := store.Load(plan.ID)
+			if test.wantErr {
+				if err == nil || ok || loaded.ID != "" {
+					t.Fatalf("invalid journal loaded=%#v ok=%t err=%v", loaded, ok, err)
+				}
+				return
+			}
+			if err != nil || !ok || loaded.State != StateActive || loaded.CurrentPosition != 1 || loaded.Outcomes[0] != OutcomeDone {
+				t.Fatalf("valid journal loaded=%#v ok=%t err=%v", loaded, ok, err)
+			}
+		})
+	}
+}
+
 func TestSessionFilesNeverPersistRawCommentText(t *testing.T) {
 	const raw = "private synthetic comment body"
 	const invalidActor = "bad actor\x1b[31m"

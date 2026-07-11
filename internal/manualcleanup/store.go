@@ -188,6 +188,9 @@ func (store Store) Mark(session *Session, outcome Outcome, at time.Time) (bool, 
 	if outcome != OutcomeDone && outcome != OutcomeSkipped {
 		return false, errors.New("manual cleanup outcome is not supported")
 	}
+	if session.State != StateActive {
+		return false, errors.New("manual cleanup is not active")
+	}
 	action, ok := session.Current()
 	if !ok {
 		return false, errors.New("manual cleanup has no pending action")
@@ -305,7 +308,7 @@ func applyProgressEvent(session *Session, event progressEvent, first bool) error
 		}
 		session.initializeProgress()
 	case string(OutcomeDone), string(OutcomeSkipped):
-		if first || event.Outcome != Outcome(event.Kind) || session.State == StateCompleted {
+		if first || event.Outcome != Outcome(event.Kind) || session.State != StateActive {
 			return errUnreadableProgress
 		}
 		index := session.CurrentPosition
@@ -322,12 +325,12 @@ func applyProgressEvent(session *Session, event progressEvent, first bool) error
 		session.CurrentPosition = event.Position
 		session.State = event.State
 	case "resumed":
-		if first || event.ActionID != "" || event.Outcome != "" || event.Position != session.CurrentPosition || event.State != StateActive || session.CurrentPosition >= len(session.Actions) {
+		if first || event.ActionID != "" || event.Outcome != "" || event.Position != session.CurrentPosition || event.State != StateActive || session.CurrentPosition >= len(session.Actions) || (session.State != StateActive && session.State != StateStopped) {
 			return errUnreadableProgress
 		}
 		session.State = StateActive
 	case "stopped":
-		if first || event.ActionID != "" || event.Outcome != "" || event.Position != session.CurrentPosition || event.State != StateStopped || session.CurrentPosition >= len(session.Actions) {
+		if first || event.ActionID != "" || event.Outcome != "" || event.Position != session.CurrentPosition || event.State != StateStopped || session.CurrentPosition >= len(session.Actions) || session.State != StateActive {
 			return errUnreadableProgress
 		}
 		session.State = StateStopped
@@ -372,8 +375,8 @@ func validateManifest(manifest Manifest) error {
 			return errUnreadableProgress
 		}
 		lastPosition = planPositions[action.ActionID]
-		target, err := instagram.ValidateCleanupTarget(action.Type, action.TargetURL, action.TargetID)
-		if err != nil || target.URL != action.TargetURL || target.Kind != action.TargetKind || target.Identifier != action.TargetID {
+		plannedTarget, err := instagram.ValidateCleanupTarget(planned.Type, planned.TargetURL, planned.TargetID)
+		if err != nil || plannedTarget.URL != action.TargetURL || plannedTarget.Kind != action.TargetKind || plannedTarget.Identifier != action.TargetID {
 			return errUnreadableProgress
 		}
 		if action.Actor != "" {
