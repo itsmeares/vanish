@@ -1,130 +1,74 @@
 # Vanish Safety Model
 
-Vanish helps people review and plan cleanup of social activity. It does not make
-anyone invisible online, and it does not automatically apply Instagram changes.
+Vanish helps people review social activity and work through supported cleanup
+steps. It does not make anyone invisible online, and it does not automatically
+apply Instagram changes.
 
 ## Current Alpha Guarantees
 
-- Dry-run only.
-- Local files by default, with the explicit Reddit official API prototype
-  exception described below.
-- No cloud backend.
-- No telemetry by default.
-- No platform password login.
-- No browser automation.
-- No private API calls.
-- No automatic Instagram deletion or account changes.
-- Assisted Instagram cleanup opens one trusted target after explicit selection;
-  the user performs any change in their browser.
-- Apply preview and confirmation may run a no-op executor for lifecycle testing.
+- Local-first workspace data; no cloud backend or default telemetry.
+- No Instagram password login, API calls, scraping, private APIs, browser
+  automation, embedded browsers, or webviews.
+- Meta export URLs and Instagram targets open only after explicit user action in
+  the system browser.
+- Assisted Instagram cleanup guides unfollow, unlike, and own-comment deletion;
+  the user performs every platform change.
+- No automatic platform mutations.
+- No password, cookie, browser-session, or raw-comment persistence.
+- Local plans, history, audit, progress, and wipe behavior stay within the
+  documented local-data boundary.
 
-## Reddit v0.5 Official API Boundary
+## Reddit Official API Boundary
 
-Vanish v0.5 adds an official Reddit API planner prototype. This is the only
-exception to the current no-network rule, and it stays narrow:
+Reddit support is an experimental, read-only official API planner prototype.
+Developer access is pending and may not be usable in public builds. It is the
+only exception to the local-file-only model:
 
-- Official Reddit OAuth and OAuth API calls only.
-- Network code only in reviewed Reddit OAuth/API files.
-- Installed-app OAuth only, with an environment-provided client ID.
-- Minimum read-only scopes for the prototype: `identity` and `history`.
-- No Reddit content or account activity mutations.
-- No real apply, delete, edit, save, unsave, vote, submit, or
-  permission-changing behavior.
-- No browser automation, embedded browser, webview, scraping, private APIs,
+- Official Reddit OAuth/API calls only, limited to reviewed Reddit code.
+- Installed-app OAuth only, with the minimum `identity` and `history` scopes.
+- No Reddit content/account mutation, including delete, edit, save, unsave,
+  vote, submit, or permission-changing behavior.
+- No scraping, browser automation, embedded browser, webview, private APIs,
   password collection, or cookie/session paste flow.
-- OAuth token revoke is allowed only as an explicit disconnect/auth cleanup
-  action. It must not run silently and is not a content cleanup action.
+- Refresh tokens use the configured secret store. Normal config, plans,
+  history, audit logs, and errors must not store token values or authorization
+  headers.
 
-Reddit tokens must never be stored in normal config, logs, audit logs, cleanup
-plans, recent history, or errors. If the system credential store is available,
-Vanish must use it. If unavailable, a local token file fallback may be used only
-after explicit user confirmation, only inside the Vanish app directory, with a
-`0700` directory and `0600` file. If the credential store later becomes
-available, the fallback token must migrate to it and the fallback file must be
-deleted after successful migration.
+## Reddit Secret Storage
 
-Allowed non-secret Reddit metadata in config includes the Reddit username,
-connection timestamp, requested scopes, token storage mode, credential store
-mode, and expiry metadata.
+The operating-system credential store is the primary Reddit refresh-token store.
+If it is unavailable, Vanish uses a local-file fallback only after explicit user
+confirmation. The fallback is under the Vanish app directory in `secrets/`;
+Vanish creates that directory with `0700` permissions and secret files with
+`0600` permissions.
+
+When the credential store becomes available, Vanish saves the token there and
+removes any fallback copy. Normal config, recent history, audit logs, cleanup
+plans, errors, and diagnostics never contain token values.
 
 ## Data Vanish Avoids Storing
 
-Plan files and normalized activity items must not store:
-
-- Passwords.
-- Cookies.
-- Access tokens.
-- Login or browser session IDs.
-- Recovery codes.
-- Raw private message bodies.
-- Raw comment bodies when a safe hash is enough.
-
-The Instagram importer normalizes records into safe item metadata, target
-references, timestamps, and optional safe text hashes. Short comment previews
-remain memory-only.
+Plans and normalized activity must not store passwords, cookies, access tokens,
+login/browser session IDs, recovery codes, raw private messages, or raw comment
+bodies when a safe hash is enough. Short comment previews are memory-only.
 
 ## Local Workspace Privacy Rules
 
-The v0.2 local workspace stores only Vanish-managed app state on the user's
-machine. This includes configuration, recent import history, recent cleanup plan
-history, assisted manual-cleanup progress, and audit records for local workspace
-events.
+The app directory can retain user-selected local paths, timestamps, counts,
+safe warning/error summaries, local plan metadata, audit events, safe
+manual-cleanup progress, and an explicitly confirmed `secrets/` fallback when
+the operating-system credential store is unavailable. It must not retain raw
+parsed items, raw exports, raw comments, private messages, passwords, cookies,
+session data, or authorization headers.
 
-Allowed local history and audit metadata:
-
-- Local file paths selected by the user.
-- Import timestamps, total counts, per-type counts, skipped counts, and warning
-  counts.
-- Plan creation timestamps, last-used timestamps, last local operations, and
-  summary counts.
-- Platform, source type, action type, and warning/error summaries.
-- Stable IDs or hashes when needed to reconnect app state without storing raw
-  content.
-
-The local workspace must not store:
-
-- Raw parsed items.
-- Raw export files.
-- Raw comment text.
-- Raw private messages.
-- Credentials.
-- Cookies.
-- Access tokens.
-- Login or browser session IDs.
-- Authorization headers, OAuth grants, or other authorization data.
-
-If future features need more sensitive data, they should require a separate,
-explicit design review and user-facing disclosure before implementation.
-
-## Plan Files
-
-Cleanup plans are local JSON documents. In v0.1.0-alpha they are dry-run only:
-
-- They can be exported.
-- They can be loaded and inspected.
-- They can be previewed through the no-op apply foundation.
-- No no-op execution changes platform content or account state.
-
-Treat plan files as review artifacts. They may still include usernames, target
-URLs, target IDs, timestamps, and action intent.
-
-Assisted manual cleanup does not mutate plan files. Its separate local progress
-contains safe action references and done/skipped outcomes, never raw comment
-text.
-
-## Future Apply Risk
-
-Future real apply modes may carry platform and account risk:
-
-- Platforms can rate-limit or flag automated behavior.
-- Some cleanup actions may be irreversible.
-- Login/session handling must stay local and explicit.
-- Users must be able to inspect, revoke, or wipe stored sessions.
-
-Any future real apply mode should be clearly labeled as experimental until
-proven safe.
+The local-data wipe flow clears Vanish-managed configuration, recent history,
+audit records, manual-cleanup progress, and local-file fallback secrets from the
+active app directory. It does not delete a user-owned export ZIP or plan JSON
+outside that directory, and it does not remove secrets held by the
+operating-system credential store.
 
 ## Reporting Safety Issues
 
-Do not paste secrets, raw exports, cookies, tokens, or private messages into
-GitHub issues. Use fake data or describe the shape of the problem.
+Do not paste secrets, raw exports, cookies, tokens, usernames, comments, or
+private messages into GitHub issues. Use synthetic data or describe the shape of
+the problem.

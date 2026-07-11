@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out pushed tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "gofmt needed:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Verify build
+        run: go build ./cmd/vanish
+
+      - name: Check diff whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if ! parent="$(git rev-parse "${commit}^" 2>/dev/null)"; then
+            echo "Root commit; no parent range to check."
+            exit 0
+          fi
+          git diff --check "$parent" "$commit"
+
+      - name: Check safety boundaries
+        shell: bash
+        run: ./scripts/check-safety.sh
+
+  package:
+    name: Package release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out exact pushed tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile and package
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist stage
+
+          build_target() {
+            local goos="$1"
+            local goarch="$2"
+            local extension="$3"
+            local archive_type="$4"
+            local root="vanish_${TAG}_${goos}_${goarch}"
+            local binary="vanish${extension}"
+            local archive="dist/${root}.${archive_type}"
+
+            mkdir -p "stage/${root}"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "stage/${root}/${binary}" ./cmd/vanish
+
+            if [ "$archive_type" = "zip" ]; then
+              (
+                cd stage
+                zip -q "../${archive}" "${root}/${binary}"
+              )
+              test "$(unzip -Z1 "$archive")" = "${root}/${binary}"
+            else
+              tar -C stage -czf "$archive" "${root}/${binary}"
+              test "$(tar -tzf "$archive")" = "${root}/${binary}"
+            fi
+          }
+
+          build_target windows amd64 .exe zip
+          build_target linux amd64 '' tar.gz
+          build_target linux arm64 '' tar.gz
+          build_target darwin amd64 '' tar.gz
+          build_target darwin arm64 '' tar.gz
+
+          (
+            cd dist
+            sha256sum -- *.zip *.tar.gz > checksums.txt
+            sha256sum --check checksums.txt
+          )
+
+      - name: Create draft release and upload complete assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          release_id=""
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ -n "$release_id" ]; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || true
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          release_id="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            -f tag_name="$TAG" \
+            -f name="$TAG" \
+            -F draft=true \
+            -f body="Draft release. Edit title, notes, and prerelease classification before publishing." \
+            --jq .id)"
+          gh release upload "$TAG" dist/*.zip dist/*.tar.gz dist/checksums.txt
+          trap - EXIT
