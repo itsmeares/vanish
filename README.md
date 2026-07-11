@@ -82,8 +82,8 @@ signing or identity verification.
 On Windows PowerShell:
 
 ```powershell
-Expand-Archive -LiteralPath .\vanish_<tag>_windows_amd64.zip -DestinationPath .
-Set-Location .\vanish_<tag>_windows_amd64
+Expand-Archive -LiteralPath .\vanish_v0.1.0-alpha_windows_amd64.zip -DestinationPath .
+Set-Location .\vanish_v0.1.0-alpha_windows_amd64
 .\vanish.exe
 ```
 

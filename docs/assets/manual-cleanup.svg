@@ -1,23 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620" role="img" aria-labelledby="title desc">
   <title id="title">Vanish manual cleanup screen</title>
-  <desc id="desc">Synthetic terminal view showing an assisted manual Instagram unlike step.</desc>
+  <desc id="desc">Synthetic terminal view of one manual cleanup action.</desc>
   <rect width="980" height="620" rx="18" fill="#0d1117"/>
   <rect x="34" y="34" width="912" height="552" rx="12" fill="#161b22" stroke="#30363d"/>
   <text x="70" y="82" fill="#d6c7ff" font-family="Consolas, monospace" font-size="26" font-weight="700">Vanish</text>
   <text x="166" y="82" fill="#8b949e" font-family="Consolas, monospace" font-size="26"> / Manual cleanup</text>
-  <text x="70" y="120" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Plan 1 of 3  •  Instagram Export  •  progress saved locally</text>
+  <text x="70" y="120" fill="#8b949e" font-family="Consolas, monospace" font-size="18">1 of 3</text>
   <text x="70" y="154" fill="#8b949e" font-family="Consolas, monospace" font-size="18">--------------------------------------------------------------------------</text>
-  <text x="70" y="202" fill="#e6edf3" font-family="Consolas, monospace" font-size="21" font-weight="700">Unlike reel</text>
-  <text x="70" y="238" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Target: https://www.instagram.com/reel/vanish_demo_reel/</text>
-  <text x="70" y="270" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Saved on: 2026-07-11</text>
-  <text x="70" y="322" fill="#e6edf3" font-family="Consolas, monospace" font-size="19">Open target in your browser. Perform change there, then return here.</text>
-  <rect x="70" y="360" width="292" height="48" rx="7" fill="#1f6feb"/>
-  <text x="93" y="392" fill="#ffffff" font-family="Consolas, monospace" font-size="18" font-weight="700">Open target in browser</text>
-  <rect x="380" y="360" width="148" height="48" rx="7" fill="#238636"/>
-  <text x="409" y="392" fill="#ffffff" font-family="Consolas, monospace" font-size="18" font-weight="700">Mark done</text>
-  <rect x="546" y="360" width="116" height="48" rx="7" fill="#30363d"/>
-  <text x="577" y="392" fill="#e6edf3" font-family="Consolas, monospace" font-size="18">Skip</text>
-  <text x="70" y="470" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Next: Delete own comment on @demo_bakery post</text>
-  <text x="70" y="502" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Preview: “Synthetic comment for cleanup demo.”</text>
-  <text x="70" y="552" fill="#8b949e" font-family="Consolas, monospace" font-size="16">enter select  •  esc stop and return to plan  •  ctrl+q quit</text>
+  <text x="70" y="210" fill="#e6edf3" font-family="Consolas, monospace" font-size="21" font-weight="700">Unlike reel</text>
+  <text x="70" y="250" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Owner: @demo_creator</text>
+  <text x="70" y="284" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Date: 2026-07-11</text>
+  <text x="70" y="318" fill="#8b949e" font-family="Consolas, monospace" font-size="18">Target: /reel/DEMO_REEL_01</text>
+  <text x="70" y="386" fill="#e6edf3" font-family="Consolas, monospace" font-size="20" font-weight="700">Actions</text>
+  <text x="70" y="426" fill="#79c0ff" font-family="Consolas, monospace" font-size="20" font-weight="700">&gt; Open target</text>
+  <text x="70" y="462" fill="#e6edf3" font-family="Consolas, monospace" font-size="20">  Mark as done</text>
+  <text x="70" y="498" fill="#e6edf3" font-family="Consolas, monospace" font-size="20">  Skip</text>
+  <text x="70" y="534" fill="#e6edf3" font-family="Consolas, monospace" font-size="20">  Stop</text>
 </svg>
