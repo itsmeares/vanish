@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -43,8 +45,28 @@ jobs:
       - name: Build
         run: go build ./cmd/vanish
 
-      - name: Check diff whitespace
-        run: git diff --check
+      - name: Check changed whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            if ! base="$(git rev-parse HEAD^ 2>/dev/null)"; then
+              echo "Root commit; no parent range to check."
+              exit 0
+            fi
+          fi
+
+          git diff --check "$base" HEAD
 
       - name: Safety grep
         shell: bash

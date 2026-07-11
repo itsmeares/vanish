@@ -12,7 +12,7 @@ Vanish currently runs as an interactive terminal application.
 
 ![Vanish activity review](docs/assets/parsed-items.svg)
 
-![Vanish alpha demo flow](docs/assets/vanish-alpha-demo.gif)
+![Vanish manual cleanup](docs/assets/manual-cleanup.svg)
 
 ## Current Alpha
 
@@ -65,7 +65,7 @@ the archive for your platform, extract it, and run the executable:
 
 | Platform | Archive | Run |
 | --- | --- | --- |
-| Windows amd64 | `vanish_<tag>_windows_amd64.zip` | Run `vanish.exe` from PowerShell or Explorer. |
+| Windows amd64 | `vanish_<tag>_windows_amd64.zip` | Extract archive, then run `vanish.exe`. |
 | Linux amd64 | `vanish_<tag>_linux_amd64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_linux_amd64/vanish` |
 | Linux arm64 | `vanish_<tag>_linux_arm64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_linux_arm64/vanish` |
 | macOS amd64 | `vanish_<tag>_darwin_amd64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_darwin_amd64/vanish` |
@@ -78,6 +78,14 @@ Each release also includes `checksums.txt` for SHA-256 integrity checking.
 Alpha binaries are unsigned, so your operating system may show a warning. A
 checksum confirms that an archive has not changed since release; it is not code
 signing or identity verification.
+
+On Windows PowerShell:
+
+```powershell
+Expand-Archive -LiteralPath .\vanish_<tag>_windows_amd64.zip -DestinationPath .
+Set-Location .\vanish_<tag>_windows_amd64
+.\vanish.exe
+```
 
 ## Build from Source
 
@@ -136,6 +144,13 @@ Vanish stores local workspace metadata, history, audit records, and safe manual
 cleanup progress in its app directory. It does not copy raw exports or persist
 raw comment text. Local-data wipe clears Vanish-managed data only; it does not
 delete export ZIPs or plan files you chose outside that directory.
+
+For Reddit, the operating-system credential store is primary. Only after
+explicit confirmation, an unavailable credential store may use a
+permission-restricted local-file fallback under the app directory. When the
+credential store returns, Vanish migrates the secret and removes that fallback.
+Wipe removes fallback files there, but not secrets held by the operating-system
+credential store.
 
 See [docs/local-data.md](docs/local-data.md) for locations, retained metadata,
 and wipe behavior.

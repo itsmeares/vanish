@@ -46,7 +46,15 @@ jobs:
         run: go build ./cmd/vanish
 
       - name: Check diff whitespace
-        run: git diff --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if ! parent="$(git rev-parse "${commit}^" 2>/dev/null)"; then
+            echo "Root commit; no parent range to check."
+            exit 0
+          fi
+          git diff --check "$parent" "$commit"
 
       - name: Check safety boundaries
         shell: bash

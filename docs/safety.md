@@ -34,6 +34,18 @@ only exception to the local-file-only model:
   history, audit logs, and errors must not store token values or authorization
   headers.
 
+## Reddit Secret Storage
+
+The operating-system credential store is the primary Reddit refresh-token store.
+If it is unavailable, Vanish uses a local-file fallback only after explicit user
+confirmation. The fallback is under the Vanish app directory in `secrets/`;
+Vanish creates that directory with `0700` permissions and secret files with
+`0600` permissions.
+
+When the credential store becomes available, Vanish saves the token there and
+removes any fallback copy. Normal config, recent history, audit logs, cleanup
+plans, errors, and diagnostics never contain token values.
+
 ## Data Vanish Avoids Storing
 
 Plans and normalized activity must not store passwords, cookies, access tokens,
@@ -43,14 +55,17 @@ bodies when a safe hash is enough. Short comment previews are memory-only.
 ## Local Workspace Privacy Rules
 
 The app directory can retain user-selected local paths, timestamps, counts,
-safe warning/error summaries, local plan metadata, audit events, and safe
-manual-cleanup progress. It must not retain raw parsed items, raw exports, raw
-comments, private messages, credentials, cookies, tokens, session data, or
-authorization headers.
+safe warning/error summaries, local plan metadata, audit events, safe
+manual-cleanup progress, and an explicitly confirmed `secrets/` fallback when
+the operating-system credential store is unavailable. It must not retain raw
+parsed items, raw exports, raw comments, private messages, passwords, cookies,
+session data, or authorization headers.
 
 The local-data wipe flow clears Vanish-managed configuration, recent history,
-audit records, and manual-cleanup progress from the active app directory. It
-does not delete a user-owned export ZIP or plan JSON outside that directory.
+audit records, manual-cleanup progress, and local-file fallback secrets from the
+active app directory. It does not delete a user-owned export ZIP or plan JSON
+outside that directory, and it does not remove secrets held by the
+operating-system credential store.
 
 ## Reporting Safety Issues
 
