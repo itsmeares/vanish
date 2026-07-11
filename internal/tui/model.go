@@ -103,6 +103,20 @@ var resultMenuItems = []string{
 	"Back home",
 }
 
+const instagramExportPageURL = "https://accountscenter.instagram.com/info_and_permissions/dyi/"
+
+const (
+	instagramGuideOpenPage = iota
+	instagramGuideHaveZIP
+	instagramGuideBack
+)
+
+var instagramGuideMenuItems = []string{
+	"Open Instagram export page",
+	"I have the ZIP",
+	"Back",
+}
+
 type redditActionID int
 
 const (
@@ -331,6 +345,7 @@ type Model struct {
 	importPickerCursor   int
 	importPickerOffset   int
 	importPickerError    string
+	importReturnScreen   screen
 	importSource         string
 	importPlatform       domain.PlatformName
 	importResult         activityResult
@@ -368,6 +383,8 @@ type Model struct {
 	homeCursor           int
 	selectedPlatformID   platform.PlatformID
 	platformActionCursor int
+	instagramGuideCursor int
+	instagramGuideError  string
 	redditConnectCursor  int
 	redditFileFallback   bool
 	redditAuthState      string
@@ -502,6 +519,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearFilterState()
 		m.recordImportFinished(msg)
 		m.current = screenImportResult
+
+	case instagramExportPageOpenedMsg:
+		if msg.err != nil {
+			m.instagramGuideError = "Could not open Instagram. Select Open Instagram export page to try again."
+		} else {
+			m.instagramGuideError = ""
+		}
+		return m, nil
 
 	case redditConnectFinishedMsg:
 		if !m.currentRedditSignIn(msg.state) {
@@ -671,7 +696,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateHome(msg)
 		case screenPlatformDetail:
 			return m.updatePlatformDetail(msg)
-		case screenInstagramExportGuide, screenRedditNotes:
+		case screenInstagramExportGuide:
+			return m.updateInstagramExportGuide(msg)
+		case screenRedditNotes:
 			return m.updatePlatformStaticScreen(msg)
 		case screenRedditConnect:
 			return m.updateRedditConnect(msg)
@@ -763,6 +790,28 @@ func (m Model) updatePlatformDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) updatePlatformStaticScreen(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.back) {
 		m.current = screenPlatformDetail
+	}
+	return m, nil
+}
+
+func (m Model) updateInstagramExportGuide(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.instagramGuideCursor = moveCursor(m.instagramGuideCursor, len(instagramGuideMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.instagramGuideCursor = moveCursor(m.instagramGuideCursor, len(instagramGuideMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenPlatformDetail
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.instagramGuideCursor {
+		case instagramGuideOpenPage:
+			m.instagramGuideError = ""
+			return m, openInstagramExportPageCmd()
+		case instagramGuideHaveZIP:
+			m.openInstagramZIPPicker(screenInstagramExportGuide)
+		case instagramGuideBack:
+			m.current = screenPlatformDetail
+		}
 	}
 	return m, nil
 }
@@ -869,7 +918,7 @@ func (m Model) updateImportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.Code == tea.KeyLeft || msg.Code == tea.KeyBackspace:
 		m.openImportPicker(filepath.Dir(m.importPickerDir))
 	case key.Matches(msg, m.keys.cancel):
-		m.current = screenHome
+		m.current = m.importReturnScreen
 		return m, nil
 	case key.Matches(msg, m.keys.selectItem):
 		return m.activateImportPickerEntry(m.importPickerCursor)
@@ -1455,6 +1504,11 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.platformActionCursor = target.Index
 			return m.updatePlatformDetail(selectKeyPress())
 		}
+	case screenInstagramExportGuide:
+		if target.Kind == hitPlatformAction {
+			m.instagramGuideCursor = target.Index
+			return m.updateInstagramExportGuide(selectKeyPress())
+		}
 	case screenRedditConnect:
 		if target.Kind == hitPlatformAction {
 			m.redditConnectCursor = target.Index
@@ -1835,22 +1889,28 @@ func (m Model) platformDetailLines(current platform.Platform) []string {
 
 func (m Model) instagramExportGuideView() string {
 	lines := []string{
-		m.styles.separator.Render("How to get your Instagram export"),
-		m.styles.body.Render("1. Open Instagram Accounts Center."),
-		m.styles.body.Render("2. Go to Your information and permissions."),
-		m.styles.body.Render("3. Choose Download your information."),
-		m.styles.body.Render("4. Select your Instagram account."),
-		m.styles.body.Render("5. Request download in JSON format."),
-		m.styles.body.Render("6. Download the ZIP when Instagram prepares it."),
-		m.styles.body.Render("7. Import that ZIP in Vanish."),
-		"",
-		m.styles.body.Render("Instagram may rename these menus. Look for Download your information or a similar data export option."),
-		"",
-		m.styles.body.Render("Vanish reads the local ZIP only."),
-		m.styles.body.Render("Vanish does not contact Instagram."),
-		m.styles.body.Render("Vanish does not apply account changes."),
+		m.styles.separator.Render("Actions"),
 	}
-	return m.singlePaneFooter("Instagram Export Guide", "Static local guide", lines, m.footer(footerEmpty))
+	lines = append(lines, m.menuRows(instagramGuideMenuItems, m.instagramGuideCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
+	if m.instagramGuideError != "" {
+		lines = append(lines, "", m.notice("error", m.instagramGuideError))
+	}
+	lines = append(lines,
+		"",
+		m.styles.separator.Render("Request your export"),
+		m.styles.body.Render("1. Open Instagram settings"),
+		m.styles.body.Render("2. Go to Accounts Centre"),
+		m.styles.body.Render("3. Open Your information and permissions"),
+		m.styles.body.Render("4. Select Export your information"),
+		m.styles.body.Render("5. Create an export"),
+		m.styles.body.Render("6. Select the Instagram profile"),
+		m.styles.body.Render("7. Choose Export to device"),
+		m.styles.body.Render("8. Customise the included information"),
+		m.styles.body.Render("9. Set Date range to All time"),
+		m.styles.body.Render("10. Set Format to JSON"),
+		m.styles.body.Render("11. Start export"),
+	)
+	return m.singlePaneFooter("Instagram Export", "Return when the ZIP is ready", lines, m.footer(footerActionMenu))
 }
 
 func (m Model) redditNotesView() string {
@@ -2023,14 +2083,7 @@ func (m Model) importResultView() string {
 		m.section("Source", []string{
 			m.styles.body.Render(emptyFallback(m.importSource, "instagram export")),
 		}),
-		m.section("Parsed Items", m.keyValueRows([]keyValue{
-			{Key: "Total", Value: compactCount(summary.Total)},
-			{Key: "Likes", Value: compactCount(summary.Likes)},
-			{Key: "Comments", Value: compactCount(summary.Comments)},
-			{Key: "Posts", Value: compactCount(summary.Posts)},
-			{Key: "Following", Value: compactCount(summary.Following)},
-			{Key: "Followers", Value: compactCount(summary.Followers)},
-		})),
+		m.section("Parsed Items", m.keyValueRows(activitySummaryKeyValues(summary))),
 		m.section("Import Notes", m.keyValueRows([]keyValue{
 			{Key: "Skipped or unknown", Value: compactCount(summary.Skipped)},
 			{Key: "Warnings", Value: compactCount(m.importResult.WarningCount)},
@@ -2932,13 +2985,13 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 
 	switch action.ID {
 	case platform.ActionChooseExportZIP:
-		m.current = screenImportPath
-		if strings.TrimSpace(m.importPickerDir) == "" {
-			m.openImportPicker(initialImportPickerDir())
-		}
-	case platform.ActionExportGuide:
+		m.openInstagramZIPPicker(screenPlatformDetail)
+	case platform.ActionRequestInstagramExport, platform.ActionExportGuide:
 		m.selectedPlatformID = platform.PlatformInstagramExport
+		m.instagramGuideCursor = 0
+		m.instagramGuideError = ""
 		m.current = screenInstagramExportGuide
+		return m, openInstagramExportPageCmd()
 	case platform.ActionViewRecentImports:
 		m.recentImportCursor = clampCursor(m.recentImportCursor, len(m.recentImports))
 		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
@@ -2978,6 +3031,7 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 	case "Home":
 		m.current = screenHome
 	case "Import":
+		m.importReturnScreen = screenHome
 		m.current = screenImportPath
 		if strings.TrimSpace(m.importPickerDir) == "" {
 			m.openImportPicker(initialImportPickerDir())
@@ -4228,6 +4282,44 @@ func demoImportCmd() tea.Cmd {
 		result, err := instagram.ImportZIP(demoPath)
 		return importFinishedMsg{result: activityResultFromInstagram(result), err: err, source: "demo instagram export", platform: domain.PlatformInstagram}
 	}
+}
+
+type instagramExportPageOpenedMsg struct {
+	err error
+}
+
+func openInstagramExportPageCmd() tea.Cmd {
+	return func() tea.Msg {
+		return instagramExportPageOpenedMsg{err: openExternalURL(instagramExportPageURL)}
+	}
+}
+
+func (m *Model) openInstagramZIPPicker(returnScreen screen) {
+	m.importPlatform = domain.PlatformInstagram
+	m.importReturnScreen = returnScreen
+	m.current = screenImportPath
+	if strings.TrimSpace(m.importPickerDir) == "" {
+		m.openImportPicker(initialImportPickerDir())
+	}
+}
+
+func activitySummaryKeyValues(summary activitySummary) []keyValue {
+	rows := []keyValue{{Key: "Total", Value: compactCount(summary.Total)}}
+	for _, row := range []struct {
+		label string
+		count int
+	}{
+		{"Likes", summary.Likes},
+		{"Comments", summary.Comments},
+		{"Posts", summary.Posts},
+		{"Following", summary.Following},
+		{"Followers", summary.Followers},
+	} {
+		if row.count > 0 {
+			rows = append(rows, keyValue{Key: row.label, Value: compactCount(row.count)})
+		}
+	}
+	return rows
 }
 
 func startSpinnerCmd(spinnerModel spinner.Model) tea.Cmd {
@@ -5599,6 +5691,8 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		current := m.selectedPlatform()
 		actionRows, _ := platformActionRows(current.Actions)
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
+	case screenInstagramExportGuide:
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, instagramGuideMenuItems)...)
 	case screenRedditConnect:
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, redditActionLabels(m.redditConnectActions()))...)
 	case screenRedditSigningIn:

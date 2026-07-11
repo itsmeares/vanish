@@ -254,8 +254,7 @@ func TestInstagramPlatformActionsRouteToExistingScreens(t *testing.T) {
 		wantCmd    bool
 	}{
 		{name: "choose export ZIP", actionID: platform.ActionChooseExportZIP, wantScreen: screenImportPath},
-		{name: "export guide", actionID: platform.ActionExportGuide, wantScreen: screenInstagramExportGuide},
-		{name: "view recent imports", actionID: platform.ActionViewRecentImports, wantScreen: screenRecentImports},
+		{name: "request export", actionID: platform.ActionRequestInstagramExport, wantScreen: screenInstagramExportGuide, wantCmd: true},
 		{name: "demo import", actionID: platform.ActionDemoImport, wantScreen: screenImporting, wantCmd: true},
 	}
 
@@ -286,24 +285,25 @@ func TestInstagramPlatformActionsRouteToExistingScreens(t *testing.T) {
 func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	m := NewModel()
 	m.openPlatformDetail(0)
-	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionExportGuide)
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionRequestInstagramExport)
 	next := updateModel(t, m, keyPress("enter"))
 	if next.current != screenInstagramExportGuide {
 		t.Fatalf("expected guide screen, got %v", next.current)
 	}
 	for _, want := range []string{
-		"How to get your Instagram export",
-		"1. Open Instagram Accounts Center.",
-		"2. Go to Your information and permissions.",
-		"3. Choose Download your information.",
-		"4. Select your Instagram account.",
-		"5. Request download in JSON format.",
-		"6. Download the ZIP when Instagram prepares it.",
-		"7. Import that ZIP in Vanish.",
-		"Instagram may rename these menus.",
-		"Vanish reads the local ZIP only.",
-		"Vanish does not contact Instagram.",
-		"Vanish does not apply account changes.",
+		"Open Instagram export page",
+		"I have the ZIP",
+		"1. Open Instagram settings",
+		"2. Go to Accounts Centre",
+		"3. Open Your information and permissions",
+		"4. Select Export your information",
+		"5. Create an export",
+		"6. Select the Instagram profile",
+		"7. Choose Export to device",
+		"8. Customise the included information",
+		"9. Set Date range to All time",
+		"10. Set Format to JSON",
+		"11. Start export",
 	} {
 		if !strings.Contains(next.View().Content, want) {
 			t.Fatalf("expected Instagram guide to contain %q, got:\n%s", want, next.View().Content)
@@ -313,6 +313,78 @@ func TestInstagramGuideBackReturnsToPlatformDetail(t *testing.T) {
 	next = updateModel(t, next, keyPress("esc"))
 	if next.current != screenPlatformDetail || next.selectedPlatformID != platform.PlatformInstagramExport {
 		t.Fatalf("expected back to Instagram platform detail, screen=%v id=%q", next.current, next.selectedPlatformID)
+	}
+}
+
+func TestInstagramExportBrowserOpensOnlyAfterExplicitSelection(t *testing.T) {
+	previous := openExternalURL
+	called := 0
+	opened := ""
+	openExternalURL = func(rawURL string) error {
+		called++
+		opened = rawURL
+		return nil
+	}
+	t.Cleanup(func() { openExternalURL = previous })
+
+	m := NewModel()
+	m.openPlatformDetail(0)
+	if called != 0 {
+		t.Fatalf("browser opened before selection")
+	}
+	m.platformActionCursor = platformActionIndex(t, m.selectedPlatform(), platform.ActionRequestInstagramExport)
+	updated, cmd := m.Update(keyPress("enter"))
+	if cmd == nil || called != 0 {
+		t.Fatalf("request selection must return deferred browser command")
+	}
+	next := requireModel(t, updated)
+	msg := cmd()
+	if called != 1 || opened != instagramExportPageURL {
+		t.Fatalf("browser calls=%d url=%q", called, opened)
+	}
+	next = updateModel(t, next, msg)
+	next.instagramGuideCursor = instagramGuideOpenPage
+	_, cmd = next.Update(keyPress("enter"))
+	if cmd == nil || called != 1 {
+		t.Fatalf("guide render/navigation opened browser without command execution")
+	}
+	_ = cmd()
+	if called != 2 {
+		t.Fatalf("reopen calls=%d, want 2", called)
+	}
+}
+
+func TestInstagramGuideHaveZIPOpensPickerAndReturnsToGuide(t *testing.T) {
+	m := NewModel()
+	m.current = screenInstagramExportGuide
+	m.instagramGuideCursor = instagramGuideHaveZIP
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenImportPath || next.importPlatform != domain.PlatformInstagram {
+		t.Fatalf("expected Instagram ZIP picker, screen=%v platform=%q", next.current, next.importPlatform)
+	}
+	next = updateModel(t, next, keyPress("esc"))
+	if next.current != screenInstagramExportGuide {
+		t.Fatalf("expected picker cancel to return to guide, got %v", next.current)
+	}
+}
+
+func TestImportResultOnlyListsAvailableCategories(t *testing.T) {
+	m := NewModel()
+	m.current = screenImportResult
+	m.importSource = "synthetic partial export"
+	m.importResult = activityResult{
+		Summary: activitySummary{Total: 2, Comments: 2},
+	}
+	view := m.View().Content
+	for _, want := range []string{"Total", "Comments"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected partial import summary to contain %q, got:\n%s", want, view)
+		}
+	}
+	for _, absent := range []string{"Likes", "Following", "Followers"} {
+		if strings.Contains(view, absent) {
+			t.Fatalf("missing category %q should not be implied, got:\n%s", absent, view)
+		}
 	}
 }
 
@@ -1078,8 +1150,8 @@ func TestImportPickerNavigatesAndStartsZip(t *testing.T) {
 
 	next = updateModel(t, m, keyPress("enter"))
 	next = updateModel(t, next, keyPress("esc"))
-	if next.current != screenHome {
-		t.Fatalf("expected esc to return home, got %v", next.current)
+	if next.current != screenPlatformDetail {
+		t.Fatalf("expected esc to return to Instagram platform, got %v", next.current)
 	}
 }
 
@@ -2664,7 +2736,7 @@ func TestScreensUseTerminalHeight(t *testing.T) {
 	platformDetail := NewModel()
 	platformDetail.openPlatformDetail(0)
 	instagramGuide := platformDetail
-	instagramGuide.platformActionCursor = platformActionIndex(t, instagramGuide.selectedPlatform(), platform.ActionExportGuide)
+	instagramGuide.platformActionCursor = platformActionIndex(t, instagramGuide.selectedPlatform(), platform.ActionRequestInstagramExport)
 	instagramGuide = updateModel(t, instagramGuide, keyPress("enter"))
 	redditNotes := NewModel()
 	redditNotes.current = screenRedditNotes
