@@ -2,6 +2,7 @@ package instagram
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -564,7 +565,7 @@ func TestImportZIPDoesNotPersistSecretLikeMetadata(t *testing.T) {
 	}
 }
 
-func TestImportZIPHashesCommentTextWithoutRawPreview(t *testing.T) {
+func TestImportZIPKeepsCommentPreviewMemoryOnly(t *testing.T) {
 	const rawComment = "This fake comment should never be stored raw."
 	zipPath := writeTestZip(t, map[string]string{
 		"comments/post_comments_1.json": `{
@@ -590,11 +591,15 @@ func TestImportZIPHashesCommentTextWithoutRawPreview(t *testing.T) {
 	if item.Text == nil || !strings.HasPrefix(item.Text.Hash, "sha256:") {
 		t.Fatalf("expected safe hash reference, got %#v", item.Text)
 	}
-	if item.Text.Preview != "" {
-		t.Fatalf("expected no raw preview, got %q", item.Text.Preview)
+	if item.Text.Preview != rawComment {
+		t.Fatalf("expected in-memory preview, got %q", item.Text.Preview)
 	}
-	if strings.Contains(fmt.Sprintf("%#v", item), rawComment) {
-		t.Fatalf("parsed item persisted raw comment text: %#v", item)
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if strings.Contains(string(encoded), rawComment) || strings.Contains(string(encoded), "preview") {
+		t.Fatalf("serialized item persisted preview: %s", encoded)
 	}
 }
 

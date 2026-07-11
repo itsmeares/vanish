@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -261,28 +260,11 @@ func uniqueTrustedInstagramMediaURL(values []likedPostArrayLabelValue) (string, 
 }
 
 func trustedInstagramMediaURL(value string) (string, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
+	target, err := parseTrustedInstagramTarget(value)
+	if err != nil || target.Kind == TargetProfile {
 		return "", false
 	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" {
-		return "", false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host != "instagram.com" && host != "www.instagram.com" {
-		return "", false
-	}
-	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
-	if len(segments) != 2 || segments[1] == "" {
-		return "", false
-	}
-	switch strings.ToLower(segments[0]) {
-	case "p", "reel", "tv":
-		return value, true
-	default:
-		return "", false
-	}
+	return target.URL, true
 }
 
 func firstLikedPostArrayStringData(entries []likedPostArrayStringData) extractedStringData {
@@ -482,7 +464,7 @@ func parseComments(fileName string, raw any, importedAt *time.Time, warnings *wa
 		var safeText *domain.SafeTextReference
 		if commentText != "" {
 			textHash = hashString(commentText)
-			safeText = &domain.SafeTextReference{Hash: textHash}
+			safeText = &domain.SafeTextReference{Hash: textHash, Preview: commentPreview(commentText)}
 		}
 
 		mediaOwner := firstNonEmpty(
@@ -514,6 +496,15 @@ func parseComments(fileName string, raw any, importedAt *time.Time, warnings *wa
 	}
 
 	return items
+}
+
+func commentPreview(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) <= 80 {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:79])) + "…"
 }
 
 func parseRelationships(fileName string, raw any, importedAt *time.Time, kind activityKind, warnings *warningCollector) []domain.ActivityItem {

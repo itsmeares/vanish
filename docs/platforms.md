@@ -29,10 +29,11 @@ support honestly.
 
 Instagram Export remains a prototype platform. Vanish can read a local export
 ZIP, normalize supported activity records, show parsed items for review, and
-generate a local dry-run cleanup plan.
+generate a local dry-run cleanup plan. It can also guide export requests and
+step through supported plan actions for manual completion in the user's browser.
 
 Vanish does not log in to Instagram, call Instagram APIs, automate a browser,
-delete platform content, or apply account changes.
+delete platform content, or automatically apply account changes.
 
 ## Reddit
 

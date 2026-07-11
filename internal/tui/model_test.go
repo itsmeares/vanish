@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/color"
@@ -16,6 +17,7 @@ import (
 	"github.com/itsmeares/vanish/internal/apply"
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
+	"github.com/itsmeares/vanish/internal/manualcleanup"
 	"github.com/itsmeares/vanish/internal/platform"
 	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/workspace"
@@ -2173,6 +2175,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 		t.Fatalf("expected plan preview, got %v", next.current)
 	}
 
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	if next.current != screenApplyPreview {
 		t.Fatalf("expected apply preview, got %v", next.current)
@@ -2247,6 +2250,233 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 		t.Fatalf("apply action audit should not include username: %#v", actionEvent.Fields)
 	}
 	requireAuditEvent(t, w, string(apply.EventExecutionFinished))
+}
+
+func TestManualCleanupLifecycleResumesAfterRestart(t *testing.T) {
+	const rawPreview = "synthetic private comment preview"
+	previousOpen := openExternalURL
+	opened := []string{}
+	openExternalURL = func(rawURL string) error {
+		opened = append(opened, rawURL)
+		return nil
+	}
+	t.Cleanup(func() { openExternalURL = previousOpen })
+
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan := manualCleanupTestPlan(now)
+	before, _ := json.Marshal(plan)
+	m := NewModelWithWorkspace(w, nil)
+	m.current = screenPlanPreview
+	m.planResult.Plan = plan
+	m.importResult.Items = manualCleanupTestItems(now, rawPreview)
+	m.refreshManualAvailability(plan)
+
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenManualCleanupAction {
+		t.Fatalf("expected manual action screen, got %v error=%q", next.current, next.manualError)
+	}
+	if !strings.Contains(next.View().Content, "Unfollow @demo_following") {
+		t.Fatalf("unexpected unfollow view:\n%s", next.View().Content)
+	}
+	requireAuditEvent(t, w, "manual_cleanup_session_started")
+
+	updated, cmd := next.Update(keyPress("enter"))
+	if cmd == nil || len(opened) != 0 {
+		t.Fatal("target must open only through explicit deferred command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+	if len(opened) != 1 || opened[0] != "https://www.instagram.com/demo_following/" {
+		t.Fatalf("opened targets=%#v", opened)
+	}
+	requireAuditEvent(t, w, "manual_cleanup_target_opened")
+
+	next.manualActionCursor = 1
+	next = updateModel(t, next, keyPress("enter"))
+	if !strings.Contains(next.View().Content, "Unlike reel") {
+		t.Fatalf("expected unlike action, got:\n%s", next.View().Content)
+	}
+	requireAuditEvent(t, w, "manual_cleanup_action_done")
+	updated, cmd = next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected unlike target command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+	if len(opened) != 2 || opened[1] != "https://www.instagram.com/reel/REEL1/" {
+		t.Fatalf("unlike target=%#v", opened)
+	}
+
+	next.manualActionCursor = 2
+	next = updateModel(t, next, keyPress("enter"))
+	commentView := next.View().Content
+	for _, want := range []string{"Delete own comment", "Post owner: @post_owner", "Comment date: 2026-07-11", "Comment: " + rawPreview, "Post: /p/POST1"} {
+		if !strings.Contains(commentView, want) {
+			t.Fatalf("comment view missing %q:\n%s", want, commentView)
+		}
+	}
+	requireAuditEvent(t, w, "manual_cleanup_action_skipped")
+	updated, cmd = next.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected comment target command")
+	}
+	next = requireModel(t, updated)
+	next = updateModel(t, next, cmd())
+	if len(opened) != 3 || opened[2] != "https://www.instagram.com/p/POST1/" {
+		t.Fatalf("comment target=%#v", opened)
+	}
+
+	next.manualActionCursor = 3
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenPlanPreview || !strings.Contains(next.View().Content, "Progress saved") {
+		t.Fatalf("stop did not return to plan: screen=%v view=\n%s", next.current, next.View().Content)
+	}
+	requireAuditEvent(t, w, "manual_cleanup_session_stopped")
+
+	restarted := NewModelWithWorkspace(w, nil)
+	if !restarted.manualSessionLoaded {
+		t.Fatal("restart did not load unfinished manual cleanup")
+	}
+	updated, _ = restarted.activateTab("Plans")
+	restarted = requireModel(t, updated)
+	if restarted.current != screenManualCleanupChoice || !strings.Contains(restarted.View().Content, "Resume manual cleanup") {
+		t.Fatalf("restart did not offer resume: screen=%v view=\n%s", restarted.current, restarted.View().Content)
+	}
+	restarted = updateModel(t, restarted, keyPress("enter"))
+	if restarted.current != screenManualCleanupAction || strings.Contains(restarted.View().Content, rawPreview) {
+		t.Fatalf("resumed action must work without persisted preview:\n%s", restarted.View().Content)
+	}
+	requireAuditEvent(t, w, "manual_cleanup_session_resumed")
+
+	restarted.manualActionCursor = 1
+	restarted = updateModel(t, restarted, keyPress("enter"))
+	if restarted.current != screenManualCleanupResult {
+		t.Fatalf("expected completed result, got %v", restarted.current)
+	}
+	if !strings.Contains(restarted.View().Content, "2 done · 1 skipped") {
+		t.Fatalf("unexpected result:\n%s", restarted.View().Content)
+	}
+	requireAuditEvent(t, w, "manual_cleanup_session_completed")
+	restarted = updateModel(t, restarted, keyPress("enter"))
+	if restarted.current != screenLoadedPlanSummary {
+		t.Fatalf("expected back to reconstructed plan, got %v", restarted.current)
+	}
+
+	after, _ := json.Marshal(plan)
+	if string(before) != string(after) {
+		t.Fatal("manual cleanup mutated original plan")
+	}
+	err = filepath.Walk(w.Dir(), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(content), rawPreview) {
+			t.Fatalf("raw preview persisted in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("privacy walk: %v", err)
+	}
+}
+
+func TestManualCleanupRejectsTamperedTargetBeforeOpen(t *testing.T) {
+	previousOpen := openExternalURL
+	called := 0
+	openExternalURL = func(string) error {
+		called++
+		return nil
+	}
+	t.Cleanup(func() { openExternalURL = previousOpen })
+
+	m := NewModel()
+	m.current = screenManualCleanupAction
+	m.manualSession = manualcleanup.Session{
+		Manifest: manualcleanup.Manifest{
+			ID: "manual-test", PlanID: "plan-test", Mode: manualcleanup.ModeInstagramManual,
+			Actions: []manualcleanup.Action{{
+				ActionID: "action-1", Type: domain.ActionUnlike,
+				TargetURL: "https://instagram.com.evil.example/p/ABC/",
+				TargetID:  "ABC", TargetKind: instagram.TargetPost,
+			}},
+		},
+		State: manualcleanup.StateActive, Outcomes: []manualcleanup.Outcome{manualcleanup.OutcomePending},
+	}
+	_, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected deferred target command")
+	}
+	next := updateModel(t, m, cmd())
+	if called != 0 || !strings.Contains(next.View().Content, "Target unavailable") {
+		t.Fatalf("tampered target opened=%d view=\n%s", called, next.View().Content)
+	}
+}
+
+func TestManualCleanupStartOverRequiresExplicitChoice(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan := manualCleanupTestPlan(now)
+	session, _, err := manualcleanup.New("old-progress", plan, manualCleanupTestItems(now, "memory only"), now)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	store := manualcleanup.NewStore(w.Dir())
+	if err := store.Start(session); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if _, err := store.Mark(&session, manualcleanup.OutcomeDone, now.Add(time.Minute)); err != nil {
+		t.Fatalf("mark session: %v", err)
+	}
+	if err := store.Stop(&session, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("stop session: %v", err)
+	}
+
+	m := NewModelWithWorkspace(w, nil)
+	m.planResult.Plan = plan
+	m.refreshManualAvailability(plan)
+	m.current = screenPlanPreview
+	m.openManualCleanup(applySourceGenerated)
+	if m.current != screenManualCleanupChoice || m.manualSession.ID != "old-progress" {
+		t.Fatalf("expected existing-session choice, got screen=%v id=%q", m.current, m.manualSession.ID)
+	}
+	m.manualChoiceCursor = 1
+	next := updateModel(t, m, keyPress("enter"))
+	if next.current != screenManualCleanupAction || next.manualSession.ID == "old-progress" || next.manualSession.CurrentPosition != 0 {
+		t.Fatalf("start over failed: screen=%v id=%q position=%d error=%q", next.current, next.manualSession.ID, next.manualSession.CurrentPosition, next.manualError)
+	}
+	loaded, ok, err := store.Load(plan.ID)
+	if err != nil || !ok || loaded.ID != next.manualSession.ID || loaded.CurrentPosition != 0 {
+		t.Fatalf("replacement progress=%#v ok=%t err=%v", loaded, ok, err)
+	}
+}
+
+func manualCleanupTestPlan(now time.Time) domain.CleanupPlan {
+	actions := []domain.CleanupAction{
+		{ID: "unfollow-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnfollow, TargetURL: "https://www.instagram.com/demo_following/", TargetID: "demo_following", SourceActivityItemID: "follow-item", Status: domain.ActionStatusPending, CreatedAt: now},
+		{ID: "unlike-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, TargetURL: "https://www.instagram.com/reel/REEL1/", TargetID: "REEL1", SourceActivityItemID: "like-item", Status: domain.ActionStatusPending, CreatedAt: now},
+		{ID: "comment-1", Platform: domain.PlatformInstagram, Type: domain.ActionDeleteComment, TargetURL: "https://www.instagram.com/p/POST1/", TargetID: "POST1", SourceActivityItemID: "comment-item", Status: domain.ActionStatusPending, CreatedAt: now},
+		{ID: "unsupported-1", Platform: domain.PlatformInstagram, Type: domain.ActionDeletePost, TargetURL: "https://www.instagram.com/p/POST2/", TargetID: "POST2", SourceActivityItemID: "post-item", Status: domain.ActionStatusPending, CreatedAt: now},
+	}
+	return domain.NewCleanupPlan("instagram-plan:test", domain.PlatformInstagram, "synthetic export", now, actions)
+}
+
+func manualCleanupTestItems(now time.Time, preview string) []domain.ActivityItem {
+	return []domain.ActivityItem{
+		{ID: "follow-item", Platform: domain.PlatformInstagram, Type: domain.ItemTypeFollow, TargetURL: "https://www.instagram.com/demo_following/", TargetID: "demo_following", Actor: "demo_following", Metadata: map[string]string{"relationship": "following"}},
+		{ID: "like-item", Platform: domain.PlatformInstagram, Type: domain.ItemTypeLike, TargetURL: "https://www.instagram.com/reel/REEL1/", TargetID: "REEL1", Actor: "reel_owner", OccurredAt: &now},
+		{ID: "comment-item", Platform: domain.PlatformInstagram, Type: domain.ItemTypeComment, TargetURL: "https://www.instagram.com/p/POST1/", TargetID: "POST1", Actor: "post_owner", OccurredAt: &now, Text: &domain.SafeTextReference{Hash: "sha256:abc", Preview: preview}},
+	}
 }
 
 func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
@@ -2370,6 +2600,7 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	requireAuditEvent(t, w, "plan_generated")
 
 	next = updateModel(t, next, keyPress("down"))
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	outputPath := filepath.Join(t.TempDir(), "exported-plan.json")
 	next.planPathInput.SetValue(outputPath)
@@ -2460,6 +2691,7 @@ func TestPlanExportConfigWriteFailureIsNonFatalWarning(t *testing.T) {
 	next = updateModel(t, next, keyPress("a"))
 	next = updateModel(t, next, keyPress("s"))
 	next = updateModel(t, next, keyPress("enter"))
+	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("down"))
 	next = updateModel(t, next, keyPress("enter"))
 	outputPath := filepath.Join(t.TempDir(), "exported-plan.json")

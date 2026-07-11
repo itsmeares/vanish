@@ -31,8 +31,8 @@ explicit installed-app OAuth and the official API for the prototype scanner.
 - Vanish does not make you invisible on the internet.
 - Vanish does not log in to Instagram.
 - Vanish does not use browser automation, scraping, private APIs, or cloud jobs.
-- Vanish does not delete platform content, unlike, unfollow, or apply account
-  changes in this alpha.
+- Vanish does not automatically delete platform content, unlike, unfollow, or
+  apply account changes.
 
 ## Local-First Safety
 
@@ -64,10 +64,13 @@ The app directory stores:
   time, last operation, and plan summary metadata.
 - A local audit log for workspace events such as imports, plan exports, plan
   loads, and wipes.
+- Assisted manual-cleanup progress: safe plan/action references and outcomes.
 
 The app directory does not store raw parsed items, raw exports, raw comments,
-credentials, cookies, sessions, or authorization data. Reddit refresh tokens,
-when used, go through the configured secret store rather than normal config.
+credentials, cookies, login sessions, or authorization data. Assisted cleanup
+stores only safe target references, hashes, progress, and outcomes. Reddit
+refresh tokens, when used, go through the configured secret store rather than
+normal config.
 Imported export ZIPs and exported plans remain normal local files at the paths
 you choose.
 
@@ -102,6 +105,8 @@ model.
 ## Supported Today
 
 - Instagram Export prototype: local ZIP import.
+- Instagram export-request onboarding.
+- Assisted manual cleanup for unfollow, unlike, and own-comment actions.
 - Demo import with fake local Instagram data.
 - Parsed item browsing.
 - Filtering by item type, actor, target, and date.
