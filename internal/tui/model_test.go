@@ -1716,6 +1716,87 @@ func TestMouseWheelMovesScrollableParsedItemList(t *testing.T) {
 	}
 }
 
+func TestMouseClickScrolledLoadedPlanActionHighlightsAbsoluteRow(t *testing.T) {
+	plan := fakeCleanupPlan()
+	plan.Actions = make([]domain.CleanupAction, 30)
+	for index := range plan.Actions {
+		plan.Actions[index] = domain.CleanupAction{
+			ID:                   fmt.Sprintf("action-%02d", index),
+			Platform:             domain.PlatformInstagram,
+			Type:                 domain.ActionUnlike,
+			TargetURL:            fmt.Sprintf("https://www.instagram.com/p/SYNTHETIC%02d/", index),
+			SourceActivityItemID: fmt.Sprintf("item-%02d", index),
+			Status:               domain.ActionStatusPending,
+		}
+	}
+
+	m := NewModel()
+	m.current = screenLoadedPlanActions
+	m.loadedPlan = plan
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 88, Height: 20})
+	for range 14 {
+		m = updateModel(t, m, mouseWheel(4, tea.MouseWheelDown))
+	}
+	if m.loadedActionOffset == 0 {
+		t.Fatal("expected loaded actions to scroll beyond first viewport")
+	}
+
+	boxes := hitBoxesOfKind(hitBoxesForTest(t, m), hitLoadedPlanRow)
+	if len(boxes) < 3 || len(boxes) > m.planActionListHeight() {
+		t.Fatalf("expected only visible loaded-action hit boxes, got %d for height %d", len(boxes), m.planActionListHeight())
+	}
+	middle := boxes[len(boxes)/2]
+	wantIndex := m.loadedActionOffset + len(boxes)/2
+	if middle.Target.Index != wantIndex {
+		t.Fatalf("loaded-action hit index = %d, want absolute index %d", middle.Target.Index, wantIndex)
+	}
+
+	next := updateModel(t, m, mouseClick(middle.X, middle.Y))
+	if next.loadedActionCursor != wantIndex || next.loadedPlan.Actions[next.loadedActionCursor].ID != fmt.Sprintf("action-%02d", wantIndex) {
+		t.Fatalf("expected clicked loaded action %d to be highlighted, cursor=%d action=%q", wantIndex, next.loadedActionCursor, next.loadedPlan.Actions[next.loadedActionCursor].ID)
+	}
+}
+
+func TestMouseClickScrolledWarningHighlightsAbsoluteGroup(t *testing.T) {
+	m := NewModel()
+	m.current = screenWarnings
+	m.importSource = "synthetic export"
+	m.importResult.WarningCount = 30
+	m.importResult.Warnings = make([]activityWarningGroup, 30)
+	for index := range m.importResult.Warnings {
+		m.importResult.Warnings[index] = activityWarningGroup{
+			SourceFile: fmt.Sprintf("warning-%02d.json", index),
+			Category:   fmt.Sprintf("synthetic-%02d", index),
+			Reason:     "unsupported target shape",
+			Unit:       "record",
+			Count:      1,
+		}
+	}
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 88, Height: 20})
+	for range 14 {
+		m = updateModel(t, m, mouseWheel(4, tea.MouseWheelDown))
+	}
+	if m.warningOffset == 0 {
+		t.Fatal("expected warnings to scroll beyond first viewport")
+	}
+
+	boxes := hitBoxesOfKind(hitBoxesForTest(t, m), hitWarningRow)
+	_, _, visibleRows := m.warningViewport()
+	if len(boxes) < 3 || len(boxes) > visibleRows {
+		t.Fatalf("expected only visible warning hit boxes, got %d for height %d", len(boxes), visibleRows)
+	}
+	middle := boxes[len(boxes)/2]
+	wantIndex := m.warningOffset + len(boxes)/2
+	if middle.Target.Index != wantIndex {
+		t.Fatalf("warning hit index = %d, want absolute index %d", middle.Target.Index, wantIndex)
+	}
+
+	next := updateModel(t, m, mouseClick(middle.X, middle.Y))
+	if next.warningCursor != wantIndex || next.importResult.Warnings[next.warningCursor].SourceFile != fmt.Sprintf("warning-%02d.json", wantIndex) {
+		t.Fatalf("expected clicked warning %d to be highlighted, cursor=%d source=%q", wantIndex, next.warningCursor, next.importResult.Warnings[next.warningCursor].SourceFile)
+	}
+}
+
 func TestBackspaceNavigatesWhenNoInputFocused(t *testing.T) {
 	m := importedModel(t, fakeImportResult())
 	next := updateModel(t, m, keyPress("enter"))
@@ -2186,7 +2267,11 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	}
 	sourcePath := filepath.Join(t.TempDir(), "instagram-export.zip")
 	next := NewModelWithWorkspace(w, nil)
-	next = updateModel(t, next, importFinishedMsg{result: fakeImportResultWithRelationships(), source: sourcePath})
+	result := fakeImportResultWithRelationships()
+	result.Summary.Skipped = 2
+	result.Warnings.Total = 5
+	result.Warnings.Groups[0].Count = 5
+	next = updateModel(t, next, importFinishedMsg{result: result, source: sourcePath})
 
 	imports, err := w.RecentImports()
 	if err != nil {
@@ -2195,10 +2280,13 @@ func TestWorkspaceHistoryAndAuditHooks(t *testing.T) {
 	if len(imports) != 1 {
 		t.Fatalf("recent imports = %d, want 1", len(imports))
 	}
-	if imports[0].SourcePath != filepath.Clean(sourcePath) || imports[0].ItemCount != 4 || imports[0].LikeCount != 1 || imports[0].CommentCount != 1 || imports[0].PostCount != 0 || imports[0].FollowingCount != 1 || imports[0].FollowerCount != 1 || imports[0].WarningCount != 1 {
+	if imports[0].SourcePath != filepath.Clean(sourcePath) || imports[0].ItemCount != 4 || imports[0].LikeCount != 1 || imports[0].CommentCount != 1 || imports[0].PostCount != 0 || imports[0].FollowingCount != 1 || imports[0].FollowerCount != 1 || imports[0].WarningCount != 5 || imports[0].SkippedCount != 2 {
 		t.Fatalf("unexpected recent import: %#v", imports[0])
 	}
-	requireAuditEvent(t, w, "import_completed")
+	importEvent := requireAuditEvent(t, w, "import_completed")
+	if importEvent.Fields["warning_count"] != float64(5) || importEvent.Fields["skipped_count"] != float64(2) {
+		t.Fatalf("expected distinct warning and skipped audit counts, got %#v", importEvent.Fields)
+	}
 
 	next = updateModel(t, next, keyPress("enter"))
 	next = updateModel(t, next, keyPress("a"))
@@ -3073,6 +3161,16 @@ func requireHitBox(t *testing.T, boxes []hitBox, kind hitKind, index int, label 
 	}
 	t.Fatalf("expected hit box kind=%d index=%d label=%q in %#v", kind, index, label, boxes)
 	return hitBox{}
+}
+
+func hitBoxesOfKind(boxes []hitBox, kind hitKind) []hitBox {
+	filtered := make([]hitBox, 0, len(boxes))
+	for _, box := range boxes {
+		if box.Target.Kind == kind {
+			filtered = append(filtered, box)
+		}
+	}
+	return filtered
 }
 
 func lineIndexContaining(t *testing.T, content string, parts ...string) int {

@@ -71,6 +71,7 @@ func ImportZIP(zipPath string) (ImportResult, error) {
 	importedAt := time.Now().UTC()
 	var result ImportResult
 	var warnings warningCollector
+	skippedFiles := 0
 
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() || !strings.EqualFold(path.Ext(file.Name), ".json") {
@@ -81,9 +82,13 @@ func ImportZIP(zipPath string) (ImportResult, error) {
 			items, handled, parseErr := parseLikedPostsArrayFile(file, &importedAt, &warnings)
 			if parseErr != nil {
 				warnings.add(file.Name, "liked-post", "malformed JSON", WarningUnitFile, 1, nil)
+				skippedFiles++
 				continue
 			}
 			if handled {
+				if len(items) == 0 {
+					skippedFiles++
+				}
 				result.Items = appendOwnedItems(result.Items, items)
 				continue
 			}
@@ -92,15 +97,19 @@ func ImportZIP(zipPath string) (ImportResult, error) {
 		raw, err := readJSONFile(file)
 		if err != nil {
 			warnings.add(file.Name, warningCategoryForFileName(file.Name), "malformed JSON", WarningUnitFile, 1, nil)
+			skippedFiles++
 			continue
 		}
 
-		items, _ := parseJSONActivityFile(file.Name, raw, &importedAt, &warnings)
+		items, handled := parseJSONActivityFile(file.Name, raw, &importedAt, &warnings)
+		if !handled || len(items) == 0 {
+			skippedFiles++
+		}
 		result.Items = appendOwnedItems(result.Items, items)
 	}
 
 	result.Warnings = warnings.finish()
-	result.Summary = summarize(result.Items, result.Warnings.Total)
+	result.Summary = summarize(result.Items, skippedFiles)
 	return result, nil
 }
 

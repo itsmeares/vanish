@@ -257,6 +257,36 @@ func TestImportZIPPreservesLegacyLikedPostSchema(t *testing.T) {
 	}
 }
 
+func TestImportZIPPartiallyAcceptedFileWarnsWithoutSkippingFile(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"your_instagram_activity/likes/liked_posts.json": `[
+  {
+    "timestamp": 1710000000,
+    "label_values": [
+      {"href": "https://www.instagram.com/p/SYNTHETICVALID1/"}
+    ]
+  },
+  {
+    "timestamp": 1710000001,
+    "label_values": [
+      {"href": "https://example.com/p/SYNTHETICREJECTED1/"}
+    ]
+  }
+]`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected partial import to succeed: %v", err)
+	}
+	if result.Summary.Total != 1 || result.Summary.Likes != 1 || result.Summary.Skipped != 0 {
+		t.Fatalf("expected accepted item without a fully skipped file, got %#v", result.Summary)
+	}
+	if result.Warnings.Total != 1 {
+		t.Fatalf("expected one rejected record warning, got %#v", result.Warnings)
+	}
+}
+
 func TestImportZIPDoesNotTreatLikedCommentsAsLikedPosts(t *testing.T) {
 	zipPath := writeTestZip(t, map[string]string{
 		"your_instagram_activity/likes/liked_comments.json": `{
@@ -358,6 +388,51 @@ func TestImportWarningsStayBoundedForLargeRejectedDataset(t *testing.T) {
 	}
 }
 
+func TestImportZIPCountsFullyRejectedLargeFileOnce(t *testing.T) {
+	zipPath := writeLikedPostsBenchmarkZIP(t, benchmarkInstagramRecordCount, false)
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected fully rejected large import to succeed: %v", err)
+	}
+	if len(result.Items) != 0 || result.Summary.Total != 0 || result.Summary.Skipped != 1 {
+		t.Fatalf("expected one fully skipped file and no items, got %#v", result.Summary)
+	}
+	if result.Warnings.Total != benchmarkInstagramRecordCount {
+		t.Fatalf("warning total = %d, want %d", result.Warnings.Total, benchmarkInstagramRecordCount)
+	}
+	group := warningGroupWith(result.Warnings, "liked-post", "unsupported target shape")
+	if group == nil || group.Count != benchmarkInstagramRecordCount || group.Unit != WarningUnitRecord {
+		t.Fatalf("expected exact grouped rejected-record count, got %#v", result.Warnings)
+	}
+}
+
+func TestImportZIPCountsMultipleUnsupportedAndMalformedFiles(t *testing.T) {
+	zipPath := writeTestZip(t, map[string]string{
+		"unknown/settings.json":         `{"shape":"not supported"}`,
+		"comments/post_comments_1.json": `{"comments_media_comments":[`,
+		"likes/liked_comments.json": `{
+  "likes_comment_likes": [{}, {}, {}]
+}`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("expected unsupported and malformed files to be summarized: %v", err)
+	}
+	if result.Summary.Total != 0 || result.Summary.Skipped != 3 {
+		t.Fatalf("expected three fully skipped files, got %#v", result.Summary)
+	}
+	if result.Warnings.Total != 5 {
+		t.Fatalf("expected three record warnings plus two file warnings, got %#v", result.Warnings)
+	}
+	if warningGroupWith(result.Warnings, "liked-comment", "unsupported activity category") == nil ||
+		warningGroupWith(result.Warnings, "comment", "malformed JSON") == nil ||
+		warningGroupWith(result.Warnings, "instagram-json", "unsupported activity file") == nil {
+		t.Fatalf("expected all unsupported and malformed warning groups, got %#v", result.Warnings)
+	}
+}
+
 func TestImportWarningsNeverContainRejectedRecordValues(t *testing.T) {
 	const privateSentinel = "synthetic-private-value-must-not-appear"
 	zipPath := writeTestZip(t, map[string]string{
@@ -412,8 +487,8 @@ func TestCurrentLikedPostRequiresOneTrustedMediaURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected unsafe targets to be summarized: %v", err)
 	}
-	if result.Summary.Likes != 0 || result.Summary.Skipped != 4 || result.Warnings.Total != 4 {
-		t.Fatalf("expected every unsafe target to be rejected, summary=%#v warnings=%#v", result.Summary, result.Warnings)
+	if result.Summary.Likes != 0 || result.Summary.Skipped != 1 || result.Warnings.Total != 4 {
+		t.Fatalf("expected every unsafe target to be rejected from one skipped file, summary=%#v warnings=%#v", result.Summary, result.Warnings)
 	}
 	group := warningGroupWith(result.Warnings, "liked-post", "unsupported target shape")
 	if group == nil || group.Count != 4 {

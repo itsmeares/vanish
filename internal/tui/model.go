@@ -2443,6 +2443,20 @@ func (m Model) loadedPlanActionsView() string {
 	return m.appShell("Plan Actions", body, m.footer(footerList))
 }
 
+func (m Model) loadedPlanActionRowsForViewport() (int, []string) {
+	actions := m.loadedPlan.Actions
+	visibleRows := m.planActionListHeight()
+	cursor := clampCursor(m.loadedActionCursor, len(actions))
+	offset := ensureOffset(cursor, m.loadedActionOffset, len(actions), visibleRows)
+	end := minInt(len(actions), offset+visibleRows)
+	listWidth, _ := twoPaneWidths(layoutSpec(m.width, m.height), "Plan Actions")
+	rows := make([]string, 0, maxInt(0, end-offset))
+	for index := offset; index < end; index++ {
+		rows = append(rows, planActionRowForWidth(actions[index], listWidth))
+	}
+	return offset, rows
+}
+
 func (m Model) applyPreviewView() string {
 	spec := layoutSpec(m.width, m.height)
 	preview := m.applyPreview
@@ -2641,6 +2655,15 @@ func (m Model) warningRowsForViewport() (int, []string) {
 	rows := make([]string, 0, maxInt(0, end-offset))
 	for index := offset; index < end; index++ {
 		rows = append(rows, warningGroupRow(m.importResult.Warnings[index]))
+	}
+	return offset, rows
+}
+
+func (m Model) warningAnchorsForViewport() (int, []string) {
+	offset, rows := m.warningRowsForViewport()
+	innerWidth := paneTextWidth(layoutSpec(m.width, m.height).contentWidth)
+	for index := range rows {
+		rows[index] = truncateEnd(rows[index], innerWidth)
 	}
 	return offset, rows
 }
@@ -5598,7 +5621,8 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 	case screenLoadedPlanSummary:
 		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanAction, 0, loadedPlanSummaryMenuItems)...)
 	case screenLoadedPlanActions:
-		boxes = append(boxes, indexedRowHitBoxes(content, hitLoadedPlanRow, m.loadedActionOffset, isSelectionRowLine)...)
+		offset, rows := m.loadedPlanActionRowsForViewport()
+		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, offset, rows)...)
 	case screenApplyPreview:
 		boxes = append(boxes, rowHitBoxes(content, hitApplyPreviewAction, 0, m.currentApplyPreviewMenuItems())...)
 	case screenApplyConfirm:
@@ -5610,8 +5634,8 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 			boxes = append(boxes, rowHitBoxes(content, hitFilterRow, 0, m.filterRows())...)
 		}
 	case screenWarnings:
-		_, offset, _ := m.warningViewport()
-		boxes = append(boxes, indexedRowHitBoxes(content, hitWarningRow, offset, isSelectionRowLine)...)
+		offset, rows := m.warningAnchorsForViewport()
+		boxes = append(boxes, rowHitBoxes(content, hitWarningRow, offset, rows)...)
 	case screenLocalDataOverview:
 		boxes = append(boxes, rowHitBoxes(content, hitLocalDataAction, 0, localDataMenuItems)...)
 	case screenRecentImports:
