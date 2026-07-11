@@ -24,7 +24,8 @@ but it does not copy raw exports into the app directory.
 
 Configuration in the app directory is limited to local app settings needed to
 restore the workspace. It must not include platform credentials, cookies,
-tokens, sessions, authorization headers, OAuth grants, or account secrets.
+tokens, login sessions, authorization headers, OAuth grants, or account
+secrets.
 
 The current config records a version, local creation/update timestamps,
 telemetry disabled by default, the default plan export path, and the last opened
@@ -71,6 +72,15 @@ Cleanup plan JSON files are still dry-run review artifacts. Vanish can preview
 and run them through a no-op apply executor, but it does not change platform
 content or account state.
 
+## Assisted Manual Cleanup
+
+Manual-cleanup progress lives under `manual-cleanup` in the app directory. It
+stores a local ID, plan ID, safe action and target references, timestamps,
+current position, and done/skipped outcomes. Progress can resume after restart.
+
+Raw activity records and raw comment text are not stored. A short comment
+preview may be shown only while the active import remains in memory.
+
 ## Audit Log
 
 The audit log records local workspace events so users can inspect what Vanish
@@ -81,12 +91,14 @@ did locally. Audit entries may include events such as:
 - Plan loaded.
 - Apply previewed, confirmed, started, action-result recorded, skipped,
   stopped, cancelled, or finished.
+- Manual cleanup started, resumed, target-opened, marked done, skipped, stopped,
+  or completed.
 - Local data viewed.
 - Local data wiped.
 
 Audit entries should use timestamps, event names, paths, counts, and safe
 summaries. They must not include raw parsed content, raw comments, raw exports,
-credentials, cookies, tokens, sessions, or authorization data.
+credentials, cookies, tokens, login sessions, or authorization data.
 
 ## Wipe Behavior
 
@@ -97,6 +109,7 @@ directory:
 - Recent import history.
 - Recent plan history.
 - Audit log records.
+- Assisted manual-cleanup progress.
 
 The wipe flow does not delete user-owned Instagram export ZIPs or cleanup plan
 JSON files outside the active app directory. If a developer points
@@ -134,7 +147,7 @@ platform names, source types, action types, and stable IDs or hashes when needed
 to reconnect app state.
 
 Disallowed data includes raw parsed items, raw exports, raw comments, raw private
-messages, passwords, credentials, cookies, sessions, authorization headers,
+messages, passwords, credentials, cookies, login sessions, authorization headers,
 OAuth grants, and account secrets. Token values are allowed only in the Reddit
 secret-store path described above, never in normal config, history, audit logs,
 or cleanup plans.

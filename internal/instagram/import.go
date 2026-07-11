@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -221,7 +220,7 @@ func activityItemFromLikedPostArrayRecord(fileName string, record likedPostArray
 	}
 
 	listData := firstLikedPostArrayStringData(record.StringListData)
-	username := firstNonEmpty(listData.Value, record.Title, record.Username)
+	username, _ := NormalizeUsername(firstNonEmpty(listData.Value, record.Title, record.Username))
 	targetURL := firstNonEmpty(listData.Href, record.Href, record.URL)
 	targetID := firstNonEmpty(username, targetURL)
 	if targetURL == "" && targetID == "" {
@@ -261,28 +260,11 @@ func uniqueTrustedInstagramMediaURL(values []likedPostArrayLabelValue) (string, 
 }
 
 func trustedInstagramMediaURL(value string) (string, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
+	target, err := parseTrustedInstagramTarget(value)
+	if err != nil || target.Kind == TargetProfile {
 		return "", false
 	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" {
-		return "", false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host != "instagram.com" && host != "www.instagram.com" {
-		return "", false
-	}
-	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
-	if len(segments) != 2 || segments[1] == "" {
-		return "", false
-	}
-	switch strings.ToLower(segments[0]) {
-	case "p", "reel", "tv":
-		return value, true
-	default:
-		return "", false
-	}
+	return target.URL, true
 }
 
 func firstLikedPostArrayStringData(entries []likedPostArrayStringData) extractedStringData {
@@ -430,7 +412,7 @@ func parseLikes(fileName string, raw any, importedAt *time.Time, warnings *warni
 		}
 
 		listData := firstStringListData(rec)
-		username := firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username"))
+		username, _ := NormalizeUsername(firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username")))
 		targetURL := firstNonEmpty(listData.Href, stringField(rec, "href"), stringField(rec, "url"))
 		targetID := firstNonEmpty(username, targetURL)
 		occurredAt := firstTime(listData.Timestamp, parseTimeValue(rec["timestamp"]))
@@ -482,15 +464,15 @@ func parseComments(fileName string, raw any, importedAt *time.Time, warnings *wa
 		var safeText *domain.SafeTextReference
 		if commentText != "" {
 			textHash = hashString(commentText)
-			safeText = &domain.SafeTextReference{Hash: textHash}
+			safeText = &domain.SafeTextReference{Hash: textHash, Preview: commentPreview(commentText)}
 		}
 
-		mediaOwner := firstNonEmpty(
+		mediaOwner, _ := NormalizeUsername(firstNonEmpty(
 			stringField(rec, "media_owner"),
 			ownerData.Value,
 			stringField(rec, "title"),
 			listData.Value,
-		)
+		))
 		targetURL := firstNonEmpty(listData.Href, commentData.Href, stringField(rec, "href"), stringField(rec, "url"))
 		targetID := firstNonEmpty(mediaOwner, shortHash(textHash), targetURL)
 		occurredAt := firstTime(
@@ -514,6 +496,10 @@ func parseComments(fileName string, raw any, importedAt *time.Time, warnings *wa
 	}
 
 	return items
+}
+
+func commentPreview(value string) string {
+	return SanitizeCommentPreview(value)
 }
 
 func parseRelationships(fileName string, raw any, importedAt *time.Time, kind activityKind, warnings *warningCollector) []domain.ActivityItem {
@@ -541,7 +527,7 @@ func parseRelationships(fileName string, raw any, importedAt *time.Time, kind ac
 		}
 
 		listData := firstStringListData(rec)
-		username := firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username"))
+		username, _ := NormalizeUsername(firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username")))
 		targetURL := firstNonEmpty(listData.Href, stringField(rec, "href"), stringField(rec, "url"))
 		targetID := firstNonEmpty(username, targetURL)
 		occurredAt := firstTime(listData.Timestamp, parseTimeValue(rec["timestamp"]))
@@ -575,6 +561,7 @@ func appendValidItem(items []domain.ActivityItem, fileName string, item domain.A
 }
 
 func newActivityItem(kind activityKind, fileName, targetURL, targetID, actor string, occurredAt, importedAt *time.Time, metadata map[string]string, safeText *domain.SafeTextReference) domain.ActivityItem {
+	actor, _ = NormalizeUsername(actor)
 	itemType := domain.ItemTypeFollow
 	switch kind {
 	case kindLike:

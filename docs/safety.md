@@ -1,8 +1,7 @@
 # Vanish Safety Model
 
 Vanish helps people review and plan cleanup of social activity. It does not make
-anyone invisible online, and the current alpha does not apply changes to any
-platform.
+anyone invisible online, and it does not automatically apply Instagram changes.
 
 ## Current Alpha Guarantees
 
@@ -14,7 +13,9 @@ platform.
 - No platform password login.
 - No browser automation.
 - No private API calls.
-- No real deletion or account changes.
+- No automatic Instagram deletion or account changes.
+- Assisted Instagram cleanup opens one trusted target after explicit selection;
+  the user performs any change in their browser.
 - Apply preview and confirmation may run a no-op executor for lifecycle testing.
 
 ## Reddit v0.5 Official API Boundary
@@ -53,19 +54,21 @@ Plan files and normalized activity items must not store:
 - Passwords.
 - Cookies.
 - Access tokens.
-- Session IDs.
+- Login or browser session IDs.
 - Recovery codes.
 - Raw private message bodies.
 - Raw comment bodies when a safe hash is enough.
 
 The Instagram importer normalizes records into safe item metadata, target
-references, timestamps, and optional safe text hashes.
+references, timestamps, and optional safe text hashes. Short comment previews
+remain memory-only.
 
 ## Local Workspace Privacy Rules
 
 The v0.2 local workspace stores only Vanish-managed app state on the user's
 machine. This includes configuration, recent import history, recent cleanup plan
-history, and audit records for local workspace events.
+history, assisted manual-cleanup progress, and audit records for local workspace
+events.
 
 Allowed local history and audit metadata:
 
@@ -87,7 +90,7 @@ The local workspace must not store:
 - Credentials.
 - Cookies.
 - Access tokens.
-- Session IDs.
+- Login or browser session IDs.
 - Authorization headers, OAuth grants, or other authorization data.
 
 If future features need more sensitive data, they should require a separate,
@@ -104,6 +107,10 @@ Cleanup plans are local JSON documents. In v0.1.0-alpha they are dry-run only:
 
 Treat plan files as review artifacts. They may still include usernames, target
 URLs, target IDs, timestamps, and action intent.
+
+Assisted manual cleanup does not mutate plan files. Its separate local progress
+contains safe action references and done/skipped outcomes, never raw comment
+text.
 
 ## Future Apply Risk
 

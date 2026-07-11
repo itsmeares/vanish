@@ -22,6 +22,7 @@ import (
 	"github.com/itsmeares/vanish/internal/apply"
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
+	"github.com/itsmeares/vanish/internal/manualcleanup"
 	"github.com/itsmeares/vanish/internal/platform"
 	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/secretstore"
@@ -55,6 +56,9 @@ const (
 	screenApplyConfirm
 	screenApplyRunning
 	screenApplyResult
+	screenManualCleanupChoice
+	screenManualCleanupAction
+	screenManualCleanupResult
 	screenWarnings
 	screenLocalDataOverview
 	screenRecentImports
@@ -101,6 +105,20 @@ var resultMenuItems = []string{
 	"View warnings",
 	"Review selection",
 	"Back home",
+}
+
+const instagramExportPageURL = "https://accountscenter.instagram.com/info_and_permissions/dyi/"
+
+const (
+	instagramGuideOpenPage = iota
+	instagramGuideHaveZIP
+	instagramGuideBack
+)
+
+var instagramGuideMenuItems = []string{
+	"Open Instagram export page",
+	"I have the ZIP",
+	"Back",
 }
 
 type redditActionID int
@@ -208,6 +226,15 @@ var applyResultMenuItems = []string{
 	"Back to plan",
 	"View actions",
 }
+
+var manualCleanupActionItems = []string{
+	"Open target",
+	"Mark as done",
+	"Skip",
+	"Stop",
+}
+
+var manualCleanupResultItems = []string{"Back to plan"}
 
 type applyPlanSource int
 
@@ -331,6 +358,7 @@ type Model struct {
 	importPickerCursor   int
 	importPickerOffset   int
 	importPickerError    string
+	importReturnScreen   screen
 	importSource         string
 	importPlatform       domain.PlatformName
 	importResult         activityResult
@@ -349,6 +377,18 @@ type Model struct {
 	applyPlanSource      applyPlanSource
 	applyPreview         apply.Preview
 	applyExecution       apply.Execution
+	manualSession        manualcleanup.Session
+	manualSessionLoaded  bool
+	manualPlanSource     applyPlanSource
+	manualPreviews       map[string]string
+	manualPreviewPlanID  string
+	manualEligibleCount  int
+	manualUnavailable    int
+	manualChoiceCursor   int
+	manualActionCursor   int
+	manualResultCursor   int
+	manualStatus         string
+	manualError          string
 	draftFilter          domain.ActivityItemFilter
 	draftOlderDate       string
 	draftNewerDate       string
@@ -368,6 +408,8 @@ type Model struct {
 	homeCursor           int
 	selectedPlatformID   platform.PlatformID
 	platformActionCursor int
+	instagramGuideCursor int
+	instagramGuideError  string
 	redditConnectCursor  int
 	redditFileFallback   bool
 	redditAuthState      string
@@ -441,6 +483,11 @@ func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) 
 	}
 	if localWorkspace != nil {
 		m.refreshLocalData()
+		store := manualcleanup.NewStore(localWorkspace.Dir())
+		if session, ok, err := store.LatestUnfinished(); err == nil && ok {
+			m.manualSession = session
+			m.manualSessionLoaded = true
+		}
 		if planPath := m.defaultPlanPathValue(); planPath != "" {
 			m.planPathInput.SetValue(planPath)
 		}
@@ -502,6 +549,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearFilterState()
 		m.recordImportFinished(msg)
 		m.current = screenImportResult
+
+	case instagramExportPageOpenedMsg:
+		if msg.err != nil {
+			m.instagramGuideError = "Could not open Instagram. Select Open Instagram export page to try again."
+		} else {
+			m.instagramGuideError = ""
+		}
+		return m, nil
+
+	case manualTargetOpenedMsg:
+		if msg.err != nil {
+			m.manualError = "Target unavailable. Skip this action or return to the plan."
+			return m, nil
+		}
+		m.manualError = ""
+		m.appendAudit("manual_cleanup_target_opened", map[string]any{
+			"plan_id":     m.manualSession.PlanID,
+			"action_id":   msg.actionID,
+			"action_type": string(msg.actionType),
+			"target_kind": string(msg.targetKind),
+		})
+		return m, nil
 
 	case redditConnectFinishedMsg:
 		if !m.currentRedditSignIn(msg.state) {
@@ -616,6 +685,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loadedPlan = msg.plan
 		m.loadedPlanSummary = msg.summary
+		m.refreshManualAvailability(msg.plan)
 		m.planLoadError = ""
 		m.loadedPlanCursor = 0
 		m.loadedActionCursor = 0
@@ -671,7 +741,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateHome(msg)
 		case screenPlatformDetail:
 			return m.updatePlatformDetail(msg)
-		case screenInstagramExportGuide, screenRedditNotes:
+		case screenInstagramExportGuide:
+			return m.updateInstagramExportGuide(msg)
+		case screenRedditNotes:
 			return m.updatePlatformStaticScreen(msg)
 		case screenRedditConnect:
 			return m.updateRedditConnect(msg)
@@ -709,6 +781,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case screenApplyResult:
 			return m.updateApplyResult(msg)
+		case screenManualCleanupChoice:
+			return m.updateManualCleanupChoice(msg)
+		case screenManualCleanupAction:
+			return m.updateManualCleanupAction(msg)
+		case screenManualCleanupResult:
+			return m.updateManualCleanupResult(msg)
 		case screenWarnings:
 			return m.updateWarnings(msg)
 		case screenLocalDataOverview:
@@ -763,6 +841,28 @@ func (m Model) updatePlatformDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) updatePlatformStaticScreen(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.back) {
 		m.current = screenPlatformDetail
+	}
+	return m, nil
+}
+
+func (m Model) updateInstagramExportGuide(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.instagramGuideCursor = moveCursor(m.instagramGuideCursor, len(instagramGuideMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.instagramGuideCursor = moveCursor(m.instagramGuideCursor, len(instagramGuideMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenPlatformDetail
+	case key.Matches(msg, m.keys.selectItem):
+		switch m.instagramGuideCursor {
+		case instagramGuideOpenPage:
+			m.instagramGuideError = ""
+			return m, openInstagramExportPageCmd()
+		case instagramGuideHaveZIP:
+			m.openInstagramZIPPicker(screenInstagramExportGuide)
+		case instagramGuideBack:
+			m.current = screenPlatformDetail
+		}
 	}
 	return m, nil
 }
@@ -869,7 +969,7 @@ func (m Model) updateImportPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.Code == tea.KeyLeft || msg.Code == tea.KeyBackspace:
 		m.openImportPicker(filepath.Dir(m.importPickerDir))
 	case key.Matches(msg, m.keys.cancel):
-		m.current = screenHome
+		m.current = m.importReturnScreen
 		return m, nil
 	case key.Matches(msg, m.keys.selectItem):
 		return m.activateImportPickerEntry(m.importPickerCursor)
@@ -1079,6 +1179,7 @@ func (m *Model) generatePlanFromSelection() {
 		return
 	}
 	m.planResult = result
+	m.refreshManualAvailability(result.Plan)
 	m.recordPlanGenerated(result)
 	m.planPreviewCursor = 0
 	m.planListOffset = 0
@@ -1089,18 +1190,21 @@ func (m *Model) generatePlanFromSelection() {
 }
 
 func (m Model) updatePlanPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	items := m.generatedPlanMenuItems()
 	switch {
 	case key.Matches(msg, m.keys.up):
-		m.planPreviewCursor = moveCursor(m.planPreviewCursor, len(planPreviewMenuItems), -1)
+		m.planPreviewCursor = moveCursor(m.planPreviewCursor, len(items), -1)
 	case key.Matches(msg, m.keys.down):
-		m.planPreviewCursor = moveCursor(m.planPreviewCursor, len(planPreviewMenuItems), 1)
+		m.planPreviewCursor = moveCursor(m.planPreviewCursor, len(items), 1)
 	case key.Matches(msg, m.keys.back):
 		m.current = screenSelectionSummary
 	case key.Matches(msg, m.keys.selectItem):
-		switch m.planPreviewCursor {
-		case planPreviewApply:
+		switch items[clampCursor(m.planPreviewCursor, len(items))] {
+		case "Start manual cleanup":
+			m.openManualCleanup(applySourceGenerated)
+		case "Apply preview":
 			m.openApplyPreview(applySourceGenerated)
-		case planPreviewExport:
+		case "Export JSON":
 			m.current = screenPlanExportPath
 			if strings.TrimSpace(m.planPathInput.Value()) == "" {
 				m.planPathInput.SetValue(m.defaultPlanPathValue())
@@ -1108,7 +1212,7 @@ func (m Model) updatePlanPreview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.planExportStatus = ""
 			m.planExportError = ""
 			return m, m.planPathInput.Focus()
-		case planPreviewBack:
+		case "Back":
 			m.current = screenSelectionSummary
 		}
 	}
@@ -1159,22 +1263,25 @@ func (m Model) updatePlanLoadPath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateLoadedPlanSummary(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	items := m.loadedPlanMenuItems()
 	switch {
 	case key.Matches(msg, m.keys.up):
-		m.loadedPlanCursor = moveCursor(m.loadedPlanCursor, len(loadedPlanSummaryMenuItems), -1)
+		m.loadedPlanCursor = moveCursor(m.loadedPlanCursor, len(items), -1)
 	case key.Matches(msg, m.keys.down):
-		m.loadedPlanCursor = moveCursor(m.loadedPlanCursor, len(loadedPlanSummaryMenuItems), 1)
+		m.loadedPlanCursor = moveCursor(m.loadedPlanCursor, len(items), 1)
 	case key.Matches(msg, m.keys.back):
 		m.current = screenHome
 	case key.Matches(msg, m.keys.selectItem):
-		switch m.loadedPlanCursor {
-		case loadedPlanApplyPreview:
+		switch items[clampCursor(m.loadedPlanCursor, len(items))] {
+		case "Start manual cleanup":
+			m.openManualCleanup(applySourceLoaded)
+		case "Apply preview":
 			m.openApplyPreview(applySourceLoaded)
-		case loadedPlanViewActions:
+		case "View actions":
 			m.loadedActionCursor = clampCursor(m.loadedActionCursor, len(m.loadedPlan.Actions))
 			m.loadedActionOffset = ensureOffset(m.loadedActionCursor, m.loadedActionOffset, len(m.loadedPlan.Actions), m.planActionListHeight())
 			m.current = screenLoadedPlanActions
-		case loadedPlanBackHome:
+		case "Back home":
 			m.current = screenHome
 		}
 	}
@@ -1455,6 +1562,11 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.platformActionCursor = target.Index
 			return m.updatePlatformDetail(selectKeyPress())
 		}
+	case screenInstagramExportGuide:
+		if target.Kind == hitPlatformAction {
+			m.instagramGuideCursor = target.Index
+			return m.updateInstagramExportGuide(selectKeyPress())
+		}
 	case screenRedditConnect:
 		if target.Kind == hitPlatformAction {
 			m.redditConnectCursor = target.Index
@@ -1521,6 +1633,20 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		if target.Kind == hitApplyResultAction {
 			m.applyResultCursor = target.Index
 			return m.updateApplyResult(selectKeyPress())
+		}
+	case screenManualCleanupChoice:
+		if target.Kind == hitPlatformAction {
+			m.manualChoiceCursor = target.Index
+			return m.updateManualCleanupChoice(selectKeyPress())
+		}
+	case screenManualCleanupAction:
+		if target.Kind == hitPlatformAction {
+			m.manualActionCursor = target.Index
+			return m.updateManualCleanupAction(selectKeyPress())
+		}
+	case screenManualCleanupResult:
+		if target.Kind == hitPlatformAction {
+			return m.updateManualCleanupResult(selectKeyPress())
 		}
 	case screenFilters:
 		if m.filterEditing == filterEditNone {
@@ -1757,6 +1883,12 @@ func (m Model) renderContent() string {
 		content = m.applyRunningView()
 	case screenApplyResult:
 		content = m.applyResultView()
+	case screenManualCleanupChoice:
+		content = m.manualCleanupChoiceView()
+	case screenManualCleanupAction:
+		content = m.manualCleanupActionView()
+	case screenManualCleanupResult:
+		content = m.manualCleanupResultView()
 	case screenWarnings:
 		content = m.warningsView()
 	case screenLocalDataOverview:
@@ -1835,22 +1967,28 @@ func (m Model) platformDetailLines(current platform.Platform) []string {
 
 func (m Model) instagramExportGuideView() string {
 	lines := []string{
-		m.styles.separator.Render("How to get your Instagram export"),
-		m.styles.body.Render("1. Open Instagram Accounts Center."),
-		m.styles.body.Render("2. Go to Your information and permissions."),
-		m.styles.body.Render("3. Choose Download your information."),
-		m.styles.body.Render("4. Select your Instagram account."),
-		m.styles.body.Render("5. Request download in JSON format."),
-		m.styles.body.Render("6. Download the ZIP when Instagram prepares it."),
-		m.styles.body.Render("7. Import that ZIP in Vanish."),
-		"",
-		m.styles.body.Render("Instagram may rename these menus. Look for Download your information or a similar data export option."),
-		"",
-		m.styles.body.Render("Vanish reads the local ZIP only."),
-		m.styles.body.Render("Vanish does not contact Instagram."),
-		m.styles.body.Render("Vanish does not apply account changes."),
+		m.styles.separator.Render("Actions"),
 	}
-	return m.singlePaneFooter("Instagram Export Guide", "Static local guide", lines, m.footer(footerEmpty))
+	lines = append(lines, m.menuRows(instagramGuideMenuItems, m.instagramGuideCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
+	if m.instagramGuideError != "" {
+		lines = append(lines, "", m.notice("error", m.instagramGuideError))
+	}
+	lines = append(lines,
+		"",
+		m.styles.separator.Render("Request your export"),
+		m.styles.body.Render("1. Open Instagram settings"),
+		m.styles.body.Render("2. Go to Accounts Centre"),
+		m.styles.body.Render("3. Open Your information and permissions"),
+		m.styles.body.Render("4. Select Export your information"),
+		m.styles.body.Render("5. Create an export"),
+		m.styles.body.Render("6. Select the Instagram profile"),
+		m.styles.body.Render("7. Choose Export to device"),
+		m.styles.body.Render("8. Customise the included information"),
+		m.styles.body.Render("9. Set Date range to All time"),
+		m.styles.body.Render("10. Set Format to JSON"),
+		m.styles.body.Render("11. Start export"),
+	)
+	return m.singlePaneFooter("Instagram Export", "Return when the ZIP is ready", lines, m.footer(footerActionMenu))
 }
 
 func (m Model) redditNotesView() string {
@@ -2023,14 +2161,7 @@ func (m Model) importResultView() string {
 		m.section("Source", []string{
 			m.styles.body.Render(emptyFallback(m.importSource, "instagram export")),
 		}),
-		m.section("Parsed Items", m.keyValueRows([]keyValue{
-			{Key: "Total", Value: compactCount(summary.Total)},
-			{Key: "Likes", Value: compactCount(summary.Likes)},
-			{Key: "Comments", Value: compactCount(summary.Comments)},
-			{Key: "Posts", Value: compactCount(summary.Posts)},
-			{Key: "Following", Value: compactCount(summary.Following)},
-			{Key: "Followers", Value: compactCount(summary.Followers)},
-		})),
+		m.section("Parsed Items", m.keyValueRows(activitySummaryKeyValues(summary))),
 		m.section("Import Notes", m.keyValueRows([]keyValue{
 			{Key: "Skipped or unknown", Value: compactCount(summary.Skipped)},
 			{Key: "Warnings", Value: compactCount(m.importResult.WarningCount)},
@@ -2333,8 +2464,14 @@ func (m Model) planPreviewView() string {
 			{Key: "Unsupported selected items", Value: compactCount(len(result.Skipped))},
 		})),
 	)
+	if m.manualUnavailable > 0 {
+		summaryLines = append(summaryLines, m.styles.muted.Render(fmt.Sprintf("Manual cleanup unavailable: %d", m.manualUnavailable)))
+	}
+	if m.manualStatus != "" {
+		summaryLines = append(summaryLines, m.notice("success", m.manualStatus))
+	}
 	summaryLines = append(summaryLines, "")
-	summaryLines = append(summaryLines, m.menuRows(planPreviewMenuItems, m.planPreviewCursor, summaryWidth, hitPlanPreviewAction)...)
+	summaryLines = append(summaryLines, m.menuRows(m.generatedPlanMenuItems(), m.planPreviewCursor, summaryWidth, hitPlanPreviewAction)...)
 
 	actionLines := []string{}
 	if rowCount == 0 {
@@ -2403,9 +2540,15 @@ func (m Model) loadedPlanSummaryView() string {
 		m.section("Action Counts", m.actionCountLines(summary.ActionCounts)),
 		m.section("Status Counts", m.statusCountLines(summary.StatusCounts)),
 	)
+	if m.manualUnavailable > 0 {
+		detailLines = append(detailLines, m.styles.muted.Render(fmt.Sprintf("Manual cleanup unavailable: %d", m.manualUnavailable)))
+	}
+	if m.manualStatus != "" {
+		detailLines = append(detailLines, m.notice("success", m.manualStatus))
+	}
 	body := m.twoPane(
 		spec,
-		"Actions", "Loaded plan", m.menuRows(loadedPlanSummaryMenuItems, m.loadedPlanCursor, spec.sidebarWidth, hitLoadedPlanAction),
+		"Actions", "Loaded plan", m.menuRows(m.loadedPlanMenuItems(), m.loadedPlanCursor, spec.sidebarWidth, hitLoadedPlanAction),
 		"Loaded Plan", "", detailLines,
 	)
 	return m.appShell("Loaded Cleanup Plan", body, m.footer(footerActionMenu))
@@ -2573,6 +2716,116 @@ func (m Model) filtersView() string {
 		return m.singlePaneFooter("Filters", "Constrain parsed items", lines, m.footer("up/down move · enter/click toggle or edit · esc back · ? help · ctrl+q quit"))
 	} else {
 		return m.singlePaneFooter("Filters", "Editing filter value", lines, m.footer(footerForm))
+	}
+}
+
+func (m Model) manualCleanupChoiceView() string {
+	items := m.manualChoiceItems()
+	done, skipped, pending := m.manualSession.Counts()
+	lines := []string{
+		m.styles.separator.Render("Progress"),
+		m.styles.body.Render(fmt.Sprintf("%d done · %d skipped · %d pending", done, skipped, pending)),
+		"",
+		m.styles.separator.Render("Actions"),
+	}
+	lines = append(lines, m.menuRows(items, m.manualChoiceCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
+	if m.manualError != "" {
+		lines = append(lines, "", m.notice("error", m.manualError))
+	}
+	return m.singlePaneFooter("Manual cleanup", truncateMiddle(m.currentManualPlanID(), 40), lines, m.footer(footerActionMenu))
+}
+
+func (m Model) currentManualPlanID() string {
+	if m.manualSessionLoaded && strings.TrimSpace(m.manualSession.PlanID) != "" {
+		return m.manualSession.PlanID
+	}
+	return m.currentManualPlan(m.manualPlanSource).ID
+}
+
+func (m Model) manualActionItems() []string {
+	items := append([]string(nil), manualCleanupActionItems...)
+	if action, ok := m.manualSession.Current(); ok {
+		switch action.TargetKind {
+		case instagram.TargetProfile:
+			items[0] = "Open profile"
+		case instagram.TargetReel:
+			items[0] = "Open reel"
+		default:
+			items[0] = "Open post"
+		}
+	}
+	return items
+}
+
+func (m Model) manualCleanupActionView() string {
+	action, ok := m.manualSession.Current()
+	if !ok {
+		return m.manualCleanupResultView()
+	}
+	progress := fmt.Sprintf("%d of %d", m.manualSession.CurrentPosition+1, len(m.manualSession.Actions))
+	title := "Manual cleanup"
+	details := []string{m.styles.body.Render(progress), ""}
+	switch action.Type {
+	case domain.ActionUnfollow:
+		title = "Unfollow @" + action.TargetID
+		details = append(details, m.styles.body.Render(title))
+	case domain.ActionUnlike:
+		kind := "post"
+		if action.TargetKind == instagram.TargetReel {
+			kind = "reel"
+		}
+		title = "Unlike " + kind
+		details = append(details, m.styles.body.Render(title))
+		if actor, valid := instagram.NormalizeUsername(action.Actor); valid {
+			details = append(details, m.styles.muted.Render("Owner: @"+actor))
+		}
+		if action.OccurredAt != nil {
+			details = append(details, m.styles.muted.Render("Date: "+compactTime(action.OccurredAt)))
+		}
+		details = append(details, m.styles.muted.Render("Target: "+manualTargetLabel(action)))
+	case domain.ActionDeleteComment:
+		title = "Delete own comment"
+		details = append(details, m.styles.body.Render(title))
+		if actor, valid := instagram.NormalizeUsername(action.Actor); valid {
+			details = append(details, m.styles.muted.Render("Post owner: @"+actor))
+		}
+		if action.OccurredAt != nil {
+			details = append(details, m.styles.muted.Render("Comment date: "+compactTime(action.OccurredAt)))
+		}
+		if preview := instagram.SanitizeCommentPreview(m.manualPreviews[action.ActionID]); preview != "" {
+			details = append(details, m.styles.muted.Render("Comment: "+preview))
+		}
+		details = append(details, m.styles.muted.Render("Post: "+manualTargetLabel(action)))
+	}
+	details = append(details, "", m.styles.separator.Render("Actions"))
+	details = append(details, m.menuRows(m.manualActionItems(), m.manualActionCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
+	if m.manualError != "" {
+		details = append(details, "", m.notice("error", m.manualError))
+	}
+	return m.singlePaneFooter("Manual cleanup", title, details, m.footer(footerActionMenu))
+}
+
+func (m Model) manualCleanupResultView() string {
+	done, skipped, _ := m.manualSession.Counts()
+	lines := []string{
+		m.styles.separator.Render("Result"),
+		m.styles.body.Render(fmt.Sprintf("%d done · %d skipped", done, skipped)),
+		"",
+	}
+	lines = append(lines, m.menuRows(manualCleanupResultItems, m.manualResultCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
+	return m.singlePaneFooter("Manual cleanup complete", "", lines, m.footer(footerActionMenu))
+}
+
+func manualTargetLabel(action manualcleanup.Action) string {
+	switch action.TargetKind {
+	case instagram.TargetProfile:
+		return "@" + action.TargetID
+	case instagram.TargetReel:
+		return "/reel/" + action.TargetID
+	case instagram.TargetTV:
+		return "/tv/" + action.TargetID
+	default:
+		return "/p/" + action.TargetID
 	}
 }
 
@@ -2870,6 +3123,10 @@ func (m *Model) resetPlanState() {
 	m.planPathInput.Blur()
 	m.planExportStatus = ""
 	m.planExportError = ""
+	m.manualEligibleCount = 0
+	m.manualUnavailable = 0
+	m.manualStatus = ""
+	m.manualError = ""
 }
 
 func (m *Model) resetLoadedPlanState() {
@@ -2932,13 +3189,13 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 
 	switch action.ID {
 	case platform.ActionChooseExportZIP:
-		m.current = screenImportPath
-		if strings.TrimSpace(m.importPickerDir) == "" {
-			m.openImportPicker(initialImportPickerDir())
-		}
-	case platform.ActionExportGuide:
+		m.openInstagramZIPPicker(screenPlatformDetail)
+	case platform.ActionRequestInstagramExport, platform.ActionExportGuide:
 		m.selectedPlatformID = platform.PlatformInstagramExport
+		m.instagramGuideCursor = 0
+		m.instagramGuideError = ""
 		m.current = screenInstagramExportGuide
+		return m, openInstagramExportPageCmd()
 	case platform.ActionViewRecentImports:
 		m.recentImportCursor = clampCursor(m.recentImportCursor, len(m.recentImports))
 		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
@@ -2978,6 +3235,7 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 	case "Home":
 		m.current = screenHome
 	case "Import":
+		m.importReturnScreen = screenHome
 		m.current = screenImportPath
 		if strings.TrimSpace(m.importPickerDir) == "" {
 			m.openImportPicker(initialImportPickerDir())
@@ -2998,6 +3256,13 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 			m.current = screenLoadedPlanSummary
 		case m.hasPlanPreview():
 			m.current = screenPlanPreview
+		case m.manualSessionLoaded && m.manualSession.State != manualcleanup.StateCompleted:
+			m.manualPlanSource = applySourceLoaded
+			m.loadedPlan = m.manualSession.OriginalPlan()
+			m.loadedPlanSummary = domain.SummarizeCleanupPlan(m.loadedPlan)
+			m.refreshManualAvailability(m.loadedPlan)
+			m.manualChoiceCursor = 0
+			m.current = screenManualCleanupChoice
 		default:
 			m.planPathInput.SetValue(m.loadPlanPathValue())
 			m.planLoadError = ""
@@ -3057,6 +3322,310 @@ func (m Model) currentApplyPlan() domain.CleanupPlan {
 		return m.loadedPlan
 	}
 	return m.planResult.Plan
+}
+
+func (m *Model) refreshManualAvailability(plan domain.CleanupPlan) {
+	m.manualEligibleCount = 0
+	m.manualUnavailable = 0
+	if m.localWorkspace == nil || plan.Platform != domain.PlatformInstagram {
+		return
+	}
+	session, unavailable, err := manualcleanup.New("availability", plan, nil, time.Now().UTC())
+	if err == nil {
+		m.manualEligibleCount = len(session.Actions)
+	}
+	m.manualUnavailable = len(unavailable)
+}
+
+func (m Model) generatedPlanMenuItems() []string {
+	if m.manualEligibleCount > 0 && m.localWorkspace != nil {
+		return []string{"Start manual cleanup", "Apply preview", "Export JSON", "Back"}
+	}
+	return planPreviewMenuItems
+}
+
+func (m Model) loadedPlanMenuItems() []string {
+	if m.manualEligibleCount > 0 && m.localWorkspace != nil {
+		return []string{"Start manual cleanup", "Apply preview", "View actions", "Back home"}
+	}
+	return loadedPlanSummaryMenuItems
+}
+
+func (m Model) manualCleanupStore() (manualcleanup.Store, bool) {
+	if m.localWorkspace == nil {
+		return manualcleanup.Store{}, false
+	}
+	return manualcleanup.NewStore(m.localWorkspace.Dir()), true
+}
+
+func (m Model) currentManualPlan(source applyPlanSource) domain.CleanupPlan {
+	if source == applySourceLoaded {
+		return m.loadedPlan
+	}
+	return m.planResult.Plan
+}
+
+func (m *Model) openManualCleanup(source applyPlanSource) {
+	plan := m.currentManualPlan(source)
+	previousPlanID := m.manualPreviewPlanID
+	previousPreviews := m.manualPreviews
+	m.clearManualSessionState()
+	if previousPlanID == plan.ID {
+		m.manualPreviews = previousPreviews
+		m.manualPreviewPlanID = previousPlanID
+	}
+	m.manualPlanSource = source
+	m.manualChoiceCursor = 0
+	m.manualActionCursor = 0
+	m.manualResultCursor = 0
+	m.manualError = ""
+	m.manualStatus = ""
+	m.current = screenManualCleanupChoice
+	store, ok := m.manualCleanupStore()
+	if !ok {
+		m.manualError = "Manual cleanup needs local progress storage."
+		return
+	}
+	if session, found, err := store.Load(plan.ID); err != nil {
+		m.manualError = "Manual cleanup progress could not be loaded."
+		return
+	} else if found {
+		matches, err := manualcleanup.PlansEqual(plan, session.OriginalPlan())
+		if err != nil || !matches {
+			m.manualPreviews = nil
+			m.manualPreviewPlanID = ""
+			m.manualError = "Manual cleanup progress could not be loaded."
+			return
+		}
+		m.manualSession = session
+		m.manualSessionLoaded = true
+		return
+	}
+	m.startNewManualCleanup(plan)
+}
+
+func (m *Model) startNewManualCleanup(plan domain.CleanupPlan) {
+	store, ok := m.manualCleanupStore()
+	if !ok {
+		m.manualError = "Manual cleanup needs local progress storage."
+		m.current = screenManualCleanupChoice
+		return
+	}
+	id, err := manualcleanup.NewID()
+	if err != nil {
+		m.manualError = "Manual cleanup could not be started."
+		return
+	}
+	session, unavailable, err := manualcleanup.New(id, plan, m.importResult.Items, time.Now().UTC())
+	if err != nil {
+		m.manualError = "No supported manual cleanup actions are available."
+		return
+	}
+	if err := store.Start(session); err != nil {
+		m.manualError = "Manual cleanup progress could not be saved."
+		m.current = screenManualCleanupChoice
+		return
+	}
+	m.manualSession = session
+	m.manualSessionLoaded = true
+	m.manualUnavailable = len(unavailable)
+	m.manualPreviews = m.manualCommentPreviews(plan)
+	m.manualPreviewPlanID = plan.ID
+	m.manualError = ""
+	m.manualStatus = ""
+	m.appendAudit("manual_cleanup_session_started", m.manualAuditFields())
+	m.current = screenManualCleanupAction
+}
+
+func (m Model) manualCommentPreviews(plan domain.CleanupPlan) map[string]string {
+	items := make(map[string]domain.ActivityItem, len(m.importResult.Items))
+	for _, item := range m.importResult.Items {
+		items[item.ID] = item
+	}
+	previews := make(map[string]string)
+	for _, action := range plan.Actions {
+		item, ok := items[action.SourceActivityItemID]
+		if !ok || item.Text == nil || strings.TrimSpace(item.Text.Preview) == "" {
+			continue
+		}
+		if preview := instagram.SanitizeCommentPreview(item.Text.Preview); preview != "" {
+			previews[action.ID] = preview
+		}
+	}
+	return previews
+}
+
+func (m Model) manualChoiceItems() []string {
+	if m.manualError != "" && !m.manualSessionLoaded {
+		return []string{"Start over", "Back"}
+	}
+	if m.manualSession.State == manualcleanup.StateCompleted {
+		return []string{"View cleanup result", "Start over", "Back"}
+	}
+	return []string{"Resume manual cleanup", "Start over", "Back"}
+}
+
+func (m Model) updateManualCleanupChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	items := m.manualChoiceItems()
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.manualChoiceCursor = moveCursor(m.manualChoiceCursor, len(items), -1)
+	case key.Matches(msg, m.keys.down):
+		m.manualChoiceCursor = moveCursor(m.manualChoiceCursor, len(items), 1)
+	case key.Matches(msg, m.keys.back):
+		m.returnToManualPlan()
+	case key.Matches(msg, m.keys.selectItem):
+		switch items[clampCursor(m.manualChoiceCursor, len(items))] {
+		case "Resume manual cleanup":
+			store, ok := m.manualCleanupStore()
+			plan := m.currentManualPlan(m.manualPlanSource)
+			if !ok || !m.manualSessionLoaded || m.manualSession.PlanID != plan.ID || store.Resume(&m.manualSession, time.Now().UTC()) != nil {
+				m.manualError = "Manual cleanup progress could not be resumed."
+				return m, nil
+			}
+			m.appendAudit("manual_cleanup_session_resumed", m.manualAuditFields())
+			m.current = screenManualCleanupAction
+		case "View cleanup result":
+			m.current = screenManualCleanupResult
+		case "Start over":
+			plan := m.currentManualPlan(m.manualPlanSource)
+			if strings.TrimSpace(plan.ID) == "" && m.manualSessionLoaded {
+				plan = m.manualSession.OriginalPlan()
+			}
+			store, ok := m.manualCleanupStore()
+			if ok && m.manualSessionLoaded && m.manualSession.PlanID == plan.ID {
+				session, err := store.StartOver(plan.ID, time.Now().UTC())
+				if err != nil {
+					m.manualError = "Manual cleanup progress could not be saved."
+					return m, nil
+				}
+				m.manualSession = session
+				m.manualSessionLoaded = true
+				m.manualError = ""
+				m.manualStatus = ""
+				m.appendAudit("manual_cleanup_session_started", m.manualAuditFields())
+				m.current = screenManualCleanupAction
+				return m, nil
+			}
+			m.startNewManualCleanup(plan)
+		case "Back":
+			m.returnToManualPlan()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateManualCleanupAction(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.manualActionCursor = moveCursor(m.manualActionCursor, len(manualCleanupActionItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.manualActionCursor = moveCursor(m.manualActionCursor, len(manualCleanupActionItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.stopManualCleanup()
+	case key.Matches(msg, m.keys.selectItem):
+		action, ok := m.manualSession.Current()
+		if !ok {
+			m.current = screenManualCleanupResult
+			return m, nil
+		}
+		switch m.manualActionCursor {
+		case 0:
+			m.manualError = ""
+			return m, openManualTargetCmd(action)
+		case 1:
+			m.markManualCleanup(manualcleanup.OutcomeDone)
+		case 2:
+			m.markManualCleanup(manualcleanup.OutcomeSkipped)
+		case 3:
+			m.stopManualCleanup()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateManualCleanupResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.selectItem) || key.Matches(msg, m.keys.back) {
+		m.returnToManualPlan()
+	}
+	return m, nil
+}
+
+func (m *Model) markManualCleanup(outcome manualcleanup.Outcome) {
+	store, ok := m.manualCleanupStore()
+	if !ok {
+		m.manualError = "Manual cleanup progress could not be saved."
+		return
+	}
+	action, hasAction := m.manualSession.Current()
+	if !hasAction {
+		m.current = screenManualCleanupResult
+		return
+	}
+	completed, err := store.Mark(&m.manualSession, outcome, time.Now().UTC())
+	if err != nil {
+		m.manualError = "Manual cleanup progress could not be saved."
+		return
+	}
+	eventType := "manual_cleanup_action_done"
+	if outcome == manualcleanup.OutcomeSkipped {
+		eventType = "manual_cleanup_action_skipped"
+	}
+	fields := m.manualAuditFields()
+	fields["action_id"] = action.ActionID
+	fields["action_type"] = string(action.Type)
+	m.appendAudit(eventType, fields)
+	if completed {
+		m.appendAudit("manual_cleanup_session_completed", m.manualAuditFields())
+		m.current = screenManualCleanupResult
+	}
+	m.manualActionCursor = 0
+	m.manualError = ""
+}
+
+func (m *Model) stopManualCleanup() {
+	store, ok := m.manualCleanupStore()
+	if !ok || store.Stop(&m.manualSession, time.Now().UTC()) != nil {
+		m.manualError = "Manual cleanup progress could not be saved."
+		return
+	}
+	m.appendAudit("manual_cleanup_session_stopped", m.manualAuditFields())
+	m.manualStatus = "Manual cleanup stopped. Progress saved."
+	m.returnToManualPlan()
+}
+
+func (m *Model) returnToManualPlan() {
+	if m.manualPlanSource == applySourceLoaded {
+		if strings.TrimSpace(m.loadedPlan.ID) == "" && m.manualSessionLoaded {
+			m.loadedPlan = m.manualSession.OriginalPlan()
+			m.loadedPlanSummary = domain.SummarizeCleanupPlan(m.loadedPlan)
+			m.refreshManualAvailability(m.loadedPlan)
+		}
+		m.current = screenLoadedPlanSummary
+		return
+	}
+	m.current = screenPlanPreview
+}
+
+func (m *Model) clearManualSessionState() {
+	m.manualSession = manualcleanup.Session{}
+	m.manualSessionLoaded = false
+	m.manualPreviews = nil
+	m.manualPreviewPlanID = ""
+}
+
+func (m Model) manualAuditFields() map[string]any {
+	done, skipped, pending := m.manualSession.Counts()
+	return map[string]any{
+		"plan_id":       m.manualSession.PlanID,
+		"mode":          string(m.manualSession.Mode),
+		"position":      m.manualSession.CurrentPosition,
+		"action_count":  len(m.manualSession.Actions),
+		"done_count":    done,
+		"skipped_count": skipped,
+		"pending_count": pending,
+		"state":         string(m.manualSession.State),
+	}
 }
 
 func (m Model) currentApplyPreviewMenuItems() []string {
@@ -3518,6 +4087,14 @@ func (m *Model) wipeLocalData() {
 	m.recentPlans = nil
 	m.auditEvents = nil
 	m.auditMalformed = 0
+	m.manualSession = manualcleanup.Session{}
+	m.manualSessionLoaded = false
+	m.manualPreviews = nil
+	m.manualPreviewPlanID = ""
+	m.manualEligibleCount = 0
+	m.manualUnavailable = 0
+	m.manualStatus = ""
+	m.manualError = ""
 	m.recentImportCursor = 0
 	m.recentImportOffset = 0
 	m.recentPlanCursor = 0
@@ -4228,6 +4805,66 @@ func demoImportCmd() tea.Cmd {
 		result, err := instagram.ImportZIP(demoPath)
 		return importFinishedMsg{result: activityResultFromInstagram(result), err: err, source: "demo instagram export", platform: domain.PlatformInstagram}
 	}
+}
+
+type instagramExportPageOpenedMsg struct {
+	err error
+}
+
+type manualTargetOpenedMsg struct {
+	actionID   string
+	actionType domain.ActionType
+	targetKind instagram.TargetKind
+	err        error
+}
+
+func openInstagramExportPageCmd() tea.Cmd {
+	return func() tea.Msg {
+		return instagramExportPageOpenedMsg{err: openExternalURL(instagramExportPageURL)}
+	}
+}
+
+func openManualTargetCmd(action manualcleanup.Action) tea.Cmd {
+	return func() tea.Msg {
+		target, err := instagram.ValidateCleanupTarget(action.Type, action.TargetURL, action.TargetID)
+		if err == nil {
+			err = openExternalURL(target.URL)
+		}
+		return manualTargetOpenedMsg{
+			actionID:   action.ActionID,
+			actionType: action.Type,
+			targetKind: action.TargetKind,
+			err:        err,
+		}
+	}
+}
+
+func (m *Model) openInstagramZIPPicker(returnScreen screen) {
+	m.importPlatform = domain.PlatformInstagram
+	m.importReturnScreen = returnScreen
+	m.current = screenImportPath
+	if strings.TrimSpace(m.importPickerDir) == "" {
+		m.openImportPicker(initialImportPickerDir())
+	}
+}
+
+func activitySummaryKeyValues(summary activitySummary) []keyValue {
+	rows := []keyValue{{Key: "Total", Value: compactCount(summary.Total)}}
+	for _, row := range []struct {
+		label string
+		count int
+	}{
+		{"Likes", summary.Likes},
+		{"Comments", summary.Comments},
+		{"Posts", summary.Posts},
+		{"Following", summary.Following},
+		{"Followers", summary.Followers},
+	} {
+		if row.count > 0 {
+			rows = append(rows, keyValue{Key: row.label, Value: compactCount(row.count)})
+		}
+	}
+	return rows
 }
 
 func startSpinnerCmd(spinnerModel spinner.Model) tea.Cmd {
@@ -5599,6 +6236,8 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		current := m.selectedPlatform()
 		actionRows, _ := platformActionRows(current.Actions)
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
+	case screenInstagramExportGuide:
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, instagramGuideMenuItems)...)
 	case screenRedditConnect:
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, redditActionLabels(m.redditConnectActions()))...)
 	case screenRedditSigningIn:
@@ -5617,9 +6256,9 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 	case screenSelectedItems:
 		boxes = append(boxes, indexedRowHitBoxes(content, hitSelectedItemRow, m.selectedOffset, isSelectionRowLine)...)
 	case screenPlanPreview:
-		boxes = append(boxes, rowHitBoxes(content, hitPlanPreviewAction, 0, planPreviewMenuItems)...)
+		boxes = append(boxes, rowHitBoxes(content, hitPlanPreviewAction, 0, m.generatedPlanMenuItems())...)
 	case screenLoadedPlanSummary:
-		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanAction, 0, loadedPlanSummaryMenuItems)...)
+		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanAction, 0, m.loadedPlanMenuItems())...)
 	case screenLoadedPlanActions:
 		offset, rows := m.loadedPlanActionRowsForViewport()
 		boxes = append(boxes, rowHitBoxes(content, hitLoadedPlanRow, offset, rows)...)
@@ -5629,6 +6268,12 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		boxes = append(boxes, rowHitBoxes(content, hitApplyConfirmAction, 0, applyConfirmMenuItems)...)
 	case screenApplyResult:
 		boxes = append(boxes, rowHitBoxes(content, hitApplyResultAction, 0, applyResultMenuItems)...)
+	case screenManualCleanupChoice:
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, m.manualChoiceItems())...)
+	case screenManualCleanupAction:
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, m.manualActionItems())...)
+	case screenManualCleanupResult:
+		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, manualCleanupResultItems)...)
 	case screenFilters:
 		if m.filterEditing == filterEditNone {
 			boxes = append(boxes, rowHitBoxes(content, hitFilterRow, 0, m.filterRows())...)

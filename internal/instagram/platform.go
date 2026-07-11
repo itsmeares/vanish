@@ -41,10 +41,9 @@ func Platform() platform.Platform {
 			},
 		},
 		Actions: []platform.PlatformAction{
-			{ID: platform.ActionChooseExportZIP, Label: "Choose export ZIP"},
-			{ID: platform.ActionExportGuide, Label: "Export guide"},
-			{ID: platform.ActionViewRecentImports, Label: "View recent imports"},
-			{ID: platform.ActionDemoImport, Label: "Demo import with fake local data"},
+			{ID: platform.ActionRequestInstagramExport, Label: "Request Instagram export"},
+			{ID: platform.ActionChooseExportZIP, Label: "I already have an export ZIP"},
+			{ID: platform.ActionDemoImport, Label: "Try demo data"},
 			{ID: platform.ActionBack, Label: "Back"},
 		},
 		Notes: []string{

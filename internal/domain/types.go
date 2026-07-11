@@ -79,7 +79,7 @@ type SourceMetadata struct {
 // stay short and non-sensitive.
 type SafeTextReference struct {
 	Hash    string `json:"hash,omitempty"`
-	Preview string `json:"preview,omitempty"`
+	Preview string `json:"-"`
 }
 
 // ActivityItem represents one discovered piece of social activity.

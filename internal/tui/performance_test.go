@@ -1,10 +1,17 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itsmeares/vanish/internal/domain"
+	"github.com/itsmeares/vanish/internal/instagram"
+	"github.com/itsmeares/vanish/internal/manualcleanup"
+	"github.com/itsmeares/vanish/internal/workspace"
 )
 
 func TestLargeItemsBrowserFormatsOnlyVisibleRows(t *testing.T) {
@@ -28,6 +35,69 @@ func TestLargeItemsBrowserFormatsOnlyVisibleRows(t *testing.T) {
 	}
 	if formatted > viewport.VisibleRows || len(rows) > viewport.VisibleRows+1 {
 		t.Fatalf("visible row work exceeded viewport: formatted=%d rows=%d viewport=%#v", formatted, len(rows), viewport)
+	}
+}
+
+func TestManualCleanupLargeSessionRendersCurrentActionOnly(t *testing.T) {
+	const count = 150_000
+	actions := make([]manualcleanup.Action, count)
+	outcomes := make([]manualcleanup.Outcome, count)
+	for i := range actions {
+		actions[i] = manualcleanup.Action{
+			ActionID:   fmt.Sprintf("action-%06d", i),
+			Type:       domain.ActionUnfollow,
+			TargetURL:  fmt.Sprintf("https://www.instagram.com/demo_%06d/", i),
+			TargetKind: instagram.TargetProfile,
+			TargetID:   fmt.Sprintf("demo_%06d", i),
+		}
+		outcomes[i] = manualcleanup.OutcomePending
+	}
+	m := NewModel()
+	m.current = screenManualCleanupAction
+	m.width = 100
+	m.height = 30
+	m.manualSession = manualcleanup.Session{
+		Manifest:        manualcleanup.Manifest{ID: "large", PlanID: "large-plan", Mode: manualcleanup.ModeInstagramManual, Actions: actions},
+		CurrentPosition: count - 1,
+		State:           manualcleanup.StateActive,
+		Outcomes:        outcomes,
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "150000 of 150000") || !strings.Contains(view, "demo_149999") {
+		t.Fatalf("current action missing from large session view:\n%s", view)
+	}
+	if strings.Contains(view, "demo_000000") {
+		t.Fatal("large session rendered non-current action")
+	}
+}
+
+func TestManualCleanupActionReloadsAuditOnlyWhenLocalDataOpens(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	m := NewModelWithWorkspace(w, nil)
+	if err := os.WriteFile(filepath.Join(w.Dir(), "audit.jsonl"), []byte("malformed\n"), 0o600); err != nil {
+		t.Fatalf("write audit marker: %v", err)
+	}
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan := manualCleanupTestPlan(now)
+	session, _, err := manualcleanup.New("manual-audit-test", plan, manualCleanupTestItems(now, "synthetic preview"), now)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := manualcleanup.NewStore(w.Dir()).Start(session); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	m.manualSession = session
+	m.manualSessionLoaded = true
+	m.markManualCleanup(manualcleanup.OutcomeDone)
+	if m.auditMalformed != 0 {
+		t.Fatalf("manual action reread complete audit log: malformed=%d", m.auditMalformed)
+	}
+	m.openLocalDataOverview()
+	if m.auditMalformed != 1 {
+		t.Fatalf("Local screen did not lazily reload audit: malformed=%d", m.auditMalformed)
 	}
 }
 

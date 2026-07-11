@@ -44,9 +44,8 @@ func TestInstagramPlatformCapabilitiesAndActions(t *testing.T) {
 	assertCapabilities(t, current.Capabilities, wantCapabilities)
 
 	wantActions := []string{
+		platform.ActionRequestInstagramExport,
 		platform.ActionChooseExportZIP,
-		platform.ActionExportGuide,
-		platform.ActionViewRecentImports,
 		platform.ActionDemoImport,
 		platform.ActionBack,
 	}

@@ -1,12 +1,17 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/itsmeares/vanish/internal/domain"
 	"github.com/itsmeares/vanish/internal/instagram"
+	"github.com/itsmeares/vanish/internal/manualcleanup"
+	"github.com/itsmeares/vanish/internal/workspace"
 )
 
 const benchmarkActivityItemCount = 150_000
@@ -47,6 +52,58 @@ func BenchmarkApplyFilter150K(b *testing.B) {
 		}
 		m.applyDraftFilter()
 		benchmarkViewSink = m.View().Content
+	}
+}
+
+func BenchmarkManualActionAuditHistory(b *testing.B) {
+	for _, historySize := range []int{0, 150_000} {
+		b.Run(fmt.Sprintf("Audit%d", historySize), func(b *testing.B) {
+			w, err := workspace.Open(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			if historySize > 0 {
+				file, err := os.OpenFile(filepath.Join(w.Dir(), "audit.jsonl"), os.O_WRONLY|os.O_TRUNC, 0o600)
+				if err != nil {
+					b.Fatal(err)
+				}
+				writer := bufio.NewWriterSize(file, 1<<20)
+				line := []byte("{\"type\":\"synthetic\",\"timestamp\":\"2026-07-11T12:00:00Z\"}\n")
+				for range historySize {
+					if _, err := writer.Write(line); err != nil {
+						b.Fatal(err)
+					}
+				}
+				if err := writer.Flush(); err != nil {
+					b.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+			plan := manualCleanupTestPlan(now)
+			items := manualCleanupTestItems(now, "synthetic preview")
+			store := manualcleanup.NewStore(w.Dir())
+			m := NewModelWithWorkspace(w, nil)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				b.StopTimer()
+				session, _, err := manualcleanup.New("manual-audit-benchmark", plan, items, now)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := store.Start(session); err != nil {
+					b.Fatal(err)
+				}
+				m.manualSession = session
+				m.manualSessionLoaded = true
+				b.StartTimer()
+				m.markManualCleanup(manualcleanup.OutcomeDone)
+			}
+		})
 	}
 }
 

@@ -44,14 +44,15 @@ type PlatformAction struct {
 }
 
 const (
-	ActionChooseExportZIP     = "choose-export-zip"
-	ActionExportGuide         = "export-guide"
-	ActionViewRecentImports   = "view-recent-imports"
-	ActionDemoImport          = "demo-import"
-	ActionBack                = "back"
-	ActionViewIntegrationNote = "view-integration-notes"
-	ActionConnectAccount      = "connect-account"
-	ActionScanActivity        = "scan-activity"
+	ActionRequestInstagramExport = "request-instagram-export"
+	ActionChooseExportZIP        = "choose-export-zip"
+	ActionExportGuide            = "export-guide"
+	ActionViewRecentImports      = "view-recent-imports"
+	ActionDemoImport             = "demo-import"
+	ActionBack                   = "back"
+	ActionViewIntegrationNote    = "view-integration-notes"
+	ActionConnectAccount         = "connect-account"
+	ActionScanActivity           = "scan-activity"
 )
 
 type Platform struct {

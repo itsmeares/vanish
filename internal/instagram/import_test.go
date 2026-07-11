@@ -2,6 +2,7 @@ package instagram
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -564,7 +565,7 @@ func TestImportZIPDoesNotPersistSecretLikeMetadata(t *testing.T) {
 	}
 }
 
-func TestImportZIPHashesCommentTextWithoutRawPreview(t *testing.T) {
+func TestImportZIPKeepsCommentPreviewMemoryOnly(t *testing.T) {
 	const rawComment = "This fake comment should never be stored raw."
 	zipPath := writeTestZip(t, map[string]string{
 		"comments/post_comments_1.json": `{
@@ -590,11 +591,53 @@ func TestImportZIPHashesCommentTextWithoutRawPreview(t *testing.T) {
 	if item.Text == nil || !strings.HasPrefix(item.Text.Hash, "sha256:") {
 		t.Fatalf("expected safe hash reference, got %#v", item.Text)
 	}
-	if item.Text.Preview != "" {
-		t.Fatalf("expected no raw preview, got %q", item.Text.Preview)
+	if item.Text.Preview != rawComment {
+		t.Fatalf("expected in-memory preview, got %q", item.Text.Preview)
 	}
-	if strings.Contains(fmt.Sprintf("%#v", item), rawComment) {
-		t.Fatalf("parsed item persisted raw comment text: %#v", item)
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if strings.Contains(string(encoded), rawComment) || strings.Contains(string(encoded), "preview") {
+		t.Fatalf("serialized item persisted preview: %s", encoded)
+	}
+}
+
+func TestImportZIPSanitizesCommentPreviewAndInvalidActor(t *testing.T) {
+	const invalidActor = "bad actor"
+	zipPath := writeTestZip(t, map[string]string{
+		"comments/post_comments_1.json": `{
+  "comments_media_comments": [
+    {
+      "media_owner": "` + invalidActor + `",
+      "comment": "\u001b[31mLine one\u001b[0m\nLine two\u0000 café 👋",
+      "href": "https://www.instagram.com/p/SAFE123/",
+      "timestamp": 1710000000
+    }
+  ]
+}`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("ImportZIP: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("items=%d summary=%#v", len(result.Items), result.Summary)
+	}
+	item := result.Items[0]
+	if item.Actor != "" || item.Metadata["media_owner"] != "" {
+		t.Fatalf("invalid actor retained: actor=%q metadata=%#v", item.Actor, item.Metadata)
+	}
+	if item.Text == nil || item.Text.Preview != "Line one Line two café 👋" {
+		t.Fatalf("sanitized preview=%#v", item.Text)
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if strings.Contains(string(encoded), invalidActor) || strings.Contains(string(encoded), "Line one") {
+		t.Fatalf("unsafe display text persisted: %s", encoded)
 	}
 }
 
