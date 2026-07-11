@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2528,12 +2530,14 @@ func TestManualCleanupStartFailureVisibleOnChoiceScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open workspace: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(w.Dir(), "manual-cleanup"), []byte("blocked"), 0o600); err != nil {
-		t.Fatalf("block session directory: %v", err)
-	}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan := manualCleanupTestPlan(now)
+	blockedProgress := filepath.Join(w.Dir(), "manual-cleanup", manualStoreFileName(plan.ID)+".events.jsonl")
+	if err := os.MkdirAll(blockedProgress, 0o700); err != nil {
+		t.Fatalf("block progress file: %v", err)
+	}
 	m := NewModelWithWorkspace(w, nil)
-	m.planResult.Plan = manualCleanupTestPlan(now)
+	m.planResult.Plan = plan
 	m.importResult.Items = manualCleanupTestItems(now, "memory only")
 	m.current = screenPlanPreview
 	m.openManualCleanup(applySourceGenerated)
@@ -2624,6 +2628,11 @@ func manualProgressPath(t *testing.T, w *workspace.Workspace, planID string) str
 	}
 	t.Fatalf("manifest for %q not found", planID)
 	return ""
+}
+
+func manualStoreFileName(planID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(planID)))
+	return hex.EncodeToString(sum[:16])
 }
 
 func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
