@@ -1,161 +1,61 @@
 # v0.1.0-alpha Release Checklist
 
-Use this checklist before publishing the first alpha.
+Use this checklist for the actual alpha release. Do not claim private real-export
+testing until a maintainer has completed it.
 
-## Local Verification
+## Automated Checks
 
-- [ ] `go test ./...` passes.
-- [ ] `go run ./cmd/vanish` starts.
-- [ ] Demo import works.
-- [ ] Parsed item scrolling works.
-- [ ] Type filters work.
-- [ ] Actor and target filters work.
-- [ ] Older/newer date filters work.
-- [ ] Item selection works with `Enter`.
-- [ ] Item selection works with `Space`.
-- [ ] Selection summary can select visible items.
-- [ ] Selection summary can deselect visible items.
-- [ ] Plan generation includes supported actions and skipped unsupported items.
-- [ ] Plan export writes readable JSON.
-- [ ] Plan load shows summary and actions.
-- [ ] `Ctrl+Q` and `Ctrl+C` open quit confirmation.
-- [ ] Plain `q` does not quit.
-- [ ] `Esc` goes back.
-- [ ] Backspace goes back when no text input is focused.
-- [ ] Backspace edits focused text inputs.
-- [ ] `?` opens help.
+- [ ] Formatting verification passes.
+- [ ] `go test -count=1 ./...` passes.
+- [ ] `go vet ./...` passes.
+- [ ] Supported build matrix compiles: Windows amd64, Linux amd64/arm64, macOS
+  amd64/arm64.
+- [ ] Archive contents contain only intended release files.
+- [ ] SHA-256 checksums generate and verify for all five archives.
+- [ ] Network, browser-automation, credential/secret-persistence, and
+  mutation-boundary safety checks pass.
+- [ ] Tag-push workflow creates a draft release with five archives and
+  `checksums.txt`.
 
-## Safety Verification
+## Maintainer Smoke Tests
 
-- [ ] No network calls were added.
-- [ ] No browser automation was added.
-- [ ] No credentials are collected.
-- [ ] No cookies, tokens, sessions, or passwords are stored.
-- [ ] No raw private messages are stored.
-- [ ] No real apply/deletion logic was added.
-- [ ] README matches the actual app behavior.
-- [ ] Safety docs match the actual app behavior.
+- [ ] Download generated Windows archive from draft release.
+- [ ] Verify its checksum.
+- [ ] Launch packaged Windows binary.
+- [ ] Launch packaged Linux or macOS binary where a suitable environment exists.
+- [ ] Demo import.
+- [ ] Real Instagram export import.
+- [ ] Partial export import.
+- [ ] Large export import.
+- [ ] Review and filtering.
+- [ ] Plan generation.
+- [ ] Unfollow manual action.
+- [ ] Unlike manual action.
+- [ ] Delete-comment manual action.
+- [ ] Stop cleanup.
+- [ ] Close Vanish.
+- [ ] Reopen Vanish.
+- [ ] Resume cleanup.
+- [ ] Complete cleanup.
+- [ ] Return to original plan.
+- [ ] Local-data wipe.
+- [ ] Confirm external ZIP and plan files remain untouched.
 
-Suggested static check:
+## Final Release Steps
 
-```bash
-rg -n "net/http|http\\.(NewRequest|NewRequestWithContext|Client|Transport)|ListenAndServe|HandleFunc" --glob "*.go" --glob "!*_test.go"
-rg -n "http\\.(Get|Post|DefaultClient)" --glob "*.go" --glob "!*_test.go"
-rg -n "chromedp|selenium|playwright|agouti|webdriver|webview|puppeteer|colly|goquery|htmlquery|github\\.com/go-rod/rod" --glob "*.go" --glob "!*_test.go"
-rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authorization|auth_header|password|passwd|cookie|session|session_id)[^\"]*\"" --glob "*.go" --glob "!*_test.go"
-rg -n "\"/api/(del|editusertext|save|unsave|vote|submit|setpermissions)\"" --glob "*.go" --glob "!*_test.go"
-rg -n -i "(scope|scopes)[^[:cntrl:]]*(edit|save|vote|submit|privatemessages|mod[a-z_]*)" --glob "*.go" --glob "!*_test.go"
-```
+- [ ] Merge release-prep PR.
+- [ ] Update local `main`.
+- [ ] Confirm `v0.1.0-alpha` does not already exist on the target remote.
+- [ ] Create annotated tag `v0.1.0-alpha`.
+- [ ] Push tag.
+- [ ] Wait for release workflow.
+- [ ] Open generated draft GitHub Release.
+- [ ] Download and inspect artifacts.
+- [ ] Verify `checksums.txt`.
+- [ ] Edit title and release notes where needed.
+- [ ] Set prerelease classification manually if desired.
+- [ ] Publish manually.
 
-## v0.2 Local Workspace Verification
-
-Use this section for local workspace validation work. It is not a v0.2 release
-announcement.
-
-- [ ] Local data screens match the documented app directory behavior.
-- [ ] Recent import history records only allowed path and summary metadata.
-- [ ] Recent plan history records only allowed path and summary metadata.
-- [ ] Audit hooks record local workspace events without raw parsed content.
-- [ ] Wipe flow clears Vanish-managed config, history, and audit records from
-  the active app directory.
-- [ ] Wipe flow does not remove user export ZIPs or plan JSON files outside the
-  active app directory.
-- [ ] `VANISH_APP_DIR` points the app at an isolated development workspace.
-- [ ] No network calls were added for local workspace features.
-- [ ] No browser automation was added for local workspace features.
-- [ ] No credentials, cookies, tokens, sessions, or authorization data are
-  collected or stored.
-- [ ] No raw parsed items, raw exports, or raw comments are stored in the app
-  directory.
-- [ ] Static checks cover network, browser automation, credential, and
-  authorization handling.
-
-Suggested v0.2 static checks:
-
-```bash
-rg -n "net/http|http\\.(NewRequest|NewRequestWithContext|Client|Transport)|ListenAndServe|HandleFunc" --glob "*.go" --glob "!*_test.go"
-rg -n "http\\.(Get|Post|DefaultClient)" --glob "*.go" --glob "!*_test.go"
-rg -n "chromedp|selenium|playwright|agouti|webdriver|webview|puppeteer|colly|goquery|htmlquery|github\\.com/go-rod/rod" --glob "*.go" --glob "!*_test.go"
-rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authorization|auth_header|password|passwd|cookie|session|session_id)[^\"]*\"" --glob "*.go" --glob "!*_test.go"
-rg -n "VANISH_APP_DIR|UserConfigDir|UserHomeDir|XDG_CONFIG_HOME|Application Support|APPDATA" --glob "*.go"
-```
-
-## v0.5 Reddit Planner Safety Verification
-
-Use this section for the Reddit Official API Planner Prototype branch. It is
-not a release announcement until the feature is complete.
-
-- [ ] Reddit remains dry-run planning only.
-- [ ] Reddit network code is limited to official OAuth/API code.
-- [ ] Network imports/usages exist only in `internal/reddit/oauth.go` or
-  `internal/reddit/client.go`.
-- [ ] Reddit code uses an injected HTTP client, not `http.Get`, `http.Post`,
-  or `http.DefaultClient`.
-- [ ] No browser automation, webview, scraping library, private API, password
-  collection, or cookie/session paste flow was added.
-- [ ] Normal config, logs, audit logs, cleanup plans, recent history, and errors
-  do not store Reddit tokens or authorization headers.
-- [ ] Allowed config metadata is limited to Reddit username, connection time,
-  scopes, token storage mode, credential store mode, and expiry metadata.
-- [ ] Requested OAuth scopes are limited to `identity` and `history`.
-- [ ] No Reddit content/account mutation endpoints are present.
-- [ ] `/api/v1/revoke_token` is used only for explicit disconnect/auth cleanup,
-  if implemented in a later phase.
-
-## v0.6 Apply Foundation Safety Verification
-
-Use this section for the apply preview and no-op execution foundation. It is not
-real platform cleanup.
-
-- [ ] Apply execution uses the no-op executor only.
-- [ ] No Reddit delete, edit, save, vote, submit, or mutation OAuth scopes were
-  added.
-- [ ] No Instagram login, API call, browser automation, scraping, private API,
-  password collection, cookie paste, or session paste flow was added.
-- [ ] Apply audit events include only plan/action IDs, platform, action type,
-  status, executor, account-ready booleans, and counts.
-- [ ] Apply audit events do not include target URLs, usernames, raw content,
-  tokens, cookies, sessions, secrets, or authorization data.
-- [ ] Unsupported platform/action pairs and missing Reddit account metadata
-  block confirmation.
-
-Suggested v0.5 static checks mirror CI:
-
-```bash
-rg -n "net/http|http\\.(NewRequest|NewRequestWithContext|Client|Transport)|ListenAndServe|HandleFunc" --glob "*.go" --glob "!*_test.go"
-rg -n "http\\.(Get|Post|DefaultClient)" --glob "*.go" --glob "!*_test.go"
-rg -n "chromedp|selenium|playwright|agouti|webdriver|webview|puppeteer|colly|goquery|htmlquery|github\\.com/go-rod/rod" --glob "*.go" --glob "!*_test.go"
-rg -n "json:\"[^\"]*(access_token|refresh_token|id_token|client_secret|authorization|auth_header|password|passwd|cookie|session|session_id)[^\"]*\"" --glob "*.go" --glob "!*_test.go"
-rg -n "\"/api/(del|editusertext|save|unsave|vote|submit|setpermissions)\"" --glob "*.go" --glob "!*_test.go"
-rg -n -i "(scope|scopes)[^[:cntrl:]]*(edit|save|vote|submit|privatemessages|mod[a-z_]*)" --glob "*.go" --glob "!*_test.go"
-```
-
-## GitHub Release
-
-- [ ] Commit alpha polish work on `main`.
-- [ ] Push `main` to `origin`.
-- [ ] Tag `v0.1.0-alpha`.
-- [ ] Push `v0.1.0-alpha`.
-- [ ] Create GitHub release titled `v0.1.0-alpha`.
-- [ ] Release notes mention alpha status, dry-run-only behavior, and unsupported features.
-- [ ] GitHub README renders screenshots/GIF.
-- [ ] Install/run docs render correctly.
-- [ ] Issue templates are visible.
-
-## Release Notes Skeleton
-
-```markdown
-Vanish v0.1.0-alpha is the first local-only dry-run planning release.
-
-Supported:
-- Instagram export ZIP import.
-- Demo import with fake local data.
-- Item browsing, filtering, selection, dry-run plan export, and plan loading.
-
-Safety limits:
-- No deletion/apply mode.
-- No login.
-- No browser automation.
-- No network requests.
-- No credentials collected.
-```
+The workflow never runs for pull requests, branch pushes, workflow-only changes,
+or local builds. It creates a draft only after a pushed `v*` tag passes release
+validation and all packaging checks.

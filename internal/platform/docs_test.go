@@ -10,15 +10,13 @@ import (
 func TestPlatformDocsStateCurrentSupportAndBoundaries(t *testing.T) {
 	text := readRepoFile(t, "docs", "platforms.md")
 	for _, want := range []string{
-		"| Instagram Export | prototype |",
-		"| Reddit | prototype |",
-		"Official API planner prototype targets v0.5.",
+		"| Instagram Export | Supported | Supported | Supported | No |",
+		"| Reddit | Official API, access pending | Prototype | No | No |",
+		"experimental read-only official API planner prototype",
+		"access request has been submitted to Reddit",
 		"own comments and submitted posts",
-		"Scan saved items",
-		"Scan vote history",
-		"Use installed-app OAuth with `identity history` scopes.",
-		"Connect through the TUI with manual OAuth",
-		"does not delete platform content or apply account changes",
+		"installed-app OAuth",
+		"automatically apply account changes",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected docs/platforms.md to contain %q, got:\n%s", want, text)
@@ -30,10 +28,11 @@ func TestReadmeLinksPlatformDocsAndAvoidsOverstatingSupport(t *testing.T) {
 	text := readRepoFile(t, "README.md")
 	for _, want := range []string{
 		"[docs/platforms.md](docs/platforms.md)",
-		"Instagram Export prototype",
-		"Reddit official API planner",
-		"manual installed-app OAuth",
-		"does not delete platform content or apply account changes",
+		"Vanish is an open-source, local-first app for finding, reviewing, and cleaning",
+		"Vanish currently runs as an interactive terminal application.",
+		"Instagram export data and assisted manual cleanup",
+		"Offer a read-only Reddit official API planner prototype.",
+		"Vanish never performs those Instagram changes itself.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected README.md to contain %q, got:\n%s", want, text)

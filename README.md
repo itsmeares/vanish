@@ -1,145 +1,88 @@
 # Vanish
 
-Vanish is an open-source, local-first terminal app for reviewing social media
-activity and building safe cleanup plans.
+Vanish is an open-source, local-first app for finding, reviewing, and cleaning
+up your social media footprint across platforms.
 
-Current status: **v0.1.0-alpha**. The app is useful for local review and dry-run
-planning, but it does not delete platform content or apply account changes.
+It brings your activity into one place so you can decide what should stay, what
+should go, and clean it up on your own terms.
 
-The v0.2 local workspace, v0.4 multi-platform foundation, v0.5 Reddit planner
-prototype, and v0.6 no-op apply foundation are documented here, but those
-versions have not been released. The same alpha limits still apply: Vanish does
-not apply real cleanup actions. Instagram stays local-file only; Reddit uses
-explicit installed-app OAuth and the official API for the prototype scanner.
+Vanish currently runs as an interactive terminal application.
 
-![Vanish home screen](docs/assets/home.svg)
+![Vanish platform selection](docs/assets/home.svg)
 
-![Vanish parsed items screen](docs/assets/parsed-items.svg)
+![Vanish activity review](docs/assets/parsed-items.svg)
 
 ![Vanish alpha demo flow](docs/assets/vanish-alpha-demo.gif)
 
-## What Vanish Is
+## Current Alpha
 
-- A local terminal UI for reviewing exported social activity.
-- A dry-run planner for cleanup actions you may want to take later.
-- A small platform registry that labels prototype and planned support honestly.
-- A privacy-focused alternative to tools that require account access too early.
-- Open source and designed around inspectable local files.
+`v0.1.0-alpha` focuses on Instagram export data and assisted manual cleanup.
+It can:
 
-## What Vanish Is Not
+- Open Meta's official export page after your explicit selection.
+- Import a local Instagram JSON export ZIP, including supported data from a
+  partial export.
+- Review, filter, and select activity before generating a local cleanup plan.
+- Guide manual unfollow, unlike, and own-comment deletion actions in your
+  browser. Vanish never performs those Instagram changes itself.
+- Stop a cleanup session, close Vanish, reopen it, and resume later.
+- Load and review saved cleanup plans.
+- Keep local history, audit records, workspace data, and a local-data wipe flow.
+- Offer a read-only Reddit official API planner prototype.
 
-- Vanish does not make you invisible on the internet.
-- Vanish does not log in to Instagram.
-- Vanish does not use browser automation, scraping, private APIs, or cloud jobs.
-- Vanish does not automatically delete platform content, unlike, unfollow, or
-  apply account changes.
+Vanish does not yet provide automatic or complete multi-platform cleanup. See
+[docs/platforms.md](docs/platforms.md) for current support and
+[docs/safety.md](docs/safety.md) for boundaries.
 
-## Local-First Safety
+## Platform Support
 
-- No cloud backend.
-- No telemetry by default.
-- No passwords, cookies, or pasted sessions collected.
-- Reddit refresh tokens, when used, go through the configured secret store.
-- No passwords, cookies, sessions, authorization headers, or raw private
-  messages in plan files.
-- Local Instagram export ZIPs are read from disk only.
-- Cleanup plans are dry-run JSON files you can inspect before doing anything else.
+| Platform | Import or scan | Cleanup planning | Assisted cleanup | Automatic cleanup |
+| --- | --- | --- | --- | --- |
+| Instagram Export | Supported | Supported | Supported | No |
+| Reddit | Official API, access pending | Prototype | No | No |
+| Other platforms | Planned | Planned | Planned | Planned |
 
-See [docs/safety.md](docs/safety.md) for the longer safety model and
-[docs/platforms.md](docs/platforms.md) for platform status.
+Instagram Export is the current alpha path. Reddit is an experimental,
+read-only official API planner prototype. A developer access request has been
+submitted to Reddit, and the project is awaiting a response, so the integration
+may not be usable in public builds yet. Approval has not been granted. Reddit
+access does not block this Instagram alpha release.
 
-## Local Data Behavior
+## How Vanish Works
 
-Vanish v0.2 keeps a local workspace so recent work is easier to inspect without
-re-importing everything. This local data is stored on your machine in the Vanish
-app directory and is not synced to a hosted account.
+1. Request or import social activity data.
+2. Review and filter activity.
+3. Select what should be cleaned up.
+4. Generate a cleanup plan.
+5. Work through supported cleanup actions.
+6. Stop and resume later.
 
-The app directory stores:
+## Download and Install
 
-- Configuration needed by the local app, including local workspace timestamps
-  and the last/default plan paths used by the TUI.
-- Recent import history with file path, total count, per-type counts, skipped
-  count, warning count, and demo/source metadata.
-- Recent cleanup plan history with file path, plan creation time, last used
-  time, last operation, and plan summary metadata.
-- A local audit log for workspace events such as imports, plan exports, plan
-  loads, and wipes.
-- Assisted manual-cleanup progress: safe plan/action references and outcomes.
+Prebuilt alpha binaries will be available from the
+[GitHub Releases page](https://github.com/itsmeares/vanish/releases). Choose
+the archive for your platform, extract it, and run the executable:
 
-The app directory does not store raw parsed items, raw exports, raw comments,
-credentials, cookies, login sessions, or authorization data. Assisted cleanup
-stores only safe target references, hashes, progress, and outcomes. Reddit
-refresh tokens, when used, go through the configured secret store rather than
-normal config.
-Imported export ZIPs and exported plans remain normal local files at the paths
-you choose.
+| Platform | Archive | Run |
+| --- | --- | --- |
+| Windows amd64 | `vanish_<tag>_windows_amd64.zip` | Run `vanish.exe` from PowerShell or Explorer. |
+| Linux amd64 | `vanish_<tag>_linux_amd64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_linux_amd64/vanish` |
+| Linux arm64 | `vanish_<tag>_linux_arm64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_linux_arm64/vanish` |
+| macOS amd64 | `vanish_<tag>_darwin_amd64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_darwin_amd64/vanish` |
+| macOS arm64 | `vanish_<tag>_darwin_arm64.tar.gz` | `tar -xzf <archive>` then `./vanish_<tag>_darwin_arm64/vanish` |
 
-Default app directory locations:
+For `v0.1.0-alpha`, names are equivalent to
+`vanish_v0.1.0-alpha_windows_amd64.zip` and the matching Linux/macOS archives.
+Each release also includes `checksums.txt` for SHA-256 integrity checking.
 
-- Windows: `%APPDATA%\vanish`
-- macOS: `$HOME/Library/Application Support/vanish`
-- Linux: `${XDG_CONFIG_HOME:-$HOME/.config}/vanish`
+Alpha binaries are unsigned, so your operating system may show a warning. A
+checksum confirms that an archive has not changed since release; it is not code
+signing or identity verification.
 
-For development and tests, set `VANISH_APP_DIR` to point Vanish at a disposable
-workspace:
+## Build from Source
 
-```bash
-VANISH_APP_DIR=/tmp/vanish-dev go run ./cmd/vanish
-```
-
-On PowerShell:
-
-```powershell
-$env:VANISH_APP_DIR = "$env:TEMP\vanish-dev"
-go run ./cmd/vanish
-```
-
-The local data wipe flow clears Vanish-managed configuration, history, and audit
-records from the active app directory. It does not delete the original Instagram
-export ZIPs or cleanup plan JSON files unless those files are inside the active
-app directory.
-
-See [docs/local-data.md](docs/local-data.md) for the detailed local workspace
-model.
-
-## Supported Today
-
-- Instagram Export prototype: local ZIP import.
-- Instagram export-request onboarding.
-- Assisted manual cleanup for unfollow, unlike, and own-comment actions.
-- Demo import with fake local Instagram data.
-- Parsed item browsing.
-- Filtering by item type, actor, target, and date.
-- Review selection.
-- Dry-run plan generation.
-- Plan export to JSON.
-- Plan loading and viewing.
-- Apply preview, short confirmation, and no-op execution for supported pending
-  plan actions.
-- Reddit official API planner prototype: manual installed-app OAuth, own
-  comments/posts scan, review/filter/select reuse, and Reddit dry-run plan
-  generation.
-
-## Not Supported Yet
-
-- Automatic deletion or real apply/execution.
-- Instagram login.
-- Browser automation.
-- Reddit saved items and vote history scanning.
-- Reddit real apply/delete execution.
-- Other platform integrations beyond Instagram Export and Reddit.
-- Cloud sync or hosted accounts.
-
-See [docs/platforms.md](docs/platforms.md) for the full platform matrix.
-
-## Install And Run
-
-Requirements:
-
-- Go 1.26 or newer.
-- A terminal that supports interactive TUI apps.
-
-Run from source:
+Vanish requires Go `1.26.4` (the version declared in `go.mod`) and a terminal
+that supports interactive TUI apps.
 
 ```bash
 git clone https://github.com/itsmeares/vanish.git
@@ -147,76 +90,72 @@ cd vanish
 go run ./cmd/vanish
 ```
 
-Run tests:
+Run checks with:
 
 ```bash
-go test ./...
+gofmt -l .
+go test -count=1 ./...
+go vet ./...
+go build ./cmd/vanish
 ```
 
-## Try The Demo Import
+## Instagram Export
 
-The demo import creates a temporary fake Instagram export ZIP on your machine.
-It includes fake likes, comments, following records, follower records, and
-unsupported files so you can test warnings, filters, selection, and plan
-generation without using a real export.
+In Instagram, use this current Meta export flow:
 
-```bash
-go run ./cmd/vanish
-```
+1. **Instagram Settings**
+2. **Accounts Centre**
+3. **Your information and permissions**
+4. **Export your information**
+5. **Create export**
+6. Choose the Instagram profile.
+7. Choose **Export to device**.
+8. **Customise information**.
+9. Set **Date range** to **All time**.
+10. Set **Format** to **JSON**.
+11. Start the export.
 
-Then choose **Instagram Export**, then **Demo import with fake local data**.
+Meta may take time to prepare the export; Vanish does not need to remain open.
+Partial exports can still be imported when they contain supported data. The ZIP
+stays on your machine.
 
-## Use A Real Instagram Export ZIP
+## Privacy and Safety
 
-1. Download your Instagram data export from Instagram.
-2. Keep the ZIP on your local machine.
-3. Run `go run ./cmd/vanish`.
-4. Choose **Instagram Export**.
-5. Choose **Choose export ZIP**.
-6. Review parsed items, warnings, filters, and selection.
+Vanish has no cloud backend or default telemetry. It does not collect
+Instagram passwords, cookies, browser sessions, or private API access, and it
+does not scrape or automate a browser. Instagram cleanup remains user-directed
+manual work in the system browser.
 
-Vanish reads local JSON files from the ZIP. It does not contact Instagram.
+The Reddit prototype is the narrow exception to local-file-only behavior: it
+uses the official API within its documented read-only boundary. Details live in
+[docs/safety.md](docs/safety.md).
 
-## Export And Load Plans
+## Local Data
 
-To export a dry-run plan:
+Vanish stores local workspace metadata, history, audit records, and safe manual
+cleanup progress in its app directory. It does not copy raw exports or persist
+raw comment text. Local-data wipe clears Vanish-managed data only; it does not
+delete export ZIPs or plan files you chose outside that directory.
 
-1. Import demo data or a local Instagram ZIP.
-2. Open parsed items.
-3. Toggle items with `Enter` or `Space`.
-4. Open **Review selection**.
-5. Choose **Generate dry-run plan**.
-6. Choose **Export JSON**.
+See [docs/local-data.md](docs/local-data.md) for locations, retained metadata,
+and wipe behavior.
 
-The default output path is `vanish-plan.json`.
+## Known Limitations
 
-To load a plan:
+- Instagram changes are performed manually in your browser.
+- Instagram export formats can change.
+- Comment previews are memory-only and disappear after restart.
+- Reddit remains an experimental read-only prototype awaiting developer access.
+- Vanish has no automatic platform mutations or browser automation.
 
-1. Start Vanish.
-2. Open the **Plans** tab.
-3. Enter the local JSON path.
-4. Review the plan summary and action list.
+## Development
 
-## Keybindings
+See [docs/release-checklist.md](docs/release-checklist.md) for release checks
+and [docs/platforms.md](docs/platforms.md) for support details. Contributions
+should preserve the local-first and explicit-user-action boundaries documented
+in [docs/safety.md](docs/safety.md).
 
-- `Up` / `Down` or `j` / `k`: move.
-- `Enter`: primary action; toggles the highlighted parsed item.
-- `Space`: toggles the highlighted parsed item.
-- `Esc`: back.
-- `Backspace`: back when no text input is focused.
-- `?`: help screen.
-- `Ctrl+Q` or `Ctrl+C`: quit confirmation.
+## License and affiliation
 
-Plain `q` does not quit.
-
-## Release Prep
-
-See [docs/release-checklist.md](docs/release-checklist.md) for the v0.1.0-alpha
-release checklist.
-
-## License
-
-AGPL-3.0.
-
-Vanish is not affiliated with Instagram, Meta, Redact, Reddit, X, YouTube, or
-any supported or planned platform.
+AGPL-3.0. Vanish is not affiliated with Instagram, Meta, Reddit, Redact, X,
+YouTube, or any supported or planned platform.
