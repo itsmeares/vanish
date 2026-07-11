@@ -15,7 +15,12 @@ import (
 func TestSessionMappingPersistenceResumeAndStartOver(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	plan, items := testPlanAndItems(now)
-	original := plan
+	plan.Actions[0].Metadata = map[string]string{"batch": "alpha"}
+	plan.Actions[1].Status = domain.ActionStatusStopped
+	plan.Actions[1].CreatedAt = now.Add(time.Minute)
+	plan.Actions[3].Status = domain.ActionStatusFailed
+	plan.Actions[3].CreatedAt = now.Add(3 * time.Minute)
+	original := clonePlan(plan)
 	session, unavailable, err := New("manual-one", plan, items, now)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -46,6 +51,9 @@ func TestSessionMappingPersistenceResumeAndStartOver(t *testing.T) {
 	if loaded.State != StateStopped || loaded.CurrentPosition != 1 || loaded.Outcomes[0] != OutcomeDone {
 		t.Fatalf("loaded session = %#v", loaded)
 	}
+	if !reflect.DeepEqual(loaded.OriginalPlan(), original) {
+		t.Fatalf("loaded plan snapshot differs:\ngot:  %#v\nwant: %#v", loaded.OriginalPlan(), original)
+	}
 	if err := store.Resume(&loaded, now.Add(3*time.Minute)); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -61,27 +69,100 @@ func TestSessionMappingPersistenceResumeAndStartOver(t *testing.T) {
 		t.Fatalf("counts done=%d skipped=%d pending=%d", done, skipped, pending)
 	}
 
-	restarted, _, err := New("manual-two", plan, items, now.Add(6*time.Minute))
+	manifestPath, _ := store.paths(plan.ID)
+	manifestBefore, err := os.ReadFile(manifestPath)
 	if err != nil {
-		t.Fatalf("New start-over: %v", err)
+		t.Fatalf("read manifest before start over: %v", err)
 	}
-	if err := store.Start(restarted); err != nil {
-		t.Fatalf("Start over: %v", err)
+	restarted, err := store.StartOver(plan.ID, now.Add(6*time.Minute))
+	if err != nil {
+		t.Fatalf("StartOver: %v", err)
+	}
+	manifestAfter, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest after start over: %v", err)
+	}
+	if !reflect.DeepEqual(manifestBefore, manifestAfter) {
+		t.Fatal("start over changed immutable session manifest")
 	}
 	reset, ok, err := store.Load(plan.ID)
-	if err != nil || !ok || reset.ID != "manual-two" || reset.CurrentPosition != 0 || reset.State != StateActive {
+	if err != nil || !ok || reset.ID != restarted.ID || reset.ID != "manual-one" || reset.CurrentPosition != 0 || reset.State != StateActive {
 		t.Fatalf("reset session=%#v ok=%t err=%v", reset, ok, err)
 	}
-	if !reflect.DeepEqual(plan, original) {
+	if !reflect.DeepEqual(reset.OriginalPlan(), original) || !reflect.DeepEqual(plan, original) {
 		t.Fatal("session lifecycle mutated original plan")
+	}
+}
+
+func TestStoreLoadRejectsMismatchedEmbeddedPlanID(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan, items := testPlanAndItems(now)
+	session, _, err := New("manual-mismatch", plan, items, now)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	store := NewStore(t.TempDir())
+	if err := store.Start(session); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	manifestPath, _ := store.paths(plan.ID)
+	session.Manifest.PlanID = "different-plan"
+	session.Manifest.PlanSnapshot.ID = "different-plan"
+	encoded, err := json.Marshal(session.Manifest)
+	if err != nil {
+		t.Fatalf("marshal tampered manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+		t.Fatalf("write tampered manifest: %v", err)
+	}
+	loaded, ok, err := store.Load(plan.ID)
+	if err == nil || ok || loaded.ID != "" {
+		t.Fatalf("mismatched load session=%#v ok=%t err=%v", loaded, ok, err)
+	}
+}
+
+func TestReplayRejectsMismatchedOutcomeActionAndPosition(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	plan, items := testPlanAndItems(now)
+	tests := []struct {
+		name  string
+		event progressEvent
+	}{
+		{name: "session ID", event: progressEvent{ID: "other", At: now.Add(time.Minute), Kind: "done", ActionID: "unfollow-1", Outcome: OutcomeDone, Position: 1, State: StateActive}},
+		{name: "action ID", event: progressEvent{ID: "manual-replay", At: now.Add(time.Minute), Kind: "done", ActionID: "unlike-1", Outcome: OutcomeDone, Position: 1, State: StateActive}},
+		{name: "position", event: progressEvent{ID: "manual-replay", At: now.Add(time.Minute), Kind: "done", ActionID: "unfollow-1", Outcome: OutcomeDone, Position: 2, State: StateActive}},
+		{name: "outcome", event: progressEvent{ID: "manual-replay", At: now.Add(time.Minute), Kind: "done", ActionID: "unfollow-1", Outcome: OutcomeSkipped, Position: 1, State: StateActive}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session, _, err := New("manual-replay", plan, items, now)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			store := NewStore(t.TempDir())
+			if err := store.Start(session); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			_, progressPath := store.paths(plan.ID)
+			writeProgressEvents(t, progressPath,
+				progressEvent{ID: session.ID, At: now, Kind: "started", Position: 0, State: StateActive},
+				test.event,
+			)
+			loaded, ok, err := store.Load(plan.ID)
+			if err == nil || ok || loaded.ID != "" {
+				t.Fatalf("corrupt replay session=%#v ok=%t err=%v", loaded, ok, err)
+			}
+		})
 	}
 }
 
 func TestSessionFilesNeverPersistRawCommentText(t *testing.T) {
 	const raw = "private synthetic comment body"
+	const invalidActor = "bad actor\x1b[31m"
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	plan, items := testPlanAndItems(now)
 	items[2].Text = &domain.SafeTextReference{Hash: "sha256:abc", Preview: raw}
+	items[2].Actor = invalidActor
 	session, _, err := New("privacy-test", plan, items, now)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -102,8 +183,8 @@ func TestSessionFilesNeverPersistRawCommentText(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		if strings.Contains(string(content), raw) {
-			t.Fatalf("raw comment persisted in %s", path)
+		if strings.Contains(string(content), raw) || strings.Contains(string(content), invalidActor) {
+			t.Fatalf("unsafe display text persisted in %s", path)
 		}
 		return nil
 	})
@@ -111,7 +192,7 @@ func TestSessionFilesNeverPersistRawCommentText(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	encoded, err := json.Marshal(session.Manifest)
-	if err != nil || strings.Contains(string(encoded), raw) {
+	if err != nil || strings.Contains(string(encoded), raw) || strings.Contains(string(encoded), invalidActor) {
 		t.Fatalf("manifest privacy failure: %s err=%v", encoded, err)
 	}
 }
@@ -130,4 +211,20 @@ func testPlanAndItems(now time.Time) (domain.CleanupPlan, []domain.ActivityItem)
 		{ID: "comment-item", Platform: domain.PlatformInstagram, Type: domain.ItemTypeComment, TargetURL: actions[2].TargetURL, TargetID: "POST1", Actor: "post_owner", OccurredAt: &now, Text: &domain.SafeTextReference{Hash: "sha256:abc", Preview: "synthetic preview"}},
 	}
 	return plan, items
+}
+
+func writeProgressEvents(t *testing.T, path string, events ...progressEvent) {
+	t.Helper()
+	var lines []byte
+	for _, event := range events {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal progress event: %v", err)
+		}
+		lines = append(lines, encoded...)
+		lines = append(lines, '\n')
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatalf("write progress events: %v", err)
+	}
 }

@@ -12,11 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/itsmeares/vanish/internal/domain"
+	"github.com/itsmeares/vanish/internal/instagram"
 )
 
 type Store struct {
 	dir string
 }
+
+var errUnreadableProgress = errors.New("manual cleanup progress is unreadable")
 
 type progressEvent struct {
 	ID       string    `json:"id"`
@@ -48,13 +53,29 @@ func (store Store) Start(session Session) error {
 }
 
 func (store Store) Load(planID string) (Session, bool, error) {
+	planID = strings.TrimSpace(planID)
+	if planID == "" {
+		return Session{}, false, errUnreadableProgress
+	}
 	manifestPath, progressPath := store.paths(planID)
-	file, err := os.Open(manifestPath)
+	manifest, found, err := loadManifest(manifestPath, planID)
+	if err != nil || !found {
+		return Session{}, found, err
+	}
+	session := sessionFromManifest(manifest)
+	if err := replayProgress(progressPath, &session); err != nil {
+		return Session{}, false, err
+	}
+	return session, true, nil
+}
+
+func loadManifest(path, requestedPlanID string) (Manifest, bool, error) {
+	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Session{}, false, nil
+		return Manifest{}, false, nil
 	}
 	if err != nil {
-		return Session{}, false, err
+		return Manifest{}, false, err
 	}
 	defer file.Close()
 
@@ -62,28 +83,24 @@ func (store Store) Load(planID string) (Session, bool, error) {
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
-		return Session{}, false, errors.New("manual cleanup progress is unreadable")
+		return Manifest{}, false, errUnreadableProgress
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
-		return Session{}, false, errors.New("manual cleanup progress is unreadable")
+		return Manifest{}, false, errUnreadableProgress
 	}
 	if err := validateManifest(manifest); err != nil {
-		return Session{}, false, err
+		return Manifest{}, false, err
 	}
+	if requestedPlanID != "" && manifest.PlanID != strings.TrimSpace(requestedPlanID) {
+		return Manifest{}, false, errUnreadableProgress
+	}
+	return manifest, true, nil
+}
 
-	session := Session{
-		Manifest:  manifest,
-		UpdatedAt: manifest.CreatedAt,
-		State:     StateActive,
-		Outcomes:  make([]Outcome, len(manifest.Actions)),
-	}
-	for i := range session.Outcomes {
-		session.Outcomes[i] = OutcomePending
-	}
-	if err := replayProgress(progressPath, &session); err != nil {
-		return Session{}, false, err
-	}
-	return session, true, nil
+func sessionFromManifest(manifest Manifest) Session {
+	session := Session{Manifest: manifest}
+	session.initializeProgress()
+	return session
 }
 
 func (store Store) LatestUnfinished() (Session, bool, error) {
@@ -96,22 +113,34 @@ func (store Store) LatestUnfinished() (Session, bool, error) {
 	}
 	var latest Session
 	found := false
+	var firstErr error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		file, err := os.Open(filepath.Join(store.dir, entry.Name()))
-		if err != nil {
+		manifestPath := filepath.Join(store.dir, entry.Name())
+		manifest, ok, err := loadManifest(manifestPath, "")
+		if err != nil || !ok {
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-		var manifest Manifest
-		err = json.NewDecoder(file).Decode(&manifest)
-		_ = file.Close()
-		if err != nil || strings.TrimSpace(manifest.PlanID) == "" {
+		expectedManifestPath, progressPath := store.paths(manifest.PlanID)
+		if filepath.Clean(expectedManifestPath) != filepath.Clean(manifestPath) {
+			if firstErr == nil {
+				firstErr = errUnreadableProgress
+			}
 			continue
 		}
-		session, ok, err := store.Load(manifest.PlanID)
-		if err != nil || !ok || session.State == StateCompleted {
+		session := sessionFromManifest(manifest)
+		if err := replayProgress(progressPath, &session); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if session.State == StateCompleted {
 			continue
 		}
 		if !found || session.UpdatedAt.After(latest.UpdatedAt) {
@@ -119,7 +148,32 @@ func (store Store) LatestUnfinished() (Session, bool, error) {
 			found = true
 		}
 	}
-	return latest, found, nil
+	if found {
+		return latest, true, nil
+	}
+	return Session{}, false, firstErr
+}
+
+func (store Store) StartOver(planID string, at time.Time) (Session, error) {
+	planID = strings.TrimSpace(planID)
+	if planID == "" {
+		return Session{}, errUnreadableProgress
+	}
+	manifestPath, progressPath := store.paths(planID)
+	manifest, found, err := loadManifest(manifestPath, planID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !found {
+		return Session{}, os.ErrNotExist
+	}
+	event := progressEvent{ID: manifest.ID, At: normalizedTime(at), Kind: "started", Position: 0, State: StateActive}
+	if err := replaceProgress(progressPath, event); err != nil {
+		return Session{}, err
+	}
+	session := sessionFromManifest(manifest)
+	session.UpdatedAt = event.At
+	return session, nil
 }
 
 func (store Store) Resume(session *Session, at time.Time) error {
@@ -138,6 +192,9 @@ func (store Store) Mark(session *Session, outcome Outcome, at time.Time) (bool, 
 	if !ok {
 		return false, errors.New("manual cleanup has no pending action")
 	}
+	if session.CurrentPosition >= len(session.Outcomes) || session.Outcomes[session.CurrentPosition] != OutcomePending {
+		return false, errUnreadableProgress
+	}
 	position := session.CurrentPosition + 1
 	state := StateActive
 	if position >= len(session.Actions) {
@@ -155,7 +212,9 @@ func (store Store) Mark(session *Session, outcome Outcome, at time.Time) (bool, 
 	if err := store.append(session.PlanID, event); err != nil {
 		return false, err
 	}
-	applyProgressEvent(session, event)
+	if err := applyProgressEvent(session, event, false); err != nil {
+		return false, err
+	}
 	return state == StateCompleted, nil
 }
 
@@ -167,10 +226,14 @@ func (store Store) recordState(session *Session, kind string, state State, at ti
 		Position: session.CurrentPosition,
 		State:    state,
 	}
+	next := *session
+	if err := applyProgressEvent(&next, event, false); err != nil {
+		return err
+	}
 	if err := store.append(session.PlanID, event); err != nil {
 		return err
 	}
-	applyProgressEvent(session, event)
+	*session = next
 	return nil
 }
 
@@ -202,49 +265,77 @@ func (store Store) paths(planID string) (string, string) {
 
 func replayProgress(path string, session *Session) error {
 	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
 	if err != nil {
-		return err
+		return errUnreadableProgress
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
+	first := true
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 		var event progressEvent
-		if json.Unmarshal([]byte(line), &event) != nil || event.ID != session.ID {
-			continue
+		if json.Unmarshal([]byte(line), &event) != nil {
+			return errUnreadableProgress
 		}
-		applyProgressEvent(session, event)
+		if err := applyProgressEvent(session, event, first); err != nil {
+			return errUnreadableProgress
+		}
+		first = false
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return errUnreadableProgress
+	}
+	if first {
+		return errUnreadableProgress
 	}
 	return nil
 }
 
-func applyProgressEvent(session *Session, event progressEvent) {
-	if event.Outcome != "" {
-		for i, action := range session.Actions {
-			if action.ActionID == event.ActionID {
-				session.Outcomes[i] = event.Outcome
-				break
-			}
+func applyProgressEvent(session *Session, event progressEvent, first bool) error {
+	if event.ID != session.ID || event.At.IsZero() {
+		return errUnreadableProgress
+	}
+	switch event.Kind {
+	case "started":
+		if !first || event.ActionID != "" || event.Outcome != "" || event.Position != 0 || event.State != StateActive {
+			return errUnreadableProgress
 		}
-	}
-	if event.Position >= 0 && event.Position <= len(session.Actions) {
+		session.initializeProgress()
+	case string(OutcomeDone), string(OutcomeSkipped):
+		if first || event.Outcome != Outcome(event.Kind) || session.State == StateCompleted {
+			return errUnreadableProgress
+		}
+		index := session.CurrentPosition
+		if index < 0 || index >= len(session.Actions) || event.ActionID != session.Actions[index].ActionID || event.Position != index+1 {
+			return errUnreadableProgress
+		}
+		expectedState := StateActive
+		if event.Position == len(session.Actions) {
+			expectedState = StateCompleted
+		}
+		if event.State != expectedState || session.recordOutcome(index, event.Outcome) != nil {
+			return errUnreadableProgress
+		}
 		session.CurrentPosition = event.Position
-	}
-	if event.State != "" {
 		session.State = event.State
+	case "resumed":
+		if first || event.ActionID != "" || event.Outcome != "" || event.Position != session.CurrentPosition || event.State != StateActive || session.CurrentPosition >= len(session.Actions) {
+			return errUnreadableProgress
+		}
+		session.State = StateActive
+	case "stopped":
+		if first || event.ActionID != "" || event.Outcome != "" || event.Position != session.CurrentPosition || event.State != StateStopped || session.CurrentPosition >= len(session.Actions) {
+			return errUnreadableProgress
+		}
+		session.State = StateStopped
+	default:
+		return errUnreadableProgress
 	}
-	if !event.At.IsZero() {
-		session.UpdatedAt = event.At
-	}
+	session.UpdatedAt = event.At
+	return nil
 }
 
 func validateManifest(manifest Manifest) error {
@@ -252,17 +343,45 @@ func validateManifest(manifest Manifest) error {
 		return errors.New("manual cleanup progress is invalid")
 	}
 	if manifest.Mode != ModeInstagramManual || manifest.CreatedAt.IsZero() || len(manifest.Actions) == 0 {
-		return errors.New("manual cleanup progress is invalid")
+		return errUnreadableProgress
+	}
+	if err := manifest.PlanSnapshot.Validate(); err != nil || manifest.PlanSnapshot.Platform != domain.PlatformInstagram || manifest.PlanSnapshot.ID != manifest.PlanID {
+		return errUnreadableProgress
+	}
+	planActions := make(map[string]domain.CleanupAction, len(manifest.PlanSnapshot.Actions))
+	planPositions := make(map[string]int, len(manifest.PlanSnapshot.Actions))
+	for index, action := range manifest.PlanSnapshot.Actions {
+		if _, exists := planActions[action.ID]; exists {
+			return errUnreadableProgress
+		}
+		planActions[action.ID] = action
+		planPositions[action.ID] = index
 	}
 	seen := make(map[string]struct{}, len(manifest.Actions))
+	lastPosition := -1
 	for _, action := range manifest.Actions {
 		if strings.TrimSpace(action.ActionID) == "" || strings.TrimSpace(action.TargetURL) == "" {
-			return errors.New("manual cleanup progress is invalid")
+			return errUnreadableProgress
 		}
 		if _, ok := seen[action.ActionID]; ok {
-			return errors.New("manual cleanup progress is invalid")
+			return errUnreadableProgress
 		}
 		seen[action.ActionID] = struct{}{}
+		planned, ok := planActions[action.ActionID]
+		if !ok || planned.Type != action.Type || planPositions[action.ActionID] <= lastPosition {
+			return errUnreadableProgress
+		}
+		lastPosition = planPositions[action.ActionID]
+		target, err := instagram.ValidateCleanupTarget(action.Type, action.TargetURL, action.TargetID)
+		if err != nil || target.URL != action.TargetURL || target.Kind != action.TargetKind || target.Identifier != action.TargetID {
+			return errUnreadableProgress
+		}
+		if action.Actor != "" {
+			actor, valid := instagram.NormalizeUsername(action.Actor)
+			if !valid || actor != action.Actor {
+				return errUnreadableProgress
+			}
+		}
 	}
 	return nil
 }

@@ -220,7 +220,7 @@ func activityItemFromLikedPostArrayRecord(fileName string, record likedPostArray
 	}
 
 	listData := firstLikedPostArrayStringData(record.StringListData)
-	username := firstNonEmpty(listData.Value, record.Title, record.Username)
+	username, _ := NormalizeUsername(firstNonEmpty(listData.Value, record.Title, record.Username))
 	targetURL := firstNonEmpty(listData.Href, record.Href, record.URL)
 	targetID := firstNonEmpty(username, targetURL)
 	if targetURL == "" && targetID == "" {
@@ -412,7 +412,7 @@ func parseLikes(fileName string, raw any, importedAt *time.Time, warnings *warni
 		}
 
 		listData := firstStringListData(rec)
-		username := firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username"))
+		username, _ := NormalizeUsername(firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username")))
 		targetURL := firstNonEmpty(listData.Href, stringField(rec, "href"), stringField(rec, "url"))
 		targetID := firstNonEmpty(username, targetURL)
 		occurredAt := firstTime(listData.Timestamp, parseTimeValue(rec["timestamp"]))
@@ -467,12 +467,12 @@ func parseComments(fileName string, raw any, importedAt *time.Time, warnings *wa
 			safeText = &domain.SafeTextReference{Hash: textHash, Preview: commentPreview(commentText)}
 		}
 
-		mediaOwner := firstNonEmpty(
+		mediaOwner, _ := NormalizeUsername(firstNonEmpty(
 			stringField(rec, "media_owner"),
 			ownerData.Value,
 			stringField(rec, "title"),
 			listData.Value,
-		)
+		))
 		targetURL := firstNonEmpty(listData.Href, commentData.Href, stringField(rec, "href"), stringField(rec, "url"))
 		targetID := firstNonEmpty(mediaOwner, shortHash(textHash), targetURL)
 		occurredAt := firstTime(
@@ -499,12 +499,7 @@ func parseComments(fileName string, raw any, importedAt *time.Time, warnings *wa
 }
 
 func commentPreview(value string) string {
-	value = strings.Join(strings.Fields(value), " ")
-	runes := []rune(value)
-	if len(runes) <= 80 {
-		return value
-	}
-	return strings.TrimSpace(string(runes[:79])) + "…"
+	return SanitizeCommentPreview(value)
 }
 
 func parseRelationships(fileName string, raw any, importedAt *time.Time, kind activityKind, warnings *warningCollector) []domain.ActivityItem {
@@ -532,7 +527,7 @@ func parseRelationships(fileName string, raw any, importedAt *time.Time, kind ac
 		}
 
 		listData := firstStringListData(rec)
-		username := firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username"))
+		username, _ := NormalizeUsername(firstNonEmpty(listData.Value, stringField(rec, "title"), stringField(rec, "username")))
 		targetURL := firstNonEmpty(listData.Href, stringField(rec, "href"), stringField(rec, "url"))
 		targetID := firstNonEmpty(username, targetURL)
 		occurredAt := firstTime(listData.Timestamp, parseTimeValue(rec["timestamp"]))
@@ -566,6 +561,7 @@ func appendValidItem(items []domain.ActivityItem, fileName string, item domain.A
 }
 
 func newActivityItem(kind activityKind, fileName, targetURL, targetID, actor string, occurredAt, importedAt *time.Time, metadata map[string]string, safeText *domain.SafeTextReference) domain.ActivityItem {
+	actor, _ = NormalizeUsername(actor)
 	itemType := domain.ItemTypeFollow
 	switch kind {
 	case kindLike:

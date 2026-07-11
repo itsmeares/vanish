@@ -12,7 +12,7 @@ import (
 	"github.com/itsmeares/vanish/internal/instagram"
 )
 
-const FormatVersion = 1
+const FormatVersion = 2
 
 type Mode string
 
@@ -46,15 +46,13 @@ type Action struct {
 }
 
 type Manifest struct {
-	FormatVersion int             `json:"format_version"`
-	ID            string          `json:"id"`
-	PlanID        string          `json:"plan_id"`
-	Mode          Mode            `json:"mode"`
-	CreatedAt     time.Time       `json:"created_at"`
-	PlanCreatedAt time.Time       `json:"plan_created_at"`
-	PlanMode      domain.PlanMode `json:"plan_mode"`
-	SourceName    string          `json:"source_name,omitempty"`
-	Actions       []Action        `json:"actions"`
+	FormatVersion int                `json:"format_version"`
+	ID            string             `json:"id"`
+	PlanID        string             `json:"plan_id"`
+	Mode          Mode               `json:"mode"`
+	CreatedAt     time.Time          `json:"created_at"`
+	PlanSnapshot  domain.CleanupPlan `json:"plan"`
+	Actions       []Action           `json:"actions"`
 }
 
 type Session struct {
@@ -63,6 +61,9 @@ type Session struct {
 	CurrentPosition int
 	State           State
 	Outcomes        []Outcome
+	doneCount       int
+	skippedCount    int
+	countsReady     bool
 }
 
 type Unavailable struct {
@@ -85,6 +86,9 @@ func New(id string, plan domain.CleanupPlan, items []domain.ActivityItem, now ti
 	}
 	if plan.Platform != domain.PlatformInstagram {
 		return Session{}, nil, errors.New("manual cleanup requires an Instagram plan")
+	}
+	if err := plan.Validate(); err != nil {
+		return Session{}, nil, errors.New("manual cleanup requires a valid Instagram plan")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -116,8 +120,13 @@ func New(id string, plan domain.CleanupPlan, items []domain.ActivityItem, now ti
 			TargetID:   target.Identifier,
 		}
 		if item, ok := byID[planned.SourceActivityItemID]; ok {
-			action.Actor = strings.TrimSpace(item.Actor)
-			action.OccurredAt = item.OccurredAt
+			if actor, valid := instagram.NormalizeUsername(item.Actor); valid {
+				action.Actor = actor
+			}
+			if item.OccurredAt != nil {
+				occurredAt := item.OccurredAt.UTC()
+				action.OccurredAt = &occurredAt
+			}
 			if item.Text != nil {
 				action.TextHash = strings.TrimSpace(item.Text.Hash)
 			}
@@ -139,14 +148,13 @@ func New(id string, plan domain.CleanupPlan, items []domain.ActivityItem, now ti
 			PlanID:        plan.ID,
 			Mode:          ModeInstagramManual,
 			CreatedAt:     now.UTC(),
-			PlanCreatedAt: plan.CreatedAt,
-			PlanMode:      plan.Mode,
-			SourceName:    plan.SourceName,
+			PlanSnapshot:  clonePlan(plan),
 			Actions:       actions,
 		},
-		UpdatedAt: now.UTC(),
-		State:     StateActive,
-		Outcomes:  outcomes,
+		UpdatedAt:   now.UTC(),
+		State:       StateActive,
+		Outcomes:    outcomes,
+		countsReady: true,
 	}, unavailable, nil
 }
 
@@ -158,6 +166,9 @@ func (session Session) Current() (Action, bool) {
 }
 
 func (session Session) Counts() (done, skipped, pending int) {
+	if session.countsReady {
+		return session.doneCount, session.skippedCount, len(session.Actions) - session.doneCount - session.skippedCount
+	}
 	for _, outcome := range session.Outcomes {
 		switch outcome {
 		case OutcomeDone:
@@ -171,23 +182,70 @@ func (session Session) Counts() (done, skipped, pending int) {
 	return
 }
 
-func (session Session) RebuildPlan() domain.CleanupPlan {
-	actions := make([]domain.CleanupAction, 0, len(session.Actions))
-	for _, action := range session.Actions {
-		actions = append(actions, domain.CleanupAction{
-			ID:                   action.ActionID,
-			Platform:             domain.PlatformInstagram,
-			Type:                 action.Type,
-			TargetURL:            action.TargetURL,
-			TargetID:             action.TargetID,
-			SourceActivityItemID: action.ActionID,
-			Status:               domain.ActionStatusPending,
-			CreatedAt:            session.PlanCreatedAt,
-		})
+func (session Session) OriginalPlan() domain.CleanupPlan {
+	return clonePlan(session.PlanSnapshot)
+}
+
+func (session *Session) initializeProgress() {
+	session.UpdatedAt = session.CreatedAt
+	session.CurrentPosition = 0
+	session.State = StateActive
+	session.Outcomes = make([]Outcome, len(session.Actions))
+	for index := range session.Outcomes {
+		session.Outcomes[index] = OutcomePending
 	}
-	plan := domain.NewCleanupPlan(session.PlanID, domain.PlatformInstagram, session.SourceName, session.PlanCreatedAt, actions)
-	if session.PlanMode != "" {
-		plan.Mode = session.PlanMode
+	session.doneCount = 0
+	session.skippedCount = 0
+	session.countsReady = true
+}
+
+func (session *Session) ensureCounts() {
+	if session.countsReady {
+		return
 	}
-	return plan
+	session.doneCount = 0
+	session.skippedCount = 0
+	for _, outcome := range session.Outcomes {
+		switch outcome {
+		case OutcomeDone:
+			session.doneCount++
+		case OutcomeSkipped:
+			session.skippedCount++
+		}
+	}
+	session.countsReady = true
+}
+
+func (session *Session) recordOutcome(index int, outcome Outcome) error {
+	if index < 0 || index >= len(session.Actions) || index >= len(session.Outcomes) || session.Outcomes[index] != OutcomePending {
+		return errors.New("manual cleanup progress is unreadable")
+	}
+	session.ensureCounts()
+	session.Outcomes[index] = outcome
+	switch outcome {
+	case OutcomeDone:
+		session.doneCount++
+	case OutcomeSkipped:
+		session.skippedCount++
+	default:
+		return errors.New("manual cleanup progress is unreadable")
+	}
+	return nil
+}
+
+func clonePlan(plan domain.CleanupPlan) domain.CleanupPlan {
+	cloned := plan
+	cloned.Actions = make([]domain.CleanupAction, len(plan.Actions))
+	copy(cloned.Actions, plan.Actions)
+	for index := range cloned.Actions {
+		metadata := plan.Actions[index].Metadata
+		if metadata == nil {
+			continue
+		}
+		cloned.Actions[index].Metadata = make(map[string]string, len(metadata))
+		for key, value := range metadata {
+			cloned.Actions[index].Metadata[key] = value
+		}
+	}
+	return cloned
 }

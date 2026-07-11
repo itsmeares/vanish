@@ -381,6 +381,7 @@ type Model struct {
 	manualSessionLoaded  bool
 	manualPlanSource     applyPlanSource
 	manualPreviews       map[string]string
+	manualPreviewPlanID  string
 	manualEligibleCount  int
 	manualUnavailable    int
 	manualChoiceCursor   int
@@ -569,7 +570,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"action_type": string(msg.actionType),
 			"target_kind": string(msg.targetKind),
 		})
-		m.refreshLocalData()
 		return m, nil
 
 	case redditConnectFinishedMsg:
@@ -2732,7 +2732,14 @@ func (m Model) manualCleanupChoiceView() string {
 	if m.manualError != "" {
 		lines = append(lines, "", m.notice("error", m.manualError))
 	}
-	return m.singlePaneFooter("Manual cleanup", truncateMiddle(m.manualSession.PlanID, 40), lines, m.footer(footerActionMenu))
+	return m.singlePaneFooter("Manual cleanup", truncateMiddle(m.currentManualPlanID(), 40), lines, m.footer(footerActionMenu))
+}
+
+func (m Model) currentManualPlanID() string {
+	if m.manualSessionLoaded && strings.TrimSpace(m.manualSession.PlanID) != "" {
+		return m.manualSession.PlanID
+	}
+	return m.currentManualPlan(m.manualPlanSource).ID
 }
 
 func (m Model) manualActionItems() []string {
@@ -2769,8 +2776,8 @@ func (m Model) manualCleanupActionView() string {
 		}
 		title = "Unlike " + kind
 		details = append(details, m.styles.body.Render(title))
-		if action.Actor != "" {
-			details = append(details, m.styles.muted.Render("Owner: @"+action.Actor))
+		if actor, valid := instagram.NormalizeUsername(action.Actor); valid {
+			details = append(details, m.styles.muted.Render("Owner: @"+actor))
 		}
 		if action.OccurredAt != nil {
 			details = append(details, m.styles.muted.Render("Date: "+compactTime(action.OccurredAt)))
@@ -2779,13 +2786,13 @@ func (m Model) manualCleanupActionView() string {
 	case domain.ActionDeleteComment:
 		title = "Delete own comment"
 		details = append(details, m.styles.body.Render(title))
-		if action.Actor != "" {
-			details = append(details, m.styles.muted.Render("Post owner: @"+action.Actor))
+		if actor, valid := instagram.NormalizeUsername(action.Actor); valid {
+			details = append(details, m.styles.muted.Render("Post owner: @"+actor))
 		}
 		if action.OccurredAt != nil {
 			details = append(details, m.styles.muted.Render("Comment date: "+compactTime(action.OccurredAt)))
 		}
-		if preview := strings.TrimSpace(m.manualPreviews[action.ActionID]); preview != "" {
+		if preview := instagram.SanitizeCommentPreview(m.manualPreviews[action.ActionID]); preview != "" {
 			details = append(details, m.styles.muted.Render("Comment: "+preview))
 		}
 		details = append(details, m.styles.muted.Render("Post: "+manualTargetLabel(action)))
@@ -3251,7 +3258,7 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 			m.current = screenPlanPreview
 		case m.manualSessionLoaded && m.manualSession.State != manualcleanup.StateCompleted:
 			m.manualPlanSource = applySourceLoaded
-			m.loadedPlan = m.manualSession.RebuildPlan()
+			m.loadedPlan = m.manualSession.OriginalPlan()
 			m.loadedPlanSummary = domain.SummarizeCleanupPlan(m.loadedPlan)
 			m.refreshManualAvailability(m.loadedPlan)
 			m.manualChoiceCursor = 0
@@ -3359,26 +3366,32 @@ func (m Model) currentManualPlan(source applyPlanSource) domain.CleanupPlan {
 }
 
 func (m *Model) openManualCleanup(source applyPlanSource) {
-	store, ok := m.manualCleanupStore()
-	if !ok {
-		m.manualError = "Manual cleanup needs local progress storage."
-		return
-	}
 	plan := m.currentManualPlan(source)
+	previousPlanID := m.manualPreviewPlanID
+	previousPreviews := m.manualPreviews
+	m.clearManualSessionState()
+	if previousPlanID == plan.ID {
+		m.manualPreviews = previousPreviews
+		m.manualPreviewPlanID = previousPlanID
+	}
 	m.manualPlanSource = source
 	m.manualChoiceCursor = 0
 	m.manualActionCursor = 0
 	m.manualResultCursor = 0
 	m.manualError = ""
 	m.manualStatus = ""
+	m.current = screenManualCleanupChoice
+	store, ok := m.manualCleanupStore()
+	if !ok {
+		m.manualError = "Manual cleanup needs local progress storage."
+		return
+	}
 	if session, found, err := store.Load(plan.ID); err != nil {
 		m.manualError = "Manual cleanup progress could not be loaded."
-		m.current = screenManualCleanupChoice
 		return
 	} else if found {
 		m.manualSession = session
 		m.manualSessionLoaded = true
-		m.current = screenManualCleanupChoice
 		return
 	}
 	m.startNewManualCleanup(plan)
@@ -3388,6 +3401,7 @@ func (m *Model) startNewManualCleanup(plan domain.CleanupPlan) {
 	store, ok := m.manualCleanupStore()
 	if !ok {
 		m.manualError = "Manual cleanup needs local progress storage."
+		m.current = screenManualCleanupChoice
 		return
 	}
 	id, err := manualcleanup.NewID()
@@ -3402,14 +3416,15 @@ func (m *Model) startNewManualCleanup(plan domain.CleanupPlan) {
 	}
 	if err := store.Start(session); err != nil {
 		m.manualError = "Manual cleanup progress could not be saved."
+		m.current = screenManualCleanupChoice
 		return
 	}
 	m.manualSession = session
 	m.manualSessionLoaded = true
 	m.manualUnavailable = len(unavailable)
 	m.manualPreviews = m.manualCommentPreviews(plan)
+	m.manualPreviewPlanID = plan.ID
 	m.appendAudit("manual_cleanup_session_started", m.manualAuditFields())
-	m.refreshLocalData()
 	m.current = screenManualCleanupAction
 }
 
@@ -3424,7 +3439,9 @@ func (m Model) manualCommentPreviews(plan domain.CleanupPlan) map[string]string 
 		if !ok || item.Text == nil || strings.TrimSpace(item.Text.Preview) == "" {
 			continue
 		}
-		previews[action.ID] = item.Text.Preview
+		if preview := instagram.SanitizeCommentPreview(item.Text.Preview); preview != "" {
+			previews[action.ID] = preview
+		}
 	}
 	return previews
 }
@@ -3452,19 +3469,34 @@ func (m Model) updateManualCleanupChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		switch items[clampCursor(m.manualChoiceCursor, len(items))] {
 		case "Resume manual cleanup":
 			store, ok := m.manualCleanupStore()
-			if !ok || store.Resume(&m.manualSession, time.Now().UTC()) != nil {
+			plan := m.currentManualPlan(m.manualPlanSource)
+			if !ok || !m.manualSessionLoaded || m.manualSession.PlanID != plan.ID || store.Resume(&m.manualSession, time.Now().UTC()) != nil {
 				m.manualError = "Manual cleanup progress could not be resumed."
 				return m, nil
 			}
 			m.appendAudit("manual_cleanup_session_resumed", m.manualAuditFields())
-			m.refreshLocalData()
 			m.current = screenManualCleanupAction
 		case "View cleanup result":
 			m.current = screenManualCleanupResult
 		case "Start over":
 			plan := m.currentManualPlan(m.manualPlanSource)
-			if strings.TrimSpace(plan.ID) == "" {
-				plan = m.manualSession.RebuildPlan()
+			if strings.TrimSpace(plan.ID) == "" && m.manualSessionLoaded {
+				plan = m.manualSession.OriginalPlan()
+			}
+			store, ok := m.manualCleanupStore()
+			if ok && m.manualSessionLoaded && m.manualSession.PlanID == plan.ID {
+				session, err := store.StartOver(plan.ID, time.Now().UTC())
+				if err != nil {
+					m.manualError = "Manual cleanup progress could not be saved."
+					return m, nil
+				}
+				m.manualSession = session
+				m.manualSessionLoaded = true
+				m.manualError = ""
+				m.manualStatus = ""
+				m.appendAudit("manual_cleanup_session_started", m.manualAuditFields())
+				m.current = screenManualCleanupAction
+				return m, nil
 			}
 			m.startNewManualCleanup(plan)
 		case "Back":
@@ -3540,7 +3572,6 @@ func (m *Model) markManualCleanup(outcome manualcleanup.Outcome) {
 	}
 	m.manualActionCursor = 0
 	m.manualError = ""
-	m.refreshLocalData()
 }
 
 func (m *Model) stopManualCleanup() {
@@ -3551,14 +3582,13 @@ func (m *Model) stopManualCleanup() {
 	}
 	m.appendAudit("manual_cleanup_session_stopped", m.manualAuditFields())
 	m.manualStatus = "Manual cleanup stopped. Progress saved."
-	m.refreshLocalData()
 	m.returnToManualPlan()
 }
 
 func (m *Model) returnToManualPlan() {
 	if m.manualPlanSource == applySourceLoaded {
 		if strings.TrimSpace(m.loadedPlan.ID) == "" && m.manualSessionLoaded {
-			m.loadedPlan = m.manualSession.RebuildPlan()
+			m.loadedPlan = m.manualSession.OriginalPlan()
 			m.loadedPlanSummary = domain.SummarizeCleanupPlan(m.loadedPlan)
 			m.refreshManualAvailability(m.loadedPlan)
 		}
@@ -3566,6 +3596,13 @@ func (m *Model) returnToManualPlan() {
 		return
 	}
 	m.current = screenPlanPreview
+}
+
+func (m *Model) clearManualSessionState() {
+	m.manualSession = manualcleanup.Session{}
+	m.manualSessionLoaded = false
+	m.manualPreviews = nil
+	m.manualPreviewPlanID = ""
 }
 
 func (m Model) manualAuditFields() map[string]any {
@@ -4044,6 +4081,7 @@ func (m *Model) wipeLocalData() {
 	m.manualSession = manualcleanup.Session{}
 	m.manualSessionLoaded = false
 	m.manualPreviews = nil
+	m.manualPreviewPlanID = ""
 	m.manualEligibleCount = 0
 	m.manualUnavailable = 0
 	m.manualStatus = ""

@@ -33,8 +33,7 @@ var (
 func ValidateCleanupTarget(actionType domain.ActionType, rawURL, targetID string) (TrustedTarget, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if actionType == domain.ActionUnfollow && rawURL == "" {
-		username := strings.TrimPrefix(strings.TrimSpace(targetID), "@")
-		if validInstagramUsername(username) {
+		if username, valid := NormalizeUsername(targetID); valid {
 			return TrustedTarget{
 				URL:        "https://www.instagram.com/" + username + "/",
 				Kind:       TargetProfile,
@@ -116,4 +115,12 @@ func validInstagramUsername(value string) bool {
 	default:
 		return true
 	}
+}
+
+func NormalizeUsername(value string) (string, bool) {
+	username := strings.TrimPrefix(strings.TrimSpace(value), "@")
+	if !validInstagramUsername(username) {
+		return "", false
+	}
+	return username, true
 }

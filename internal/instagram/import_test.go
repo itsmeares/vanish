@@ -603,6 +603,44 @@ func TestImportZIPKeepsCommentPreviewMemoryOnly(t *testing.T) {
 	}
 }
 
+func TestImportZIPSanitizesCommentPreviewAndInvalidActor(t *testing.T) {
+	const invalidActor = "bad actor"
+	zipPath := writeTestZip(t, map[string]string{
+		"comments/post_comments_1.json": `{
+  "comments_media_comments": [
+    {
+      "media_owner": "` + invalidActor + `",
+      "comment": "\u001b[31mLine one\u001b[0m\nLine two\u0000 café 👋",
+      "href": "https://www.instagram.com/p/SAFE123/",
+      "timestamp": 1710000000
+    }
+  ]
+}`,
+	})
+
+	result, err := ImportZIP(zipPath)
+	if err != nil {
+		t.Fatalf("ImportZIP: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("items=%d summary=%#v", len(result.Items), result.Summary)
+	}
+	item := result.Items[0]
+	if item.Actor != "" || item.Metadata["media_owner"] != "" {
+		t.Fatalf("invalid actor retained: actor=%q metadata=%#v", item.Actor, item.Metadata)
+	}
+	if item.Text == nil || item.Text.Preview != "Line one Line two café 👋" {
+		t.Fatalf("sanitized preview=%#v", item.Text)
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if strings.Contains(string(encoded), invalidActor) || strings.Contains(string(encoded), "Line one") {
+		t.Fatalf("unsafe display text persisted: %s", encoded)
+	}
+}
+
 func writeTestZip(t *testing.T, files map[string]string) string {
 	t.Helper()
 

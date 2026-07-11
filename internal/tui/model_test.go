@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2268,6 +2269,11 @@ func TestManualCleanupLifecycleResumesAfterRestart(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	plan := manualCleanupTestPlan(now)
+	plan.Actions[0].Metadata = map[string]string{"selection": "synthetic"}
+	plan.Actions[1].Status = domain.ActionStatusStopped
+	plan.Actions[1].CreatedAt = now.Add(time.Minute)
+	plan.Actions[3].Status = domain.ActionStatusFailed
+	plan.Actions[3].CreatedAt = now.Add(3 * time.Minute)
 	before, _ := json.Marshal(plan)
 	m := NewModelWithWorkspace(w, nil)
 	m.current = screenPlanPreview
@@ -2363,7 +2369,21 @@ func TestManualCleanupLifecycleResumesAfterRestart(t *testing.T) {
 	requireAuditEvent(t, w, "manual_cleanup_session_completed")
 	restarted = updateModel(t, restarted, keyPress("enter"))
 	if restarted.current != screenLoadedPlanSummary {
-		t.Fatalf("expected back to reconstructed plan, got %v", restarted.current)
+		t.Fatalf("expected back to original plan, got %v", restarted.current)
+	}
+	if !reflect.DeepEqual(restarted.loadedPlan, plan) {
+		t.Fatalf("restored plan differs:\ngot:  %#v\nwant: %#v", restarted.loadedPlan, plan)
+	}
+	restarted.loadedPlanCursor = 2
+	restarted = updateModel(t, restarted, keyPress("enter"))
+	if restarted.current != screenLoadedPlanActions || len(restarted.loadedPlan.Actions) != len(plan.Actions) {
+		t.Fatalf("View actions did not use original plan: screen=%v actions=%d", restarted.current, len(restarted.loadedPlan.Actions))
+	}
+	restarted.current = screenLoadedPlanSummary
+	restarted.loadedPlanCursor = 1
+	restarted = updateModel(t, restarted, keyPress("enter"))
+	if restarted.current != screenApplyPreview || restarted.applyPreview.Summary.TotalActions != len(plan.Actions) {
+		t.Fatalf("Apply preview did not use original plan: screen=%v preview=%#v", restarted.current, restarted.applyPreview)
 	}
 
 	after, _ := json.Marshal(plan)
@@ -2452,12 +2472,119 @@ func TestManualCleanupStartOverRequiresExplicitChoice(t *testing.T) {
 	}
 	m.manualChoiceCursor = 1
 	next := updateModel(t, m, keyPress("enter"))
-	if next.current != screenManualCleanupAction || next.manualSession.ID == "old-progress" || next.manualSession.CurrentPosition != 0 {
+	if next.current != screenManualCleanupAction || next.manualSession.ID != "old-progress" || next.manualSession.CurrentPosition != 0 {
 		t.Fatalf("start over failed: screen=%v id=%q position=%d error=%q", next.current, next.manualSession.ID, next.manualSession.CurrentPosition, next.manualError)
 	}
 	loaded, ok, err := store.Load(plan.ID)
 	if err != nil || !ok || loaded.ID != next.manualSession.ID || loaded.CurrentPosition != 0 {
 		t.Fatalf("replacement progress=%#v ok=%t err=%v", loaded, ok, err)
+	}
+}
+
+func TestManualCleanupCorruptProgressClearsStaleSession(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	planA := manualCleanupTestPlan(now)
+	planA.ID = "plan-a"
+	planB := manualCleanupTestPlan(now.Add(time.Hour))
+	planB.ID = "plan-b"
+	store := manualcleanup.NewStore(w.Dir())
+	for _, input := range []struct {
+		id   string
+		plan domain.CleanupPlan
+	}{{"session-a", planA}, {"session-b", planB}} {
+		session, _, err := manualcleanup.New(input.id, input.plan, manualCleanupTestItems(now, "preview"), now)
+		if err != nil || store.Start(session) != nil {
+			t.Fatalf("start %s: %v", input.id, err)
+		}
+	}
+	if err := os.WriteFile(manualProgressPath(t, w, planB.ID), []byte("not-json\n"), 0o600); err != nil {
+		t.Fatalf("corrupt progress: %v", err)
+	}
+
+	m := NewModelWithWorkspace(w, nil)
+	if !m.manualSessionLoaded || m.manualSession.PlanID != planA.ID {
+		t.Fatalf("expected valid plan A preload, got loaded=%t plan=%q", m.manualSessionLoaded, m.manualSession.PlanID)
+	}
+	m.manualPreviews = map[string]string{"comment-1": "plan A private preview"}
+	m.manualPreviewPlanID = planA.ID
+	m.planResult.Plan = planB
+	m.current = screenPlanPreview
+	m.openManualCleanup(applySourceGenerated)
+	if m.current != screenManualCleanupChoice || m.manualSessionLoaded || m.manualSession.ID != "" {
+		t.Fatalf("stale session survived corrupt load: screen=%v loaded=%t session=%#v", m.current, m.manualSessionLoaded, m.manualSession)
+	}
+	view := m.View().Content
+	if strings.Contains(view, "Resume manual cleanup") || strings.Contains(view, "plan A private preview") || !strings.Contains(view, "could not be loaded") {
+		t.Fatalf("corrupt load state is unsafe:\n%s", view)
+	}
+}
+
+func TestManualCleanupStartFailureVisibleOnChoiceScreen(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Dir(), "manual-cleanup"), []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("block session directory: %v", err)
+	}
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	m := NewModelWithWorkspace(w, nil)
+	m.planResult.Plan = manualCleanupTestPlan(now)
+	m.importResult.Items = manualCleanupTestItems(now, "memory only")
+	m.current = screenPlanPreview
+	m.openManualCleanup(applySourceGenerated)
+	if m.current != screenManualCleanupChoice || m.manualSessionLoaded || !strings.Contains(m.View().Content, "progress could not be saved") {
+		t.Fatalf("start failure not visible: screen=%v loaded=%t view=\n%s", m.current, m.manualSessionLoaded, m.View().Content)
+	}
+}
+
+func TestManualCleanupSwitchesPlansWithoutPreviewLeak(t *testing.T) {
+	w, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	planA := manualCleanupTestPlan(now)
+	planA.ID = "plan-a"
+	planB := manualCleanupTestPlan(now.Add(time.Hour))
+	planB.ID = "plan-b"
+	store := manualcleanup.NewStore(w.Dir())
+	for _, input := range []struct {
+		id   string
+		plan domain.CleanupPlan
+	}{{"session-a", planA}, {"session-b", planB}} {
+		session, _, err := manualcleanup.New(input.id, input.plan, manualCleanupTestItems(now, "memory only"), now)
+		if err != nil {
+			t.Fatalf("New %s: %v", input.id, err)
+		}
+		if err := store.Start(session); err != nil {
+			t.Fatalf("Start %s: %v", input.id, err)
+		}
+	}
+
+	m := NewModelWithWorkspace(w, nil)
+	sessionA, ok, err := store.Load(planA.ID)
+	if err != nil || !ok {
+		t.Fatalf("load plan A session: ok=%t err=%v", ok, err)
+	}
+	m.manualSession = sessionA
+	m.manualSessionLoaded = true
+	m.manualPreviews = map[string]string{"comment-1": "plan A private preview"}
+	m.manualPreviewPlanID = planA.ID
+	m.planResult.Plan = planB
+	m.current = screenPlanPreview
+	m.openManualCleanup(applySourceGenerated)
+	if !m.manualSessionLoaded || m.manualSession.PlanID != planB.ID || len(m.manualPreviews) != 0 || !strings.Contains(m.View().Content, "Resume manual cleanup") {
+		t.Fatalf("plan B session mismatch: loaded=%t plan=%q previews=%#v view=\n%s", m.manualSessionLoaded, m.manualSession.PlanID, m.manualPreviews, m.View().Content)
+	}
+	m.planResult.Plan = planA
+	m.openManualCleanup(applySourceGenerated)
+	if !m.manualSessionLoaded || m.manualSession.PlanID != planA.ID || len(m.manualPreviews) != 0 {
+		t.Fatalf("plan A session mismatch: loaded=%t plan=%q previews=%#v", m.manualSessionLoaded, m.manualSession.PlanID, m.manualPreviews)
 	}
 }
 
@@ -2477,6 +2604,26 @@ func manualCleanupTestItems(now time.Time, preview string) []domain.ActivityItem
 		{ID: "like-item", Platform: domain.PlatformInstagram, Type: domain.ItemTypeLike, TargetURL: "https://www.instagram.com/reel/REEL1/", TargetID: "REEL1", Actor: "reel_owner", OccurredAt: &now},
 		{ID: "comment-item", Platform: domain.PlatformInstagram, Type: domain.ItemTypeComment, TargetURL: "https://www.instagram.com/p/POST1/", TargetID: "POST1", Actor: "post_owner", OccurredAt: &now, Text: &domain.SafeTextReference{Hash: "sha256:abc", Preview: preview}},
 	}
+}
+
+func manualProgressPath(t *testing.T, w *workspace.Workspace, planID string) string {
+	t.Helper()
+	manifests, err := filepath.Glob(filepath.Join(w.Dir(), "manual-cleanup", "*.json"))
+	if err != nil {
+		t.Fatalf("glob manifests: %v", err)
+	}
+	for _, path := range manifests {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read manifest: %v", err)
+		}
+		var manifest manualcleanup.Manifest
+		if json.Unmarshal(content, &manifest) == nil && manifest.PlanID == planID {
+			return strings.TrimSuffix(path, ".json") + ".events.jsonl"
+		}
+	}
+	t.Fatalf("manifest for %q not found", planID)
+	return ""
 }
 
 func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
