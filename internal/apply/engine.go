@@ -262,6 +262,15 @@ actionLoop:
 			continue
 		}
 		for attempt := 1; attempt <= policy.MaxAttemptsPerAction; attempt++ {
+			if err := ctx.Err(); err != nil {
+				result := normalizeProviderResult(ctx, *action, attempt, ProviderResult{}, err)
+				action.Status = result.Status
+				execution.Results = append(execution.Results, result)
+				execution.Events = append(execution.Events, eventForActionResult(plan.ID, result, mode, provider.ExecutorID()))
+				CancelPending(&execution.Plan, "Execution cancelled.")
+				execution.State = ExecutionStateCancelled
+				break actionLoop
+			}
 			action.Status = domain.ActionStatusRunning
 			providerResult, executeErr := executor.Execute(ctx, *action)
 			result := normalizeProviderResult(ctx, *action, attempt, providerResult, executeErr)

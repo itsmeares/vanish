@@ -202,12 +202,13 @@ func TestRunnerPreservesFailureCancellationSkipAndStopStates(t *testing.T) {
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		execution := testRunner(t, testProvider(&fakeExecutor{}), RuntimeState{}).Run(ctx, applyTestPlan(testPlatform, []domain.CleanupAction{
+		executor := &fakeExecutor{}
+		execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(ctx, applyTestPlan(testPlatform, []domain.CleanupAction{
 			applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
 			applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
 		}), ExecutionModeSimulation)
-		if execution.State != ExecutionStateCancelled || execution.Counts.Cancelled != 2 || !hasEvent(execution, EventExecutionCancelled) {
-			t.Fatalf("expected cancelled execution, got %#v", execution)
+		if execution.State != ExecutionStateCancelled || execution.Counts.Cancelled != 2 || !hasEvent(execution, EventExecutionCancelled) || len(executor.calls) != 0 {
+			t.Fatalf("expected cancellation before executor call, execution=%#v calls=%#v", execution, executor.calls)
 		}
 	})
 
