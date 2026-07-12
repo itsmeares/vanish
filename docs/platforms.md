@@ -3,6 +3,9 @@
 Vanish tracks discovery, review, planning, and cleanup separately. A simulated
 execution never changes platform content and is not automatic cleanup.
 
+See [Cleanup Runtime](runtime.md) for typed outcomes, bounded retry, and halt
+behavior.
+
 | Platform | Local import | Official scan | Review | Cleanup planning | Assisted cleanup | Simulated execution | Automatic cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Instagram Export | Supported | Unsupported | Supported | Supported | Supported | No-op only | Unsupported |

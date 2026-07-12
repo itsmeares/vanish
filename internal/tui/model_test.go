@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,46 @@ import (
 	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/workspace"
 )
+
+type unsafeMessageTestProvider struct {
+	message string
+}
+
+func (provider unsafeMessageTestProvider) Platform() domain.PlatformName {
+	return domain.PlatformInstagram
+}
+
+func (provider unsafeMessageTestProvider) Mode() apply.ExecutionMode {
+	return apply.ExecutionModeSimulation
+}
+
+func (provider unsafeMessageTestProvider) ExecutorID() apply.ExecutorID {
+	return "unsafe-message-test"
+}
+
+func (provider unsafeMessageTestProvider) Supports(domain.ActionType) bool {
+	return true
+}
+
+func (provider unsafeMessageTestProvider) Prerequisites(domain.CleanupPlan, apply.RuntimeState) []apply.Prerequisite {
+	return nil
+}
+
+func (provider unsafeMessageTestProvider) Executor() apply.Executor {
+	return unsafeMessageTestExecutor{message: provider.message}
+}
+
+type unsafeMessageTestExecutor struct {
+	message string
+}
+
+func (executor unsafeMessageTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+	return apply.ProviderResult{
+		Outcome:      apply.OutcomePermanentFailure,
+		Message:      apply.ProviderMessage(executor.message),
+		ProviderCode: "safe_code",
+	}, nil
+}
 
 func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 	m := NewModel()
@@ -613,6 +654,194 @@ func TestApplyEventAuditFieldsPreserveSkippedRouteIdentity(t *testing.T) {
 	})
 	if fields["execution_mode"] != "simulation" || fields["executor"] != "reddit-simulation" {
 		t.Fatalf("skipped audit fields lost route identity: %#v", fields)
+	}
+}
+
+func TestApplyEventAuditFieldsIncludeTypedOutcomeMetadata(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type:         apply.EventActionResult,
+		PlanID:       "plan-1",
+		Platform:     domain.PlatformReddit,
+		ActionID:     "action-1",
+		ActionType:   domain.ActionRedditDeleteComment,
+		Status:       domain.ActionStatusFailed,
+		Mode:         apply.ExecutionModeSimulation,
+		Executor:     reddit.SimulationExecutorID,
+		Outcome:      apply.OutcomeRetryableFailure,
+		Attempt:      2,
+		Retryable:    true,
+		RetryAfter:   1500 * time.Millisecond,
+		ProviderCode: apply.ProviderCodeTemporaryFailure,
+		Message:      "safe user-facing message",
+	})
+	for key, want := range map[string]any{
+		"execution_mode": "simulation",
+		"executor":       "reddit-simulation",
+		"outcome":        "retryable_failure",
+		"attempt":        2,
+		"retryable":      true,
+		"retry_after_ms": int64(1500),
+		"provider_code":  "temporary_failure",
+	} {
+		if fields[key] != want {
+			t.Fatalf("audit field %q = %#v, want %#v; fields=%#v", key, fields[key], want, fields)
+		}
+	}
+	for _, forbidden := range []string{"message", "target_url", "raw_response", "error", "authorization", "token"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("audit fields included forbidden %q: %#v", forbidden, fields)
+		}
+	}
+	if _, ok := fields["pending_count"]; ok {
+		t.Fatalf("action event included misleading zero counts: %#v", fields)
+	}
+}
+
+func TestApplyEventAuditFieldsOmitEmptyOptionalValues(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{Type: apply.EventExecutionFinished, PlanID: "plan-1", Platform: domain.PlatformInstagram})
+	for _, optional := range []string{"execution_mode", "executor", "outcome", "attempt", "retryable", "retry_after_ms", "provider_code", "halt_reason"} {
+		if _, ok := fields[optional]; ok {
+			t.Fatalf("empty optional field %q was emitted: %#v", optional, fields)
+		}
+	}
+}
+
+func TestApplyEventAuditFieldsRejectUnknownProviderCode(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type:         apply.EventActionResult,
+		PlanID:       "plan-1",
+		Platform:     domain.PlatformInstagram,
+		Outcome:      apply.OutcomePermanentFailure,
+		Attempt:      1,
+		ProviderCode: apply.ProviderCode("sk_live_Q7w9J2m4N8p6R3x5"),
+	})
+	if _, ok := fields["provider_code"]; ok {
+		t.Fatalf("unknown provider code entered audit: %#v", fields)
+	}
+}
+
+func TestApplyResultViewShowsConciseTypedOutcomeDetails(t *testing.T) {
+	t.Run("authentication halt", func(t *testing.T) {
+		m := NewModel()
+		m.width = 120
+		m.height = 40
+		m.current = screenApplyResult
+		m.applyExecution = apply.Execution{
+			State:      apply.ExecutionStateHalted,
+			HaltReason: apply.OutcomeAuthenticationRequired,
+			Preview:    apply.Preview{Executor: reddit.SimulationExecutorID},
+			Counts:     apply.ResultCounts{Failed: 1, Pending: 1},
+			Results: []apply.ActionResult{{
+				ActionID:     "action-1",
+				Platform:     domain.PlatformReddit,
+				Type:         domain.ActionRedditDeleteComment,
+				Status:       domain.ActionStatusFailed,
+				Outcome:      apply.OutcomeAuthenticationRequired,
+				Attempt:      1,
+				ProviderCode: "auth_expired",
+				Message:      "Reconnect the account before trying again.",
+			}},
+		}
+		view := stripANSI(m.View().Content)
+		for _, want := range []string{"State: halted", "Reason: authentication required", "Reconnect the account before trying again.", "Pending: 1"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("halted apply result missing %q:\n%s", want, view)
+			}
+		}
+		if strings.Contains(view, "auth_expired") {
+			t.Fatalf("provider code became primary UI copy:\n%s", view)
+		}
+		if strings.Count(view, "Reconnect the account before trying again.") != 1 {
+			t.Fatalf("authentication guidance was duplicated:\n%s", view)
+		}
+	})
+
+	t.Run("retry succeeds on second attempt", func(t *testing.T) {
+		m := NewModel()
+		m.width = 120
+		m.height = 40
+		m.current = screenApplyResult
+		m.applyExecution = apply.Execution{
+			State:  apply.ExecutionStateDone,
+			Counts: apply.ResultCounts{Done: 1},
+			Results: []apply.ActionResult{
+				{ActionID: "action-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, Status: domain.ActionStatusFailed, Outcome: apply.OutcomeRetryableFailure, Attempt: 1},
+				{ActionID: "action-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, Status: domain.ActionStatusDone, Outcome: apply.OutcomeSucceeded, Attempt: 2},
+			},
+		}
+		view := stripANSI(m.View().Content)
+		if !strings.Contains(view, "Attempt: 2") {
+			t.Fatalf("retry attempt was not shown concisely:\n%s", view)
+		}
+		if len(finalActionResults(m.applyExecution.Results)) != 1 {
+			t.Fatalf("retry history was not collapsed: %#v", finalActionResults(m.applyExecution.Results))
+		}
+	})
+
+	t.Run("retry after halt", func(t *testing.T) {
+		m := NewModel()
+		m.width = 120
+		m.height = 40
+		m.current = screenApplyResult
+		m.applyExecution = apply.Execution{
+			State:  apply.ExecutionStateHalted,
+			Counts: apply.ResultCounts{Failed: 1},
+			Results: []apply.ActionResult{{
+				ActionID: "action-1", Type: domain.ActionUnlike, Status: domain.ActionStatusFailed,
+				Outcome: apply.OutcomeRetryableFailure, Attempt: 1, RetryAfter: 30 * time.Second,
+			}},
+		}
+		view := stripANSI(m.View().Content)
+		if !strings.Contains(view, "Retry after: 30s") || !strings.Contains(view, "retryable failure") {
+			t.Fatalf("retry-after halt details missing:\n%s", view)
+		}
+	})
+}
+
+func TestApplyResultViewNeverShowsUnsafeProviderMessage(t *testing.T) {
+	const unsafeMessage = "Authorization: Bearer top-secret-token"
+	registry, err := apply.NewProviderRegistry(unsafeMessageTestProvider{message: unsafeMessage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := fakeCleanupPlan()
+	execution := (apply.Runner{Providers: registry}).Run(context.Background(), plan, apply.ExecutionModeSimulation)
+	if execution.State != apply.ExecutionStateFailed || len(execution.Results) == 0 {
+		t.Fatalf("unexpected execution: %#v", execution)
+	}
+	for _, result := range execution.Results {
+		if strings.Contains(result.Message, unsafeMessage) || result.ProviderCode != "" || result.Message != "Action failed." {
+			t.Fatalf("unsafe provider text entered result: %#v", result)
+		}
+	}
+	for _, event := range execution.Events {
+		if strings.Contains(event.Message, unsafeMessage) || event.ProviderCode != "" {
+			t.Fatalf("unsafe provider text entered event: %#v", event)
+		}
+	}
+
+	m := NewModel()
+	m.width = 120
+	m.height = 40
+	m.current = screenApplyResult
+	m.applyExecution = execution
+	view := stripANSI(m.View().Content)
+	for _, forbidden := range []string{unsafeMessage, "top-secret-token", "Bearer"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("unsafe provider text entered TUI: %q\n%s", forbidden, view)
+		}
+	}
+}
+
+func TestFinalActionResultsAssociatesUniqueActionRetryHistory(t *testing.T) {
+	results := []apply.ActionResult{
+		{ActionID: "action-1", Outcome: apply.OutcomeRetryableFailure, Attempt: 1},
+		{ActionID: "action-2", Outcome: apply.OutcomeSucceeded, Attempt: 1},
+		{ActionID: "action-1", Outcome: apply.OutcomeSucceeded, Attempt: 2},
+	}
+	final := finalActionResults(results)
+	if len(final) != 2 || final[0].ActionID != "action-1" || final[0].Attempt != 2 || final[1].ActionID != "action-2" || final[1].Attempt != 1 {
+		t.Fatalf("unique action results associated incorrectly: %#v", final)
 	}
 }
 

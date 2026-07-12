@@ -19,14 +19,14 @@ func TestBuiltInSimulationProvidersPreserveNoopPlans(t *testing.T) {
 
 	instagramPlan := integrationPlan(domain.PlatformInstagram, domain.ActionUnlike)
 	instagramExecution := (apply.Runner{Providers: registry}).Run(context.Background(), instagramPlan, apply.ExecutionModeSimulation)
-	if instagramExecution.State != apply.ExecutionStateDone || instagramExecution.Preview.Executor != instagram.SimulationExecutorID || instagramExecution.Results[0].Message != "No-op apply completed." {
+	if instagramExecution.State != apply.ExecutionStateDone || instagramExecution.Preview.Executor != instagram.SimulationExecutorID || instagramExecution.Results[0].Message != "No-op apply completed." || instagramExecution.Results[0].Outcome != apply.OutcomeSucceeded || instagramExecution.Results[0].Attempt != 1 {
 		t.Fatalf("unexpected Instagram simulation: %#v", instagramExecution)
 	}
 
 	redditPlan := integrationPlan(domain.PlatformReddit, domain.ActionRedditDeleteComment)
 	connected := apply.NewRuntimeState(map[domain.PlatformName]apply.ConnectionState{domain.PlatformReddit: {Connected: true}})
 	redditExecution := (apply.Runner{Providers: registry, State: connected}).Run(context.Background(), redditPlan, apply.ExecutionModeSimulation)
-	if redditExecution.State != apply.ExecutionStateDone || redditExecution.Preview.Executor != reddit.SimulationExecutorID || redditExecution.Results[0].Message != "No-op apply completed." {
+	if redditExecution.State != apply.ExecutionStateDone || redditExecution.Preview.Executor != reddit.SimulationExecutorID || redditExecution.Results[0].Message != "No-op apply completed." || redditExecution.Results[0].Outcome != apply.OutcomeSucceeded || redditExecution.Results[0].Attempt != 1 {
 		t.Fatalf("unexpected Reddit simulation: %#v", redditExecution)
 	}
 	for _, event := range redditExecution.Events {
