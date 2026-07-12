@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/itsmeares/vanish/internal/domain"
 )
@@ -19,6 +20,7 @@ const (
 	ExecutionStateSkipped   ExecutionState = "skipped"
 	ExecutionStateStopped   ExecutionState = "stopped"
 	ExecutionStateCancelled ExecutionState = "cancelled"
+	ExecutionStateHalted    ExecutionState = "halted"
 )
 
 type EventType string
@@ -62,14 +64,6 @@ type Preview struct {
 	Unsupported      []UnsupportedAction
 }
 
-type ActionResult struct {
-	ActionID string
-	Platform domain.PlatformName
-	Type     domain.ActionType
-	Status   domain.ActionStatus
-	Message  string
-}
-
 // PlanActionEdit records a standalone local plan change. It is not an
 // execution event and therefore has no provider route identity.
 type PlanActionEdit struct {
@@ -92,50 +86,39 @@ type ResultCounts struct {
 }
 
 type ExecutionEvent struct {
-	Type       EventType
-	PlanID     string
-	Platform   domain.PlatformName
-	ActionID   string
-	ActionType domain.ActionType
-	Status     domain.ActionStatus
-	State      ExecutionState
-	Message    string
-	Counts     ResultCounts
-	Mode       ExecutionMode
-	Executor   ExecutorID
+	Type         EventType
+	PlanID       string
+	Platform     domain.PlatformName
+	ActionID     string
+	ActionType   domain.ActionType
+	Status       domain.ActionStatus
+	State        ExecutionState
+	Message      string
+	Counts       ResultCounts
+	Mode         ExecutionMode
+	Executor     ExecutorID
+	Outcome      ActionOutcome
+	Attempt      int
+	Retryable    bool
+	RetryAfter   time.Duration
+	ProviderCode string
+	HaltReason   ActionOutcome
 }
 
 type Execution struct {
-	Plan    domain.CleanupPlan
-	Preview Preview
-	State   ExecutionState
-	Results []ActionResult
-	Events  []ExecutionEvent
-	Counts  ResultCounts
-}
-
-type Executor interface {
-	Execute(context.Context, domain.CleanupAction) (ActionResult, error)
-}
-
-type NoopExecutor struct{}
-
-func (NoopExecutor) Execute(ctx context.Context, action domain.CleanupAction) (ActionResult, error) {
-	if err := ctx.Err(); err != nil {
-		return ActionResult{}, err
-	}
-	return ActionResult{
-		ActionID: action.ID,
-		Platform: action.Platform,
-		Type:     action.Type,
-		Status:   domain.ActionStatusDone,
-		Message:  "No-op apply completed.",
-	}, nil
+	Plan       domain.CleanupPlan
+	Preview    Preview
+	State      ExecutionState
+	Results    []ActionResult
+	Events     []ExecutionEvent
+	Counts     ResultCounts
+	HaltReason ActionOutcome
 }
 
 type Runner struct {
 	Providers ProviderRegistry
 	State     RuntimeState
+	Policy    RunPolicy
 }
 
 func (runner Runner) Preview(plan domain.CleanupPlan, mode ExecutionMode) Preview {
@@ -234,14 +217,14 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode Exec
 	if !preview.CanApply {
 		execution.State = ExecutionStateFailed
 		execution.Counts = CountsForPlan(plan)
-		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor))
+		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor, ""))
 		return execution
 	}
 	provider, err := runner.Providers.Resolve(plan.Platform, mode)
 	if err != nil {
 		execution.State = ExecutionStateFailed
 		execution.Counts = CountsForPlan(plan)
-		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor))
+		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor, ""))
 		return execution
 	}
 	executor := provider.Executor()
@@ -255,7 +238,7 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode Exec
 		})
 		execution.State = ExecutionStateFailed
 		execution.Counts = CountsForPlan(plan)
-		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, mode, provider.ExecutorID()))
+		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, mode, provider.ExecutorID(), ""))
 		return execution
 	}
 
@@ -270,46 +253,58 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode Exec
 		Executor: provider.ExecutorID(),
 	})
 
+	policy := runner.Policy.normalized()
+
+actionLoop:
 	for i := range execution.Plan.Actions {
 		action := &execution.Plan.Actions[i]
 		if action.Status != domain.ActionStatusPending {
 			continue
 		}
-		if err := ctx.Err(); err != nil {
-			result := setActionResult(action, domain.ActionStatusCancelled, err.Error())
+		for attempt := 1; attempt <= policy.MaxAttemptsPerAction; attempt++ {
+			action.Status = domain.ActionStatusRunning
+			providerResult, executeErr := executor.Execute(ctx, *action)
+			result := normalizeProviderResult(ctx, *action, attempt, providerResult, executeErr)
+			action.Status = result.Status
 			execution.Results = append(execution.Results, result)
 			execution.Events = append(execution.Events, eventForActionResult(plan.ID, result, mode, provider.ExecutorID()))
-			CancelPending(&execution.Plan, "Execution cancelled.")
-			execution.State = ExecutionStateCancelled
-			break
-		}
 
-		action.Status = domain.ActionStatusRunning
-		result, err := executor.Execute(ctx, *action)
-		if err != nil {
-			result = ActionResult{
-				ActionID: action.ID,
-				Platform: action.Platform,
-				Type:     action.Type,
-				Status:   domain.ActionStatusFailed,
-				Message:  err.Error(),
+			switch result.Outcome {
+			case OutcomeSucceeded, OutcomeAlreadySatisfied:
+				continue actionLoop
+			case OutcomeRetryableFailure:
+				if result.RetryAfter > 0 {
+					execution.State = ExecutionStateHalted
+					execution.HaltReason = result.Outcome
+					break actionLoop
+				}
+				if attempt < policy.MaxAttemptsPerAction {
+					continue
+				}
+				if policy.StopAfterFinalFailure {
+					execution.State = ExecutionStateFailed
+					break actionLoop
+				}
+				continue actionLoop
+			case OutcomePermanentFailure:
+				if policy.StopAfterFinalFailure {
+					execution.State = ExecutionStateFailed
+					break actionLoop
+				}
+				continue actionLoop
+			case OutcomeRateLimited, OutcomeAuthenticationRequired:
+				execution.State = ExecutionStateHalted
+				execution.HaltReason = result.Outcome
+				break actionLoop
+			case OutcomeStopped:
+				StopPending(&execution.Plan, "Execution stopped.")
+				execution.State = ExecutionStateStopped
+				break actionLoop
+			case OutcomeCancelled:
+				CancelPending(&execution.Plan, "Execution cancelled.")
+				execution.State = ExecutionStateCancelled
+				break actionLoop
 			}
-		}
-		result = normalizeActionResult(*action, result)
-		action.Status = result.Status
-		execution.Results = append(execution.Results, result)
-		execution.Events = append(execution.Events, eventForActionResult(plan.ID, result, mode, provider.ExecutorID()))
-
-		switch result.Status {
-		case domain.ActionStatusStopped:
-			StopPending(&execution.Plan, "Execution stopped.")
-			execution.State = ExecutionStateStopped
-		case domain.ActionStatusCancelled:
-			CancelPending(&execution.Plan, "Execution cancelled.")
-			execution.State = ExecutionStateCancelled
-		}
-		if execution.State == ExecutionStateStopped || execution.State == ExecutionStateCancelled {
-			break
 		}
 	}
 
@@ -317,22 +312,29 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode Exec
 	if execution.State == ExecutionStateRunning {
 		execution.State = stateForCounts(execution.Counts)
 	}
-	execution.Events = append(execution.Events, executionFinishedEvent(execution.Plan, execution.State, execution.Counts, mode, provider.ExecutorID()))
+	execution.Events = append(execution.Events, executionFinishedEvent(execution.Plan, execution.State, execution.Counts, mode, provider.ExecutorID(), execution.HaltReason))
 	return execution
 }
 
-func RetryAction(plan *domain.CleanupPlan, actionID string) error {
+func RetryAction(plan *domain.CleanupPlan, actionID string) (PlanActionEdit, error) {
 	action, err := findAction(plan, actionID)
 	if err != nil {
-		return err
+		return PlanActionEdit{}, err
 	}
 	switch action.Status {
 	case domain.ActionStatusFailed, domain.ActionStatusSkipped, domain.ActionStatusStopped, domain.ActionStatusCancelled:
 		action.Status = domain.ActionStatusPending
-		return nil
 	default:
-		return fmt.Errorf("action %q with status %q cannot be retried", actionID, action.Status)
+		return PlanActionEdit{}, fmt.Errorf("action %q with status %q cannot be retried", actionID, action.Status)
 	}
+	return PlanActionEdit{
+		PlanID:   plan.ID,
+		ActionID: action.ID,
+		Platform: action.Platform,
+		Type:     action.Type,
+		Status:   action.Status,
+		Message:  "Action queued for retry.",
+	}, nil
 }
 
 func SkipAction(plan *domain.CleanupPlan, actionID, reason string) (PlanActionEdit, error) {
@@ -416,45 +418,6 @@ func setPendingStatus(plan *domain.CleanupPlan, status domain.ActionStatus, _ st
 	return changed
 }
 
-func setActionResult(action *domain.CleanupAction, status domain.ActionStatus, message string) ActionResult {
-	action.Status = status
-	return ActionResult{
-		ActionID: action.ID,
-		Platform: action.Platform,
-		Type:     action.Type,
-		Status:   status,
-		Message:  message,
-	}
-}
-
-func normalizeActionResult(action domain.CleanupAction, result ActionResult) ActionResult {
-	if strings.TrimSpace(result.ActionID) == "" {
-		result.ActionID = action.ID
-	}
-	if result.Platform == "" {
-		result.Platform = action.Platform
-	}
-	if result.Type == "" {
-		result.Type = action.Type
-	}
-	if !isTerminalStatus(result.Status) {
-		result.Status = domain.ActionStatusDone
-	}
-	if strings.TrimSpace(result.Message) == "" {
-		result.Message = "No-op apply completed."
-	}
-	return result
-}
-
-func isTerminalStatus(status domain.ActionStatus) bool {
-	switch status {
-	case domain.ActionStatusDone, domain.ActionStatusFailed, domain.ActionStatusSkipped, domain.ActionStatusStopped, domain.ActionStatusCancelled:
-		return true
-	default:
-		return false
-	}
-}
-
 func eventForActionResult(planID string, result ActionResult, mode ExecutionMode, executor ExecutorID) ExecutionEvent {
 	eventType := EventActionResult
 	switch result.Status {
@@ -466,27 +429,33 @@ func eventForActionResult(planID string, result ActionResult, mode ExecutionMode
 		eventType = EventExecutionCancelled
 	}
 	return ExecutionEvent{
-		Type:       eventType,
-		PlanID:     planID,
-		Platform:   result.Platform,
-		ActionID:   result.ActionID,
-		ActionType: result.Type,
-		Status:     result.Status,
-		Message:    result.Message,
-		Mode:       mode,
-		Executor:   executor,
+		Type:         eventType,
+		PlanID:       planID,
+		Platform:     result.Platform,
+		ActionID:     result.ActionID,
+		ActionType:   result.Type,
+		Status:       result.Status,
+		Message:      result.Message,
+		Mode:         mode,
+		Executor:     executor,
+		Outcome:      result.Outcome,
+		Attempt:      result.Attempt,
+		Retryable:    result.Retryable(),
+		RetryAfter:   result.RetryAfter,
+		ProviderCode: result.ProviderCode,
 	}
 }
 
-func executionFinishedEvent(plan domain.CleanupPlan, state ExecutionState, counts ResultCounts, mode ExecutionMode, executor ExecutorID) ExecutionEvent {
+func executionFinishedEvent(plan domain.CleanupPlan, state ExecutionState, counts ResultCounts, mode ExecutionMode, executor ExecutorID, haltReason ActionOutcome) ExecutionEvent {
 	return ExecutionEvent{
-		Type:     EventExecutionFinished,
-		PlanID:   plan.ID,
-		Platform: plan.Platform,
-		State:    state,
-		Counts:   counts,
-		Mode:     mode,
-		Executor: executor,
+		Type:       EventExecutionFinished,
+		PlanID:     plan.ID,
+		Platform:   plan.Platform,
+		State:      state,
+		Counts:     counts,
+		Mode:       mode,
+		Executor:   executor,
+		HaltReason: haltReason,
 	}
 }
 
