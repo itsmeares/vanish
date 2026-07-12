@@ -20,8 +20,9 @@ type fakeExecutor struct {
 }
 
 type scriptedStep struct {
-	result ProviderResult
-	err    error
+	result       ProviderResult
+	err          error
+	beforeReturn func()
 }
 
 type scriptedCall struct {
@@ -46,7 +47,11 @@ func (executor *scriptedExecutor) Execute(_ context.Context, action domain.Clean
 	if position >= len(steps) {
 		return ProviderResult{}, errors.New("script exhausted")
 	}
-	return steps[position].result, steps[position].err
+	step := steps[position]
+	if step.beforeReturn != nil {
+		step.beforeReturn()
+	}
+	return step.result, step.err
 }
 
 func (executor *fakeExecutor) Execute(_ context.Context, action domain.CleanupAction) (ProviderResult, error) {
@@ -423,8 +428,6 @@ func TestNormalizeProviderResultFailsClosed(t *testing.T) {
 		{name: "unknown outcome", result: ProviderResult{Outcome: "mystery"}},
 		{name: "negative retry after", result: ProviderResult{Outcome: OutcomeRetryableFailure, RetryAfter: -time.Second}},
 		{name: "contradictory retry after", result: ProviderResult{Outcome: OutcomeSucceeded, RetryAfter: time.Second}},
-		{name: "secret-like provider code", result: ProviderResult{Outcome: OutcomePermanentFailure, ProviderCode: "session_token"}},
-		{name: "unsafe provider code", result: ProviderResult{Outcome: OutcomePermanentFailure, ProviderCode: "https://example.test/raw"}},
 	}
 	action := applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusRunning)
 	for _, test := range tests {
@@ -442,10 +445,53 @@ func TestNormalizeProviderResultFailsClosed(t *testing.T) {
 	valid := normalizeProviderResult(context.Background(), action, 1, ProviderResult{
 		Outcome:      OutcomeSucceeded,
 		Message:      ProviderMessageNoopCompleted,
-		ProviderCode: "  http_503  ",
+		ProviderCode: "  temporary_failure  ",
 	}, nil)
-	if valid.Message != "No-op apply completed." || valid.ProviderCode != "http_503" {
+	if valid.Message != "No-op apply completed." || valid.ProviderCode != ProviderCodeTemporaryFailure {
 		t.Fatalf("safe provider metadata not normalized: %#v", valid)
+	}
+}
+
+func TestNormalizeProviderCodesUsesClosedIdentifiers(t *testing.T) {
+	action := applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusRunning)
+	known := normalizeProviderResult(context.Background(), action, 1, ProviderResult{
+		Outcome:      OutcomeRetryableFailure,
+		ProviderCode: ProviderCodeTemporaryFailure,
+	}, nil)
+	if known.ProviderCode != ProviderCodeTemporaryFailure || known.Outcome != OutcomeRetryableFailure {
+		t.Fatalf("known provider code was not preserved: %#v", known)
+	}
+
+	unknownCodes := []ProviderCode{
+		"sk_live_Q7w9J2m4N8p6R3x5",
+		"4f8a91c2d7e6405bb6a3",
+		"AQABAAIAAAD--DLA3VO7QrddgJg7Wevr",
+		"https://provider.example/status?id=82917",
+		"HTTP 503 upstream body",
+		"oauth-code-8e4b91",
+	}
+	for _, code := range unknownCodes {
+		result := normalizeProviderResult(context.Background(), action, 2, ProviderResult{
+			Outcome:      OutcomeRetryableFailure,
+			ProviderCode: code,
+		}, nil)
+		if result.Outcome != OutcomeRetryableFailure || result.Status != domain.ActionStatusFailed || result.ProviderCode != "" || strings.Contains(result.Message, string(code)) {
+			t.Fatalf("unknown provider code survived or changed outcome: code=%q result=%#v", code, result)
+		}
+	}
+
+	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{"action-1": {{result: ProviderResult{
+		Outcome:      OutcomePermanentFailure,
+		ProviderCode: unknownCodes[0],
+	}}}}}
+	execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(context.Background(), singleActionPlan(), ExecutionModeSimulation)
+	if execution.Results[0].ProviderCode != "" {
+		t.Fatalf("unknown provider code entered action result: %#v", execution.Results[0])
+	}
+	for _, event := range execution.Events {
+		if event.ProviderCode != "" {
+			t.Fatalf("unknown provider code entered execution event: %#v", event)
+		}
 	}
 }
 
@@ -529,11 +575,54 @@ func TestNormalizeCancellationUsesRunnerContextOnly(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesDefinitiveResultAcrossCancellationRace(t *testing.T) {
+	for _, outcome := range []ActionOutcome{OutcomeSucceeded, OutcomeAlreadySatisfied} {
+		t.Run(string(outcome), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			executor := &scriptedExecutor{scripts: map[string][]scriptedStep{
+				"action-1": {{result: ProviderResult{Outcome: outcome}, beforeReturn: cancel}},
+				"action-2": {{result: ProviderResult{Outcome: OutcomeSucceeded}}},
+			}}
+			plan := applyTestPlan(testPlatform, []domain.CleanupAction{
+				applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+				applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+			})
+
+			execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(ctx, plan, ExecutionModeSimulation)
+			if execution.State != ExecutionStateCancelled || execution.Counts.Done != 1 || execution.Counts.Cancelled != 1 || len(executor.calls) != 1 || len(execution.Results) != 1 {
+				t.Fatalf("cancellation race lifecycle incorrect: execution=%#v calls=%#v", execution, executor.calls)
+			}
+			if execution.Results[0].Outcome != outcome || execution.Results[0].Status != domain.ActionStatusDone || execution.Plan.Actions[0].Status != domain.ActionStatusDone || execution.Plan.Actions[1].Status != domain.ActionStatusCancelled {
+				t.Fatalf("definitive result was relabelled: %#v", execution)
+			}
+		})
+	}
+}
+
+func TestRunnerCancelsCurrentActionWhenExecutorErrorsAfterRunnerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{
+		"action-1": {{err: context.DeadlineExceeded, beforeReturn: cancel}},
+		"action-2": {{result: ProviderResult{Outcome: OutcomeSucceeded}}},
+	}}
+	plan := applyTestPlan(testPlatform, []domain.CleanupAction{
+		applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+		applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+	})
+
+	execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(ctx, plan, ExecutionModeSimulation)
+	if execution.State != ExecutionStateCancelled || execution.Counts.Cancelled != 2 || len(executor.calls) != 1 || execution.Results[0].Outcome != OutcomeCancelled || execution.Results[0].Status != domain.ActionStatusCancelled {
+		t.Fatalf("executor error plus runner cancellation misclassified: execution=%#v calls=%#v", execution, executor.calls)
+	}
+}
+
 func TestRunnerBoundedRetryPolicy(t *testing.T) {
 	retryThenSuccess := func() *scriptedExecutor {
 		return &scriptedExecutor{scripts: map[string][]scriptedStep{
 			"action-1": {
-				{result: ProviderResult{Outcome: OutcomeRetryableFailure, ProviderCode: "temporary_failure"}},
+				{result: ProviderResult{Outcome: OutcomeRetryableFailure, ProviderCode: ProviderCodeTemporaryFailure}},
 				{result: ProviderResult{Outcome: OutcomeSucceeded}},
 			},
 		}}
@@ -709,7 +798,7 @@ func TestRunnerProviderHaltsLeaveLaterActionsPending(t *testing.T) {
 		haltReason ActionOutcome
 		retryAfter time.Duration
 	}{
-		{name: "rate limit", result: ProviderResult{Outcome: OutcomeRateLimited, RetryAfter: 30 * time.Second, ProviderCode: "rate_limit"}, haltReason: OutcomeRateLimited, retryAfter: 30 * time.Second},
+		{name: "rate limit", result: ProviderResult{Outcome: OutcomeRateLimited, RetryAfter: 30 * time.Second}, haltReason: OutcomeRateLimited, retryAfter: 30 * time.Second},
 		{name: "authentication required", result: ProviderResult{Outcome: OutcomeAuthenticationRequired}, haltReason: OutcomeAuthenticationRequired},
 		{name: "retry after", result: ProviderResult{Outcome: OutcomeRetryableFailure, RetryAfter: 2 * time.Second}, haltReason: OutcomeRetryableFailure, retryAfter: 2 * time.Second},
 	}
@@ -735,7 +824,7 @@ func TestRunnerProviderHaltsLeaveLaterActionsPending(t *testing.T) {
 
 func TestRunnerActionEventsPreserveOutcomeAttemptAndRoute(t *testing.T) {
 	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{"action-1": {
-		{result: ProviderResult{Outcome: OutcomeRetryableFailure, ProviderCode: "temporary_failure"}},
+		{result: ProviderResult{Outcome: OutcomeRetryableFailure, ProviderCode: ProviderCodeTemporaryFailure}},
 		{result: ProviderResult{Outcome: OutcomeSucceeded}},
 	}}}
 	runner := testRunner(t, testProvider(executor), RuntimeState{})
@@ -751,7 +840,7 @@ func TestRunnerActionEventsPreserveOutcomeAttemptAndRoute(t *testing.T) {
 			t.Fatalf("routed event lost identity: %#v", event)
 		}
 	}
-	if len(actionEvents) != 2 || actionEvents[0].Outcome != OutcomeRetryableFailure || actionEvents[0].Attempt != 1 || !actionEvents[0].Retryable || actionEvents[0].ProviderCode != "temporary_failure" || actionEvents[1].Attempt != 2 {
+	if len(actionEvents) != 2 || actionEvents[0].Outcome != OutcomeRetryableFailure || actionEvents[0].Attempt != 1 || !actionEvents[0].Retryable || actionEvents[0].ProviderCode != ProviderCodeTemporaryFailure || actionEvents[1].Attempt != 2 {
 		t.Fatalf("action event metadata incorrect: %#v", actionEvents)
 	}
 }
@@ -759,7 +848,7 @@ func TestRunnerActionEventsPreserveOutcomeAttemptAndRoute(t *testing.T) {
 func TestRuntimeMetadataDoesNotEnterCleanupPlanJSON(t *testing.T) {
 	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{"action-1": {
 		{result: ProviderResult{Outcome: OutcomeRetryableFailure}},
-		{result: ProviderResult{Outcome: OutcomeSucceeded, ProviderCode: "done"}},
+		{result: ProviderResult{Outcome: OutcomeSucceeded}},
 	}}}
 	runner := testRunner(t, testProvider(executor), RuntimeState{})
 	runner.Policy = RunPolicy{MaxAttemptsPerAction: 2}

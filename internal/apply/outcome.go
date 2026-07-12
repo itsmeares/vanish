@@ -30,7 +30,7 @@ type ProviderResult struct {
 	Outcome      ActionOutcome
 	Message      ProviderMessage
 	RetryAfter   time.Duration
-	ProviderCode string
+	ProviderCode ProviderCode
 }
 
 // ProviderMessage is a closed identifier for runtime-owned user-facing copy.
@@ -38,6 +38,21 @@ type ProviderResult struct {
 type ProviderMessage string
 
 const ProviderMessageNoopCompleted ProviderMessage = "noop_completed"
+
+// ProviderCode is a closed runtime-owned diagnostic identifier. Providers may
+// return a value, but only known identifiers survive normalization.
+type ProviderCode string
+
+const ProviderCodeTemporaryFailure ProviderCode = "temporary_failure"
+
+func (code ProviderCode) Known() bool {
+	switch code {
+	case "", ProviderCodeTemporaryFailure:
+		return true
+	default:
+		return false
+	}
+}
 
 type ActionResult struct {
 	ActionID     string
@@ -47,7 +62,7 @@ type ActionResult struct {
 	Outcome      ActionOutcome
 	Attempt      int
 	RetryAfter   time.Duration
-	ProviderCode string
+	ProviderCode ProviderCode
 	Message      string
 }
 
@@ -96,14 +111,14 @@ func (NoopExecutor) Execute(ctx context.Context, _ domain.CleanupAction) (Provid
 }
 
 func normalizeProviderResult(ctx context.Context, action domain.CleanupAction, attempt int, providerResult ProviderResult, executeErr error) ActionResult {
-	if runnerContextDone(ctx) {
-		return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomeCancelled}, "Execution cancelled.")
-	}
 	if executeErr != nil {
+		if runnerContextDone(ctx) {
+			return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomeCancelled}, "Execution cancelled.")
+		}
 		return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomePermanentFailure}, "Executor failed unexpectedly.")
 	}
 
-	providerResult.ProviderCode = strings.TrimSpace(providerResult.ProviderCode)
+	providerResult.ProviderCode = normalizeProviderCode(providerResult.ProviderCode)
 	if !validProviderResultMetadata(providerResult) {
 		return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomePermanentFailure}, "Executor returned an invalid result.")
 	}
@@ -145,9 +160,6 @@ func validProviderResultMetadata(result ProviderResult) bool {
 	if result.RetryAfter > 0 && result.Outcome != OutcomeRetryableFailure && result.Outcome != OutcomeRateLimited {
 		return false
 	}
-	if !validProviderCode(result.ProviderCode) {
-		return false
-	}
 	return true
 }
 
@@ -170,25 +182,12 @@ func runnerContextDone(ctx context.Context) bool {
 	return ctx != nil && ctx.Err() != nil
 }
 
-func validProviderCode(code string) bool {
-	if code == "" {
-		return true
+func normalizeProviderCode(code ProviderCode) ProviderCode {
+	code = ProviderCode(strings.TrimSpace(string(code)))
+	if !code.Known() {
+		return ""
 	}
-	if len(code) > 64 {
-		return false
-	}
-	for _, char := range code {
-		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.') {
-			return false
-		}
-	}
-	normalized := strings.ToLower(code)
-	for _, forbidden := range []string{"authorization", "cookie", "credential", "password", "secret", "session", "token"} {
-		if strings.Contains(normalized, forbidden) {
-			return false
-		}
-	}
-	return true
+	return code
 }
 
 func runtimeProviderMessage(outcome ActionOutcome, message ProviderMessage) (string, bool) {

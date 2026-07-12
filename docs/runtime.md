@@ -32,12 +32,17 @@ rate limit, or authentication loss halts the execution and leaves untouched
 actions pending. Retry timing is shown for a later explicit action. Authentication
 loss requires reconnection; this runtime does not add a credential flow.
 
+A valid typed result returned without an executor error remains authoritative
+for its action. If runner cancellation races with that return, Vanish records
+the result first, then cancels only untouched remaining actions.
+
 ## Safety and Deferred Work
 
 Provider results contain only an outcome, optional structured message ID,
-optional retry-after, and optional diagnostic code. User-facing messages are
-runtime-owned; arbitrary provider text is never copied into normalized results,
-events, audit, or the TUI. The runner owns action identity, route identity,
+optional retry-after, and optional closed diagnostic code ID. User-facing
+messages and diagnostic identifiers are runtime-owned; arbitrary provider text
+is never copied into normalized results, events, audit, or the TUI. The runner
+owns action identity, route identity,
 attempts, retry decisions, and domain status. Raw platform responses, raw
 errors, target URLs, credentials, tokens, cookies, sessions, authorization
 values, and private content do not enter execution audit metadata.

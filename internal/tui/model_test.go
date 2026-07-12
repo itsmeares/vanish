@@ -671,7 +671,7 @@ func TestApplyEventAuditFieldsIncludeTypedOutcomeMetadata(t *testing.T) {
 		Attempt:      2,
 		Retryable:    true,
 		RetryAfter:   1500 * time.Millisecond,
-		ProviderCode: "temporary_failure",
+		ProviderCode: apply.ProviderCodeTemporaryFailure,
 		Message:      "safe user-facing message",
 	})
 	for key, want := range map[string]any{
@@ -706,6 +706,20 @@ func TestApplyEventAuditFieldsOmitEmptyOptionalValues(t *testing.T) {
 	}
 }
 
+func TestApplyEventAuditFieldsRejectUnknownProviderCode(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type:         apply.EventActionResult,
+		PlanID:       "plan-1",
+		Platform:     domain.PlatformInstagram,
+		Outcome:      apply.OutcomePermanentFailure,
+		Attempt:      1,
+		ProviderCode: apply.ProviderCode("sk_live_Q7w9J2m4N8p6R3x5"),
+	})
+	if _, ok := fields["provider_code"]; ok {
+		t.Fatalf("unknown provider code entered audit: %#v", fields)
+	}
+}
+
 func TestApplyResultViewShowsConciseTypedOutcomeDetails(t *testing.T) {
 	t.Run("authentication halt", func(t *testing.T) {
 		m := NewModel()
@@ -725,17 +739,20 @@ func TestApplyResultViewShowsConciseTypedOutcomeDetails(t *testing.T) {
 				Outcome:      apply.OutcomeAuthenticationRequired,
 				Attempt:      1,
 				ProviderCode: "auth_expired",
-				Message:      "Reconnect required.",
+				Message:      "Reconnect the account before trying again.",
 			}},
 		}
 		view := stripANSI(m.View().Content)
-		for _, want := range []string{"State: halted", "Reason: authentication required", "Reconnect required.", "Reconnect the account before trying again.", "Pending: 1"} {
+		for _, want := range []string{"State: halted", "Reason: authentication required", "Reconnect the account before trying again.", "Pending: 1"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("halted apply result missing %q:\n%s", want, view)
 			}
 		}
 		if strings.Contains(view, "auth_expired") {
 			t.Fatalf("provider code became primary UI copy:\n%s", view)
+		}
+		if strings.Count(view, "Reconnect the account before trying again.") != 1 {
+			t.Fatalf("authentication guidance was duplicated:\n%s", view)
 		}
 	})
 

@@ -101,7 +101,7 @@ type ExecutionEvent struct {
 	Attempt      int
 	Retryable    bool
 	RetryAfter   time.Duration
-	ProviderCode string
+	ProviderCode ProviderCode
 	HaltReason   ActionOutcome
 }
 
@@ -277,6 +277,11 @@ actionLoop:
 			action.Status = result.Status
 			execution.Results = append(execution.Results, result)
 			execution.Events = append(execution.Events, eventForActionResult(plan.ID, result, mode, provider.ExecutorID()))
+			if ctx.Err() != nil {
+				CancelPending(&execution.Plan, "Execution cancelled.")
+				execution.State = ExecutionStateCancelled
+				break actionLoop
+			}
 
 			switch result.Outcome {
 			case OutcomeSucceeded, OutcomeAlreadySatisfied:

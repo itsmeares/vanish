@@ -5141,9 +5141,6 @@ func applyOutcomeDetailRows(execution apply.Execution) []keyValue {
 	if result.RetryAfter > 0 {
 		rows = append(rows, keyValue{Key: "Retry after", Value: result.RetryAfter.String()})
 	}
-	if result.Outcome == apply.OutcomeAuthenticationRequired {
-		rows = append(rows, keyValue{Key: "Next step", Value: "Reconnect the account before trying again."})
-	}
 	return rows
 }
 
@@ -5691,8 +5688,8 @@ func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	if event.RetryAfter > 0 {
 		fields["retry_after_ms"] = retryAfterMilliseconds(event.RetryAfter)
 	}
-	if event.ProviderCode != "" {
-		fields["provider_code"] = event.ProviderCode
+	if event.ProviderCode != "" && event.ProviderCode.Known() {
+		fields["provider_code"] = string(event.ProviderCode)
 	}
 	if event.HaltReason != "" {
 		fields["halt_reason"] = string(event.HaltReason)
