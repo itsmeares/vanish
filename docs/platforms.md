@@ -1,13 +1,22 @@
 # Platform Support
 
-Vanish tracks platform support separately from the product vision so supported
-work and future plans stay clear.
+Vanish tracks discovery, review, planning, and cleanup separately. A simulated
+execution never changes platform content and is not automatic cleanup.
 
-| Platform | Import or scan | Cleanup planning | Assisted cleanup | Automatic cleanup |
-| --- | --- | --- | --- | --- |
-| Instagram Export | Supported | Supported | Supported | No |
-| Reddit | Official API, access pending | Prototype | No | No |
-| Other platforms | Planned | Planned | Planned | Planned |
+| Platform | Local import | Official scan | Review | Cleanup planning | Assisted cleanup | Simulated execution | Automatic cleanup |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Instagram Export | Supported | Unsupported | Supported | Supported | Supported | No-op only | Unsupported |
+| Reddit | Unsupported | Prototype, access pending | Supported | Prototype | Unsupported | No-op only | Unsupported |
+
+## Capability Terms
+
+- **Local import** reads an export file selected from disk.
+- **Official scan** reads activity through a platform's official API.
+- **Review** browses, filters, and selects discovered activity locally.
+- **Cleanup planning** creates inspectable local actions from selections.
+- **Assisted cleanup** guides a person through changes they perform themselves.
+- **Simulated execution** runs the apply lifecycle without platform changes.
+- **Automatic cleanup** would perform platform changes; Vanish does not support it.
 
 ## Instagram Export
 
@@ -24,31 +33,22 @@ browser, delete platform content, or automatically apply account changes.
 
 ## Reddit
 
-Reddit is an experimental read-only official API planner prototype. A developer
-access request has been submitted to Reddit, and the project is awaiting a
-response. The integration may therefore not be usable in public builds yet.
-Approval has not been granted.
+Reddit remains an experimental read-only official API planner prototype. A
+developer access request has been submitted, access remains pending, and
+approval has not been granted. Public builds may therefore be unable to use it.
 
-The prototype's documented boundary is installed-app OAuth with `identity
-history` scopes, official API access for own comments and submitted posts, and
-local review/filter/select/plan work. It has no assisted cleanup or mutations.
-Saved items, vote history, and all content or account changes remain planned.
+The prototype uses installed-app OAuth with `identity history` scopes, official
+API access for own comments and submitted posts, and local review and planning.
+It has no assisted cleanup or platform mutations.
 
 Reddit does not block the Instagram alpha release. It must not add scraping,
 browser automation, private APIs, password collection, cookie/session paste, or
 automatic platform actions.
 
-## Other Platforms
-
-Other platforms are planned only. They have no importer, account flow, cleanup
-planner, or execution path in this release.
-
 ## Safety Boundaries
 
 - Instagram import reads local files selected by the user.
-- Reddit network activity, where access is available, is limited to the
-  documented official OAuth/API planner boundary.
-- Vanish stores local workspace metadata and cleanup plan files; secret handling
-  is limited to the documented Reddit credential-store path.
-- Local data wipe clears Vanish-managed local metadata only.
+- Reddit network activity, where access is available, stays inside the documented read-only official OAuth/API boundary.
+- Simulation uses provider-specific routing but performs no platform changes.
+- Local data wipe clears Vanish-managed metadata only.
 - No supported platform has automatic cleanup.

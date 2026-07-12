@@ -10,13 +10,13 @@ import (
 func TestPlatformDocsStateCurrentSupportAndBoundaries(t *testing.T) {
 	text := readRepoFile(t, "docs", "platforms.md")
 	for _, want := range []string{
-		"| Instagram Export | Supported | Supported | Supported | No |",
-		"| Reddit | Official API, access pending | Prototype | No | No |",
-		"experimental read-only official API planner prototype",
-		"access request has been submitted to Reddit",
-		"own comments and submitted posts",
-		"installed-app OAuth",
-		"automatically apply account changes",
+		"| Instagram Export | Supported | Unsupported | Supported | Supported | Supported | No-op only | Unsupported |",
+		"| Reddit | Unsupported | Prototype, access pending | Supported | Prototype | Unsupported | No-op only | Unsupported |",
+		"execution never changes platform content",
+		"Assisted cleanup",
+		"Automatic cleanup",
+		"approval has not been granted",
+		"provider-specific routing but performs no platform changes",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected docs/platforms.md to contain %q, got:\n%s", want, text)

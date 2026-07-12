@@ -29,6 +29,27 @@ import (
 	"github.com/itsmeares/vanish/internal/workspace"
 )
 
+var (
+	builtInPlatforms           = mustPlatformRegistry()
+	builtInSimulationProviders = mustSimulationProviderRegistry()
+)
+
+func mustPlatformRegistry() platform.Registry {
+	registry, err := platform.NewRegistry(instagram.Platform(), reddit.Platform())
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+func mustSimulationProviderRegistry() apply.ProviderRegistry {
+	registry, err := apply.NewProviderRegistry(instagram.SimulationProvider(), reddit.SimulationProvider())
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
 type screen int
 
 const (
@@ -131,8 +152,10 @@ const (
 )
 
 type redditAction struct {
-	ID    redditActionID
-	Label string
+	ID       redditActionID
+	Label    string
+	Disabled bool
+	Reason   string
 }
 
 const (
@@ -878,6 +901,9 @@ func (m Model) updateRedditConnect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.current = screenPlatformDetail
 	case key.Matches(msg, m.keys.selectItem):
 		index := clampCursor(m.redditConnectCursor, len(actions))
+		if actions[index].Disabled {
+			return m, nil
+		}
 		switch actions[index].ID {
 		case redditActionSignIn:
 			return m.startRedditSignIn()
@@ -1341,7 +1367,7 @@ func (m Model) updateApplyConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case applyConfirmRun:
 			m.recordApplyConfirmed(m.applyPreview)
 			m.current = screenApplyRunning
-			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.redditConnected()))
+			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.applyRuntimeState()))
 		case applyConfirmCancel:
 			m.current = screenApplyPreview
 		}
@@ -1950,18 +1976,22 @@ func (m Model) platformDetailView() string {
 }
 
 func (m Model) platformDetailLines(current platform.Platform) []string {
-	actionLabels, disabled := platformActionRows(current.Actions)
+	actionLabels, disabled := platformActionRows(current)
 	lines := []string{m.styles.separator.Render("Actions")}
 	lines = append(lines, m.menuRowsWithDisabled(actionLabels, disabled, m.platformActionCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
 	if len(current.Actions) > 0 {
 		action := current.Actions[clampCursor(m.platformActionCursor, len(current.Actions))]
-		if action.Disabled && strings.TrimSpace(action.Reason) != "" {
-			lines = append(lines, m.notice("warning", action.Reason))
+		if available, reason := current.ActionAvailable(action); !available && strings.TrimSpace(reason) != "" {
+			lines = append(lines, m.notice("warning", reason))
 		}
 	}
 
-	lines = append(lines, "", m.styles.separator.Render("Here"))
+	lines = append(lines, "", m.styles.separator.Render("Status"))
 	lines = append(lines, m.styles.body.Render(current.Summary))
+	lines = append(lines, "", m.styles.separator.Render("Capabilities"))
+	for _, capability := range current.Capabilities {
+		lines = append(lines, m.styles.body.Render(platformCapabilityLine(capability, layoutSpec(m.width, m.height).contentWidth-4)))
+	}
 	return lines
 }
 
@@ -2003,7 +2033,14 @@ func (m Model) redditConnectView() string {
 	spec := layoutSpec(m.width, m.height)
 	status := m.redditConnectionRows()
 	actions := m.redditConnectActions()
-	actionLines := m.menuRows(redditActionLabels(actions), m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
+	actionLabels, disabled := redditActionRows(actions)
+	actionLines := m.menuRowsWithDisabled(actionLabels, disabled, m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
+	if len(actions) > 0 {
+		selected := actions[clampCursor(m.redditConnectCursor, len(actions))]
+		if selected.Disabled && strings.TrimSpace(selected.Reason) != "" {
+			status = append(status, "", m.notice("warning", selected.Reason))
+		}
+	}
 
 	body := m.twoPane(
 		spec,
@@ -2036,21 +2073,14 @@ func (m Model) redditBusyView() string {
 }
 
 func (m Model) platforms() []platform.Platform {
-	return platform.NewRegistry(
-		instagram.Platform(),
-		reddit.Platform(),
-	).List()
+	return builtInPlatforms.List()
 }
 
 func (m Model) selectedPlatform() platform.Platform {
-	registry := platform.NewRegistry(
-		instagram.Platform(),
-		reddit.Platform(),
-	)
-	if current, ok := registry.Get(m.selectedPlatformID); ok {
+	if current, ok := builtInPlatforms.Get(m.selectedPlatformID); ok {
 		return current
 	}
-	platforms := registry.List()
+	platforms := builtInPlatforms.List()
 	if len(platforms) == 0 {
 		return platform.Platform{}
 	}
@@ -2066,12 +2096,12 @@ func platformLabels(platforms []platform.Platform) []string {
 	return labels
 }
 
-func platformActionRows(actions []platform.PlatformAction) ([]string, map[int]bool) {
-	rows := make([]string, 0, len(actions))
+func platformActionRows(current platform.Platform) ([]string, map[int]bool) {
+	rows := make([]string, 0, len(current.Actions))
 	disabled := make(map[int]bool)
-	for i, action := range actions {
+	for i, action := range current.Actions {
 		rows = append(rows, action.Label)
-		if action.Disabled {
+		if available, _ := current.ActionAvailable(action); !available {
 			disabled[i] = true
 		}
 	}
@@ -2082,7 +2112,7 @@ func platformActionRows(actions []platform.PlatformAction) ([]string, map[int]bo
 }
 
 func platformCapabilityLine(capability platform.Capability, width int) string {
-	line := fmt.Sprintf("%s: %s - %s", capability.Label, capability.Support, capability.Description)
+	line := fmt.Sprintf("%s: %s", capability.Label, capability.Support)
 	return truncateEnd(line, maxInt(8, width))
 }
 
@@ -2614,9 +2644,10 @@ func (m Model) applyPreviewView() string {
 		spec.detailWidth,
 		m.section("Apply Preview", m.keyValueRows([]keyValue{
 			{Key: "Platform", Value: emptyFallback(string(preview.Platform), "-")},
-			{Key: "Executor", Value: preview.Executor},
+			{Key: "Mode", Value: emptyFallback(string(preview.Mode), "-")},
+			{Key: "Executor", Value: emptyFallback(string(preview.Executor), "-")},
 			{Key: "Status", Value: status},
-			{Key: "Reddit account", Value: readyLabel(preview.AccountReady)},
+			{Key: "Provider ready", Value: readyLabel(preview.ProviderReady)},
 		})),
 		m.section("Counts", m.keyValueRows([]keyValue{
 			{Key: "Actions", Value: compactCount(preview.Summary.TotalActions)},
@@ -2663,7 +2694,7 @@ func (m Model) applyResultView() string {
 		spec.detailWidth,
 		m.section("Result", m.keyValueRows([]keyValue{
 			{Key: "State", Value: string(execution.State)},
-			{Key: "Executor", Value: apply.ExecutorNoop},
+			{Key: "Executor", Value: emptyFallback(string(execution.Preview.Executor), "-")},
 			{Key: "No platform changes", Value: "yes"},
 		})),
 		m.section("Counts", m.keyValueRows([]keyValue{
@@ -3183,7 +3214,7 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 	}
 	m.platformActionCursor = clampCursor(m.platformActionCursor, len(current.Actions))
 	action := current.Actions[m.platformActionCursor]
-	if action.Disabled {
+	if available, _ := current.ActionAvailable(action); !available {
 		return m, nil
 	}
 
@@ -3299,7 +3330,7 @@ func (m Model) hasPlanPreview() bool {
 
 func (m *Model) openApplyPreview(source applyPlanSource) {
 	m.applyPlanSource = source
-	m.applyPreview = m.applyRunner().Preview(m.currentApplyPlan())
+	m.applyPreview = m.applyRunner().Preview(m.currentApplyPlan(), apply.ExecutionModeSimulation)
 	m.applyExecution = apply.Execution{}
 	m.applyPreviewCursor = 0
 	m.applyConfirmCursor = applyConfirmCancel
@@ -3310,11 +3341,15 @@ func (m *Model) openApplyPreview(source applyPlanSource) {
 
 func (m Model) applyRunner() apply.Runner {
 	return apply.Runner{
-		Executor: apply.NoopExecutor{},
-		Accounts: apply.AccountState{
-			RedditConnected: m.redditConnected(),
-		},
+		Providers: builtInSimulationProviders,
+		State:     m.applyRuntimeState(),
 	}
+}
+
+func (m Model) applyRuntimeState() apply.RuntimeState {
+	return apply.NewRuntimeState(map[domain.PlatformName]apply.ConnectionState{
+		domain.PlatformReddit: {Connected: m.redditConnected()},
+	})
 }
 
 func (m Model) currentApplyPlan() domain.CleanupPlan {
@@ -3765,15 +3800,33 @@ func (m *Model) ensureRedditAuthURL() bool {
 func (m Model) redditConnectActions() []redditAction {
 	if m.redditConnected() {
 		return []redditAction{
-			{ID: redditActionScan, Label: "Scan activity"},
+			m.redditCapabilityAction(redditActionScan, "Scan activity", platform.ActionScanActivity),
 			{ID: redditActionDisconnect, Label: "Disconnect"},
 			{ID: redditActionBack, Label: "Back"},
 		}
 	}
 	return []redditAction{
-		{ID: redditActionSignIn, Label: "Sign in with Reddit"},
+		m.redditCapabilityAction(redditActionSignIn, "Sign in with Reddit", platform.ActionConnectAccount),
 		{ID: redditActionBack, Label: "Back"},
 	}
+}
+
+func (m Model) redditCapabilityAction(id redditActionID, label, platformActionID string) redditAction {
+	action := redditAction{ID: id, Label: label, Disabled: true, Reason: "Action is unavailable."}
+	current, ok := builtInPlatforms.Get(platform.PlatformReddit)
+	if !ok {
+		return action
+	}
+	metadata, ok := current.Action(platformActionID)
+	if !ok {
+		return action
+	}
+	available, reason := current.ActionAvailable(metadata)
+	action.Disabled = !available
+	if strings.TrimSpace(reason) != "" {
+		action.Reason = reason
+	}
+	return action
 }
 
 func redditActionLabels(actions []redditAction) []string {
@@ -3782,6 +3835,20 @@ func redditActionLabels(actions []redditAction) []string {
 		labels = append(labels, action.Label)
 	}
 	return labels
+}
+
+func redditActionRows(actions []redditAction) ([]string, map[int]bool) {
+	labels := redditActionLabels(actions)
+	disabled := make(map[int]bool)
+	for i, action := range actions {
+		if action.Disabled {
+			disabled[i] = true
+		}
+	}
+	if len(disabled) == 0 {
+		disabled = nil
+	}
+	return labels, disabled
 }
 
 func (m Model) redditHomeDetailLines() []string {
@@ -4672,17 +4739,15 @@ func loadPlanJSONCmd(planPath string, fromRecent bool) tea.Cmd {
 	}
 }
 
-func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, redditConnected bool) tea.Cmd {
+func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, state apply.RuntimeState) tea.Cmd {
 	return func() tea.Msg {
 		runner := apply.Runner{
-			Executor: apply.NoopExecutor{},
-			Accounts: apply.AccountState{
-				RedditConnected: redditConnected,
-			},
+			Providers: builtInSimulationProviders,
+			State:     state,
 		}
 		return applyRunFinishedMsg{
 			source:    source,
-			execution: runner.Run(context.Background(), plan),
+			execution: runner.Run(context.Background(), plan, apply.ExecutionModeSimulation),
 		}
 	}
 }
@@ -5497,24 +5562,26 @@ func planAuditFields(path string, plan domain.CleanupPlan, summary domain.Cleanu
 
 func applyPreviewAuditFields(preview apply.Preview) map[string]any {
 	return map[string]any{
-		"plan_id":              preview.PlanID,
-		"platform":             string(preview.Platform),
-		"executor":             preview.Executor,
-		"action_count":         preview.Summary.TotalActions,
-		"pending_count":        preview.PendingCount,
-		"unsupported_count":    preview.UnsupportedCount,
-		"failed_count":         preview.Summary.StatusCounts[domain.ActionStatusFailed],
-		"skipped_count":        preview.Summary.StatusCounts[domain.ActionStatusSkipped],
-		"reddit_account_ready": preview.AccountReady,
-		"can_apply":            preview.CanApply,
+		"plan_id":           preview.PlanID,
+		"platform":          string(preview.Platform),
+		"execution_mode":    string(preview.Mode),
+		"executor":          string(preview.Executor),
+		"action_count":      preview.Summary.TotalActions,
+		"pending_count":     preview.PendingCount,
+		"unsupported_count": preview.UnsupportedCount,
+		"failed_count":      preview.Summary.StatusCounts[domain.ActionStatusFailed],
+		"skipped_count":     preview.Summary.StatusCounts[domain.ActionStatusSkipped],
+		"provider_ready":    preview.ProviderReady,
+		"can_apply":         preview.CanApply,
 	}
 }
 
 func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	fields := map[string]any{
-		"plan_id":  event.PlanID,
-		"platform": string(event.Platform),
-		"executor": event.Executor,
+		"plan_id":        event.PlanID,
+		"platform":       string(event.Platform),
+		"execution_mode": string(event.Mode),
+		"executor":       string(event.Executor),
 	}
 	if event.ActionID != "" {
 		fields["action_id"] = event.ActionID
@@ -6234,7 +6301,7 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		boxes = append(boxes, rowHitBoxes(content, hitHomeAction, 0, platformLabels(m.platforms()))...)
 	case screenPlatformDetail:
 		current := m.selectedPlatform()
-		actionRows, _ := platformActionRows(current.Actions)
+		actionRows, _ := platformActionRows(current)
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, actionRows)...)
 	case screenInstagramExportGuide:
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, instagramGuideMenuItems)...)

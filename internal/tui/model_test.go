@@ -199,22 +199,26 @@ func TestHomeEnterOpensPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestPlatformDetailShowsActionsBeforeShortContext(t *testing.T) {
+func TestPlatformDetailShowsTypedCapabilitiesAfterActions(t *testing.T) {
 	m := NewModel()
 	m.openPlatformDetail(0)
 	plain := stripANSI(m.View().Content)
 	actions := strings.Index(plain, "Actions")
-	here := strings.Index(plain, "Here")
-	if actions < 0 || here < 0 {
-		t.Fatalf("expected platform actions and short context, got:\n%s", plain)
+	status := strings.Index(plain, "Status")
+	capabilities := strings.Index(plain, "Capabilities")
+	if actions < 0 || status < 0 || capabilities < 0 {
+		t.Fatalf("expected actions, status, and capabilities, got:\n%s", plain)
 	}
-	if actions > here {
-		t.Fatalf("expected actions before context, got:\n%s", plain)
+	if actions > status || status > capabilities {
+		t.Fatalf("expected actions before status and capabilities, got:\n%s", plain)
 	}
-	for _, unwanted := range []string{"Capabilities", "Notes / Guide", "Status: prototype"} {
-		if strings.Contains(plain, unwanted) {
-			t.Fatalf("expected platform detail not to show %q, got:\n%s", unwanted, plain)
+	for _, want := range []string{"Local import: supported", "Automatic cleanup: unsupported", "Account authentication: unsupported"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected platform detail to show %q, got:\n%s", want, plain)
 		}
+	}
+	if strings.Contains(plain, "Notes / Guide") {
+		t.Fatalf("expected concise platform detail, got:\n%s", plain)
 	}
 }
 
@@ -534,6 +538,81 @@ func TestRedditConnectedShowsScanDisconnectBack(t *testing.T) {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("expected Reddit connected state not to contain %q, got:\n%s", unwanted, view)
 		}
+	}
+	if strings.Contains(view, "Capabilities") || strings.Contains(view, "Official API scan: prototype") {
+		t.Fatalf("expected connection screen to omit capability list, got:\n%s", view)
+	}
+}
+
+func TestRedditConnectionActionsUseTypedCapabilityAvailability(t *testing.T) {
+	tests := []struct {
+		name         string
+		connected    bool
+		capabilityID platform.CapabilityID
+		support      platform.CapabilitySupport
+		actionID     string
+		disable      bool
+	}{
+		{name: "sign-in planned", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportPlanned, actionID: platform.ActionConnectAccount},
+		{name: "sign-in later", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportLater, actionID: platform.ActionConnectAccount},
+		{name: "sign-in unsupported", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportUnsupported, actionID: platform.ActionConnectAccount},
+		{name: "sign-in explicitly disabled", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportPrototype, actionID: platform.ActionConnectAccount, disable: true},
+		{name: "scan planned", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportPlanned, actionID: platform.ActionScanActivity},
+		{name: "scan later", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportLater, actionID: platform.ActionScanActivity},
+		{name: "scan unsupported", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportUnsupported, actionID: platform.ActionScanActivity},
+		{name: "scan explicitly disabled", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportPrototype, actionID: platform.ActionScanActivity, disable: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			installRedditPlatformForTest(t, func(current *platform.Platform) {
+				for i := range current.Capabilities {
+					if current.Capabilities[i].ID == tc.capabilityID {
+						current.Capabilities[i].Support = tc.support
+					}
+				}
+				for i := range current.Actions {
+					if current.Actions[i].ID == tc.actionID {
+						current.Actions[i].Disabled = tc.disable
+					}
+				}
+			})
+
+			m := NewModel()
+			m.current = screenRedditConnect
+			m.selectedPlatformID = platform.PlatformReddit
+			if tc.connected {
+				m.localConfig.Reddit = &workspace.RedditConfig{Username: "test_user"}
+			}
+			actions := m.redditConnectActions()
+			if len(actions) == 0 || !actions[0].Disabled {
+				t.Fatalf("expected typed capability to disable action: %#v", actions)
+			}
+
+			updated, cmd := m.Update(keyPress("enter"))
+			keyboard := requireModel(t, updated)
+			if cmd != nil || keyboard.current != screenRedditConnect {
+				t.Fatalf("keyboard activated disabled action: screen=%v cmd=%v", keyboard.current, cmd != nil)
+			}
+
+			box := requireHitBox(t, hitBoxesForTest(t, m), hitPlatformAction, 0, "")
+			updated, cmd = m.Update(mouseClick(box.X, box.Y))
+			mouse := requireModel(t, updated)
+			if cmd != nil || mouse.current != screenRedditConnect {
+				t.Fatalf("mouse activated disabled action: screen=%v cmd=%v", mouse.current, cmd != nil)
+			}
+		})
+	}
+}
+
+func TestApplyEventAuditFieldsPreserveSkippedRouteIdentity(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type: apply.EventActionSkipped, PlanID: "plan-1", Platform: domain.PlatformReddit,
+		ActionID: "action-1", ActionType: domain.ActionRedditDeleteComment, Status: domain.ActionStatusSkipped,
+		Mode: apply.ExecutionModeSimulation, Executor: reddit.SimulationExecutorID,
+	})
+	if fields["execution_mode"] != "simulation" || fields["executor"] != "reddit-simulation" {
+		t.Fatalf("skipped audit fields lost route identity: %#v", fields)
 	}
 }
 
@@ -2187,9 +2266,10 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	for _, want := range []string{
 		"Apply Preview",
 		"Platform: instagram",
-		"Executor: noop",
+		"Mode: simulation",
+		"Executor: instagram-simulation",
 		"Status: Ready",
-		"Reddit account: ready",
+		"Provider ready: ready",
 		"Pending: 3",
 		"Unsupported: 0",
 		"Simulate no-op run",
@@ -2198,7 +2278,13 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 			t.Fatalf("expected apply preview to contain %q, got:\n%s", want, view)
 		}
 	}
-	requireAuditEvent(t, w, string(apply.EventPreviewed))
+	previewEvent := requireAuditEvent(t, w, string(apply.EventPreviewed))
+	if previewEvent.Fields["execution_mode"] != "simulation" || previewEvent.Fields["executor"] != "instagram-simulation" || previewEvent.Fields["provider_ready"] != true {
+		t.Fatalf("unexpected provider-routed preview audit: %#v", previewEvent.Fields)
+	}
+	if _, ok := previewEvent.Fields["reddit_account_ready"]; ok {
+		t.Fatalf("preview audit retained Reddit-specific readiness: %#v", previewEvent.Fields)
+	}
 
 	next = updateModel(t, next, keyPress("enter"))
 	if next.current != screenApplyConfirm {
@@ -2218,7 +2304,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	if next.current != screenApplyRunning {
 		t.Fatalf("expected apply running, got %v", next.current)
 	}
-	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.redditConnected())())
+	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.applyRuntimeState())())
 
 	if next.current != screenApplyResult || next.applyExecution.State != apply.ExecutionStateDone {
 		t.Fatalf("expected apply result, screen=%v execution=%#v", next.current, next.applyExecution)
@@ -2246,6 +2332,9 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	requireAuditEvent(t, w, string(apply.EventConfirmed))
 	requireAuditEvent(t, w, string(apply.EventExecutionStarted))
 	actionEvent := requireAuditEvent(t, w, string(apply.EventActionResult))
+	if actionEvent.Fields["execution_mode"] != "simulation" || actionEvent.Fields["executor"] != "instagram-simulation" {
+		t.Fatalf("unexpected provider-routed action audit: %#v", actionEvent.Fields)
+	}
 	if _, ok := actionEvent.Fields["target_url"]; ok {
 		t.Fatalf("apply action audit should not include target URL: %#v", actionEvent.Fields)
 	}
@@ -2739,8 +2828,8 @@ func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Status: Blocked",
-		"Reddit account: not ready",
-		"Connect Reddit before applying this plan.",
+		"Provider ready: not ready",
+		"Connect Reddit before simulating this plan.",
 		"Back",
 	} {
 		if !strings.Contains(view, want) {
@@ -2753,11 +2842,32 @@ func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
 
 	next.localConfig.Reddit = &workspace.RedditConfig{Username: "test_user"}
 	next.openApplyPreview(applySourceLoaded)
-	if !next.applyPreview.CanApply || !next.applyPreview.AccountReady {
+	if !next.applyPreview.CanApply || !next.applyPreview.ProviderReady {
 		t.Fatalf("expected connected reddit preview to be ready: %#v", next.applyPreview)
 	}
-	if !strings.Contains(next.View().Content, "Reddit account: ready") {
-		t.Fatalf("expected ready reddit account label, got:\n%s", next.View().Content)
+	if !strings.Contains(next.View().Content, "Provider ready: ready") {
+		t.Fatalf("expected ready provider label, got:\n%s", next.View().Content)
+	}
+}
+
+func TestUnknownProviderShowsBlockedApplyPreview(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	next := NewModel()
+	next.loadedPlan = domain.NewCleanupPlan("unknown-plan", "unknown", "test", now, []domain.CleanupAction{{
+		ID: "action-1", Platform: "unknown", Type: domain.ActionUnlike, TargetID: "target-1", SourceActivityItemID: "item-1", Status: domain.ActionStatusPending, CreatedAt: now,
+	}})
+	next.loadedPlanSummary = domain.SummarizeCleanupPlan(next.loadedPlan)
+	next.current = screenLoadedPlanSummary
+
+	next = updateModel(t, next, keyPress("enter"))
+	view := next.View().Content
+	for _, want := range []string{"Status: Blocked", "Executor: -", "This plan's platform is unavailable for simulation.", "Back"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected unknown provider preview to contain %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Simulate no-op run") {
+		t.Fatalf("unknown provider preview offered execution: %s", view)
 	}
 }
 
@@ -3580,6 +3690,21 @@ func platformActionIndex(t *testing.T, current platform.Platform, actionID strin
 	}
 	t.Fatalf("expected platform %q to have action %q", current.ID, actionID)
 	return 0
+}
+
+func installRedditPlatformForTest(t *testing.T, mutate func(*platform.Platform)) {
+	t.Helper()
+	previous := builtInPlatforms
+	current := reddit.Platform()
+	mutate(&current)
+	registry, err := platform.NewRegistry(instagram.Platform(), current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builtInPlatforms = registry
+	t.Cleanup(func() {
+		builtInPlatforms = previous
+	})
 }
 
 func applyTypeFilter(t *testing.T, model Model, row int) Model {
