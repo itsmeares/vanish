@@ -616,6 +616,130 @@ func TestApplyEventAuditFieldsPreserveSkippedRouteIdentity(t *testing.T) {
 	}
 }
 
+func TestApplyEventAuditFieldsIncludeTypedOutcomeMetadata(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type:         apply.EventActionResult,
+		PlanID:       "plan-1",
+		Platform:     domain.PlatformReddit,
+		ActionID:     "action-1",
+		ActionType:   domain.ActionRedditDeleteComment,
+		Status:       domain.ActionStatusFailed,
+		Mode:         apply.ExecutionModeSimulation,
+		Executor:     reddit.SimulationExecutorID,
+		Outcome:      apply.OutcomeRetryableFailure,
+		Attempt:      2,
+		Retryable:    true,
+		RetryAfter:   1500 * time.Millisecond,
+		ProviderCode: "temporary_failure",
+		Message:      "safe user-facing message",
+	})
+	for key, want := range map[string]any{
+		"execution_mode": "simulation",
+		"executor":       "reddit-simulation",
+		"outcome":        "retryable_failure",
+		"attempt":        2,
+		"retryable":      true,
+		"retry_after_ms": int64(1500),
+		"provider_code":  "temporary_failure",
+	} {
+		if fields[key] != want {
+			t.Fatalf("audit field %q = %#v, want %#v; fields=%#v", key, fields[key], want, fields)
+		}
+	}
+	for _, forbidden := range []string{"message", "target_url", "raw_response", "error", "authorization", "token"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("audit fields included forbidden %q: %#v", forbidden, fields)
+		}
+	}
+	if _, ok := fields["pending_count"]; ok {
+		t.Fatalf("action event included misleading zero counts: %#v", fields)
+	}
+}
+
+func TestApplyEventAuditFieldsOmitEmptyOptionalValues(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{Type: apply.EventExecutionFinished, PlanID: "plan-1", Platform: domain.PlatformInstagram})
+	for _, optional := range []string{"execution_mode", "executor", "outcome", "attempt", "retryable", "retry_after_ms", "provider_code", "halt_reason"} {
+		if _, ok := fields[optional]; ok {
+			t.Fatalf("empty optional field %q was emitted: %#v", optional, fields)
+		}
+	}
+}
+
+func TestApplyResultViewShowsConciseTypedOutcomeDetails(t *testing.T) {
+	t.Run("authentication halt", func(t *testing.T) {
+		m := NewModel()
+		m.width = 120
+		m.height = 40
+		m.current = screenApplyResult
+		m.applyExecution = apply.Execution{
+			State:      apply.ExecutionStateHalted,
+			HaltReason: apply.OutcomeAuthenticationRequired,
+			Preview:    apply.Preview{Executor: reddit.SimulationExecutorID},
+			Counts:     apply.ResultCounts{Failed: 1, Pending: 1},
+			Results: []apply.ActionResult{{
+				ActionID:     "action-1",
+				Platform:     domain.PlatformReddit,
+				Type:         domain.ActionRedditDeleteComment,
+				Status:       domain.ActionStatusFailed,
+				Outcome:      apply.OutcomeAuthenticationRequired,
+				Attempt:      1,
+				ProviderCode: "auth_expired",
+				Message:      "Reconnect required.",
+			}},
+		}
+		view := stripANSI(m.View().Content)
+		for _, want := range []string{"State: halted", "Reason: authentication required", "Reconnect required.", "Reconnect the account before trying again.", "Pending: 1"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("halted apply result missing %q:\n%s", want, view)
+			}
+		}
+		if strings.Contains(view, "auth_expired") {
+			t.Fatalf("provider code became primary UI copy:\n%s", view)
+		}
+	})
+
+	t.Run("retry succeeds on second attempt", func(t *testing.T) {
+		m := NewModel()
+		m.width = 120
+		m.height = 40
+		m.current = screenApplyResult
+		m.applyExecution = apply.Execution{
+			State:  apply.ExecutionStateDone,
+			Counts: apply.ResultCounts{Done: 1},
+			Results: []apply.ActionResult{
+				{ActionID: "action-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, Status: domain.ActionStatusFailed, Outcome: apply.OutcomeRetryableFailure, Attempt: 1},
+				{ActionID: "action-1", Platform: domain.PlatformInstagram, Type: domain.ActionUnlike, Status: domain.ActionStatusDone, Outcome: apply.OutcomeSucceeded, Attempt: 2},
+			},
+		}
+		view := stripANSI(m.View().Content)
+		if !strings.Contains(view, "Attempt: 2") {
+			t.Fatalf("retry attempt was not shown concisely:\n%s", view)
+		}
+		if len(finalActionResults(m.applyExecution.Results)) != 1 {
+			t.Fatalf("retry history was not collapsed: %#v", finalActionResults(m.applyExecution.Results))
+		}
+	})
+
+	t.Run("retry after halt", func(t *testing.T) {
+		m := NewModel()
+		m.width = 120
+		m.height = 40
+		m.current = screenApplyResult
+		m.applyExecution = apply.Execution{
+			State:  apply.ExecutionStateHalted,
+			Counts: apply.ResultCounts{Failed: 1},
+			Results: []apply.ActionResult{{
+				ActionID: "action-1", Type: domain.ActionUnlike, Status: domain.ActionStatusFailed,
+				Outcome: apply.OutcomeRetryableFailure, Attempt: 1, RetryAfter: 30 * time.Second,
+			}},
+		}
+		view := stripANSI(m.View().Content)
+		if !strings.Contains(view, "Retry after: 30s") || !strings.Contains(view, "retryable failure") {
+			t.Fatalf("retry-after halt details missing:\n%s", view)
+		}
+	})
+}
+
 func TestTabClicksRouteToSafeScreens(t *testing.T) {
 	imported := importedModel(t, fakeImportResult())
 

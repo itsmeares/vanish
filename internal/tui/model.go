@@ -2706,6 +2706,9 @@ func (m Model) applyResultView() string {
 			{Key: "Pending", Value: compactCount(execution.Counts.Pending)},
 		})),
 	)
+	if detailRows := applyOutcomeDetailRows(execution); len(detailRows) > 0 {
+		lines = append(lines, m.section("Outcome", m.keyValueRows(detailRows))...)
+	}
 	lines = append(lines, "")
 	lines = append(lines, m.menuRows(applyResultMenuItems, m.applyResultCursor, spec.detailWidth, hitApplyResultAction)...)
 
@@ -2713,8 +2716,9 @@ func (m Model) applyResultView() string {
 	if len(execution.Results) == 0 {
 		resultLines = append(resultLines, m.emptyState("No actions ran."))
 	} else {
-		rows := make([]string, 0, len(execution.Results))
-		for _, result := range execution.Results {
+		finalResults := finalActionResults(execution.Results)
+		rows := make([]string, 0, len(finalResults))
+		for _, result := range finalResults {
 			rows = append(rows, applyResultRow(result))
 		}
 		resultLines = append(resultLines, m.plainRows(rows, 0, m.planActionListHeight(), spec.mainWidth)...)
@@ -5092,11 +5096,88 @@ func (m Model) applyActionSummaryLines(preview apply.Preview, width int) []strin
 }
 
 func applyResultRow(result apply.ActionResult) string {
+	outcome := actionOutcomeLabel(result.Outcome)
+	if result.Outcome == apply.OutcomeSucceeded || result.Outcome == "" {
+		outcome = string(result.Status)
+	}
+	attempt := "-"
+	if result.Attempt > 1 {
+		attempt = fmt.Sprintf("attempt %d", result.Attempt)
+	}
 	return fixedWidthRow(
-		fixedColumn{Text: string(result.Status), Width: 12},
-		fixedColumn{Text: string(result.Type), Width: 24},
-		fixedColumn{Text: emptyFallback(result.ActionID, "-"), Width: 24},
+		fixedColumn{Text: outcome, Width: 20},
+		fixedColumn{Text: string(result.Type), Width: 22},
+		fixedColumn{Text: attempt, Width: 12},
+		fixedColumn{Text: emptyFallback(result.ActionID, "-"), Width: 18},
 	)
+}
+
+func finalActionResults(results []apply.ActionResult) []apply.ActionResult {
+	final := make([]apply.ActionResult, 0, len(results))
+	indexes := make(map[string]int, len(results))
+	for _, result := range results {
+		if index, ok := indexes[result.ActionID]; ok {
+			final[index] = result
+			continue
+		}
+		indexes[result.ActionID] = len(final)
+		final = append(final, result)
+	}
+	return final
+}
+
+func applyOutcomeDetailRows(execution apply.Execution) []keyValue {
+	result, ok := relevantOutcomeResult(execution.Results)
+	if !ok {
+		return nil
+	}
+	rows := []keyValue{{Key: "Reason", Value: actionOutcomeLabel(result.Outcome)}}
+	if result.Outcome != apply.OutcomeSucceeded && strings.TrimSpace(result.Message) != "" {
+		rows = append(rows, keyValue{Key: "Message", Value: result.Message})
+	}
+	if result.Attempt > 1 {
+		rows = append(rows, keyValue{Key: "Attempt", Value: compactCount(result.Attempt)})
+	}
+	if result.RetryAfter > 0 {
+		rows = append(rows, keyValue{Key: "Retry after", Value: result.RetryAfter.String()})
+	}
+	if result.Outcome == apply.OutcomeAuthenticationRequired {
+		rows = append(rows, keyValue{Key: "Next step", Value: "Reconnect the account before trying again."})
+	}
+	return rows
+}
+
+func relevantOutcomeResult(results []apply.ActionResult) (apply.ActionResult, bool) {
+	for i := len(results) - 1; i >= 0; i-- {
+		result := results[i]
+		if result.Outcome != apply.OutcomeSucceeded || result.Attempt > 1 {
+			return result, true
+		}
+	}
+	return apply.ActionResult{}, false
+}
+
+func actionOutcomeLabel(outcome apply.ActionOutcome) string {
+	switch outcome {
+	case apply.OutcomeSucceeded:
+		return "succeeded"
+	case apply.OutcomeAlreadySatisfied:
+		return "already satisfied"
+	case apply.OutcomeRetryableFailure:
+		return "retryable failure"
+	case apply.OutcomePermanentFailure:
+		return "permanent failure"
+	case apply.OutcomeRateLimited:
+		return "rate limited"
+	case apply.OutcomeAuthenticationRequired:
+		return "authentication required"
+	case apply.OutcomeStopped:
+		return "stopped"
+	case apply.OutcomeCancelled:
+		return "cancelled"
+	default:
+		return "failed safely"
+	}
 }
 
 func readyLabel(ready bool) string {
@@ -5561,11 +5642,10 @@ func planAuditFields(path string, plan domain.CleanupPlan, summary domain.Cleanu
 }
 
 func applyPreviewAuditFields(preview apply.Preview) map[string]any {
-	return map[string]any{
+	fields := map[string]any{
 		"plan_id":           preview.PlanID,
 		"platform":          string(preview.Platform),
 		"execution_mode":    string(preview.Mode),
-		"executor":          string(preview.Executor),
 		"action_count":      preview.Summary.TotalActions,
 		"pending_count":     preview.PendingCount,
 		"unsupported_count": preview.UnsupportedCount,
@@ -5574,14 +5654,22 @@ func applyPreviewAuditFields(preview apply.Preview) map[string]any {
 		"provider_ready":    preview.ProviderReady,
 		"can_apply":         preview.CanApply,
 	}
+	if preview.Executor != "" {
+		fields["executor"] = string(preview.Executor)
+	}
+	return fields
 }
 
 func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	fields := map[string]any{
-		"plan_id":        event.PlanID,
-		"platform":       string(event.Platform),
-		"execution_mode": string(event.Mode),
-		"executor":       string(event.Executor),
+		"plan_id":  event.PlanID,
+		"platform": string(event.Platform),
+	}
+	if event.Mode != "" {
+		fields["execution_mode"] = string(event.Mode)
+	}
+	if event.Executor != "" {
+		fields["executor"] = string(event.Executor)
 	}
 	if event.ActionID != "" {
 		fields["action_id"] = event.ActionID
@@ -5595,13 +5683,38 @@ func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	if event.State != "" {
 		fields["state"] = string(event.State)
 	}
-	fields["pending_count"] = event.Counts.Pending
-	fields["done_count"] = event.Counts.Done
-	fields["failed_count"] = event.Counts.Failed
-	fields["skipped_count"] = event.Counts.Skipped
-	fields["stopped_count"] = event.Counts.Stopped
-	fields["cancelled_count"] = event.Counts.Cancelled
+	if event.Outcome != "" {
+		fields["outcome"] = string(event.Outcome)
+		fields["attempt"] = event.Attempt
+		fields["retryable"] = event.Retryable
+	}
+	if event.RetryAfter > 0 {
+		fields["retry_after_ms"] = retryAfterMilliseconds(event.RetryAfter)
+	}
+	if event.ProviderCode != "" {
+		fields["provider_code"] = event.ProviderCode
+	}
+	if event.HaltReason != "" {
+		fields["halt_reason"] = string(event.HaltReason)
+	}
+	if event.Type == apply.EventExecutionStarted || event.Type == apply.EventExecutionFinished {
+		fields["pending_count"] = event.Counts.Pending
+		fields["running_count"] = event.Counts.Running
+		fields["done_count"] = event.Counts.Done
+		fields["failed_count"] = event.Counts.Failed
+		fields["skipped_count"] = event.Counts.Skipped
+		fields["stopped_count"] = event.Counts.Stopped
+		fields["cancelled_count"] = event.Counts.Cancelled
+	}
 	return fields
+}
+
+func retryAfterMilliseconds(duration time.Duration) int64 {
+	milliseconds := int64(duration / time.Millisecond)
+	if duration%time.Millisecond != 0 {
+		milliseconds++
+	}
+	return milliseconds
 }
 
 func cleanAuditFields(fields map[string]any) map[string]any {
