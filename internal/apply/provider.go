@@ -82,9 +82,6 @@ func NewProviderRegistry(providers ...Provider) (ProviderRegistry, error) {
 		if strings.TrimSpace(string(provider.ExecutorID())) == "" {
 			return ProviderRegistry{}, fmt.Errorf("provider %q/%q executor id is required", platform, mode)
 		}
-		if provider.Executor() == nil {
-			return ProviderRegistry{}, fmt.Errorf("provider %q/%q executor is required", platform, mode)
-		}
 		route := providerRoute{platform: platform, mode: mode}
 		if _, exists := registry.providers[route]; exists {
 			return ProviderRegistry{}, fmt.Errorf("provider route %q/%q is registered more than once", platform, mode)

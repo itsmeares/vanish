@@ -70,6 +70,17 @@ type ActionResult struct {
 	Message  string
 }
 
+// PlanActionEdit records a standalone local plan change. It is not an
+// execution event and therefore has no provider route identity.
+type PlanActionEdit struct {
+	PlanID   string
+	ActionID string
+	Platform domain.PlatformName
+	Type     domain.ActionType
+	Status   domain.ActionStatus
+	Message  string
+}
+
 type ResultCounts struct {
 	Pending   int
 	Running   int
@@ -227,13 +238,26 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode Exec
 		return execution
 	}
 	provider, err := runner.Providers.Resolve(plan.Platform, mode)
-	if err != nil || provider.Executor() == nil {
+	if err != nil {
 		execution.State = ExecutionStateFailed
 		execution.Counts = CountsForPlan(plan)
 		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor))
 		return execution
 	}
 	executor := provider.Executor()
+	if executor == nil {
+		execution.Preview.ProviderReady = false
+		execution.Preview.CanApply = false
+		execution.Preview.Blockers = append(execution.Preview.Blockers, Prerequisite{
+			Code:     "executor_unavailable",
+			Message:  "The selected execution provider is unavailable.",
+			Blocking: true,
+		})
+		execution.State = ExecutionStateFailed
+		execution.Counts = CountsForPlan(plan)
+		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, mode, provider.ExecutorID()))
+		return execution
+	}
 
 	execution.State = ExecutionStateRunning
 	execution.Events = append(execution.Events, ExecutionEvent{
@@ -311,25 +335,25 @@ func RetryAction(plan *domain.CleanupPlan, actionID string) error {
 	}
 }
 
-func SkipAction(plan *domain.CleanupPlan, actionID, reason string) (ExecutionEvent, error) {
+func SkipAction(plan *domain.CleanupPlan, actionID, reason string) (PlanActionEdit, error) {
 	action, err := findAction(plan, actionID)
 	if err != nil {
-		return ExecutionEvent{}, err
+		return PlanActionEdit{}, err
 	}
 	switch action.Status {
 	case domain.ActionStatusPending, domain.ActionStatusFailed:
 		action.Status = domain.ActionStatusSkipped
 	default:
-		return ExecutionEvent{}, fmt.Errorf("action %q with status %q cannot be skipped", actionID, action.Status)
+		return PlanActionEdit{}, fmt.Errorf("action %q with status %q cannot be skipped", actionID, action.Status)
 	}
-	result := ActionResult{
+	return PlanActionEdit{
+		PlanID:   plan.ID,
 		ActionID: action.ID,
 		Platform: action.Platform,
 		Type:     action.Type,
 		Status:   action.Status,
 		Message:  cleanMessage(reason, "Action skipped."),
-	}
-	return eventForActionResult(plan.ID, result, "", ""), nil
+	}, nil
 }
 
 func StopPending(plan *domain.CleanupPlan, reason string) int {

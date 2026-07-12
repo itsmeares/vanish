@@ -87,6 +87,14 @@ func TestTypedCapabilityLookupAndActionAvailability(t *testing.T) {
 	if available, _ := current.ActionAvailable(current.Actions[0]); !available {
 		t.Fatal("supported local import action should be available")
 	}
+	selected, ok := current.Action(platform.ActionChooseExportZIP)
+	if !ok || selected.RequiredCapability != platform.CapabilityLocalImport {
+		t.Fatalf("typed platform action lookup failed: %#v %v", selected, ok)
+	}
+	selected.Disabled = true
+	if available, _ := current.ActionAvailable(selected); available {
+		t.Fatal("explicitly disabled action should be unavailable")
+	}
 	automatic := platform.PlatformAction{ID: "automatic", Label: "Automatic cleanup", RequiredCapability: platform.CapabilityAutomaticCleanup}
 	if available, reason := current.ActionAvailable(automatic); available || reason == "" {
 		t.Fatalf("unsupported automatic action should block, available=%v reason=%q", available, reason)

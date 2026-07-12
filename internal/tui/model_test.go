@@ -529,8 +529,6 @@ func TestRedditConnectedShowsScanDisconnectBack(t *testing.T) {
 		"Scan activity",
 		"Disconnect",
 		"Back",
-		"Official API scan: prototype",
-		"Automatic cleanup: unsupported",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected Reddit connected state to contain %q, got:\n%s", want, view)
@@ -540,6 +538,81 @@ func TestRedditConnectedShowsScanDisconnectBack(t *testing.T) {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("expected Reddit connected state not to contain %q, got:\n%s", unwanted, view)
 		}
+	}
+	if strings.Contains(view, "Capabilities") || strings.Contains(view, "Official API scan: prototype") {
+		t.Fatalf("expected connection screen to omit capability list, got:\n%s", view)
+	}
+}
+
+func TestRedditConnectionActionsUseTypedCapabilityAvailability(t *testing.T) {
+	tests := []struct {
+		name         string
+		connected    bool
+		capabilityID platform.CapabilityID
+		support      platform.CapabilitySupport
+		actionID     string
+		disable      bool
+	}{
+		{name: "sign-in planned", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportPlanned, actionID: platform.ActionConnectAccount},
+		{name: "sign-in later", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportLater, actionID: platform.ActionConnectAccount},
+		{name: "sign-in unsupported", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportUnsupported, actionID: platform.ActionConnectAccount},
+		{name: "sign-in explicitly disabled", capabilityID: platform.CapabilityAccountAuthentication, support: platform.SupportPrototype, actionID: platform.ActionConnectAccount, disable: true},
+		{name: "scan planned", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportPlanned, actionID: platform.ActionScanActivity},
+		{name: "scan later", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportLater, actionID: platform.ActionScanActivity},
+		{name: "scan unsupported", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportUnsupported, actionID: platform.ActionScanActivity},
+		{name: "scan explicitly disabled", connected: true, capabilityID: platform.CapabilityOfficialAPIScan, support: platform.SupportPrototype, actionID: platform.ActionScanActivity, disable: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			installRedditPlatformForTest(t, func(current *platform.Platform) {
+				for i := range current.Capabilities {
+					if current.Capabilities[i].ID == tc.capabilityID {
+						current.Capabilities[i].Support = tc.support
+					}
+				}
+				for i := range current.Actions {
+					if current.Actions[i].ID == tc.actionID {
+						current.Actions[i].Disabled = tc.disable
+					}
+				}
+			})
+
+			m := NewModel()
+			m.current = screenRedditConnect
+			m.selectedPlatformID = platform.PlatformReddit
+			if tc.connected {
+				m.localConfig.Reddit = &workspace.RedditConfig{Username: "test_user"}
+			}
+			actions := m.redditConnectActions()
+			if len(actions) == 0 || !actions[0].Disabled {
+				t.Fatalf("expected typed capability to disable action: %#v", actions)
+			}
+
+			updated, cmd := m.Update(keyPress("enter"))
+			keyboard := requireModel(t, updated)
+			if cmd != nil || keyboard.current != screenRedditConnect {
+				t.Fatalf("keyboard activated disabled action: screen=%v cmd=%v", keyboard.current, cmd != nil)
+			}
+
+			box := requireHitBox(t, hitBoxesForTest(t, m), hitPlatformAction, 0, "")
+			updated, cmd = m.Update(mouseClick(box.X, box.Y))
+			mouse := requireModel(t, updated)
+			if cmd != nil || mouse.current != screenRedditConnect {
+				t.Fatalf("mouse activated disabled action: screen=%v cmd=%v", mouse.current, cmd != nil)
+			}
+		})
+	}
+}
+
+func TestApplyEventAuditFieldsPreserveSkippedRouteIdentity(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type: apply.EventActionSkipped, PlanID: "plan-1", Platform: domain.PlatformReddit,
+		ActionID: "action-1", ActionType: domain.ActionRedditDeleteComment, Status: domain.ActionStatusSkipped,
+		Mode: apply.ExecutionModeSimulation, Executor: reddit.SimulationExecutorID,
+	})
+	if fields["execution_mode"] != "simulation" || fields["executor"] != "reddit-simulation" {
+		t.Fatalf("skipped audit fields lost route identity: %#v", fields)
 	}
 }
 
@@ -3617,6 +3690,21 @@ func platformActionIndex(t *testing.T, current platform.Platform, actionID strin
 	}
 	t.Fatalf("expected platform %q to have action %q", current.ID, actionID)
 	return 0
+}
+
+func installRedditPlatformForTest(t *testing.T, mutate func(*platform.Platform)) {
+	t.Helper()
+	previous := builtInPlatforms
+	current := reddit.Platform()
+	mutate(&current)
+	registry, err := platform.NewRegistry(instagram.Platform(), current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builtInPlatforms = registry
+	t.Cleanup(func() {
+		builtInPlatforms = previous
+	})
 }
 
 func applyTypeFilter(t *testing.T, model Model, row int) Model {

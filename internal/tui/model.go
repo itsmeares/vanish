@@ -152,8 +152,10 @@ const (
 )
 
 type redditAction struct {
-	ID    redditActionID
-	Label string
+	ID       redditActionID
+	Label    string
+	Disabled bool
+	Reason   string
 }
 
 const (
@@ -899,6 +901,9 @@ func (m Model) updateRedditConnect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.current = screenPlatformDetail
 	case key.Matches(msg, m.keys.selectItem):
 		index := clampCursor(m.redditConnectCursor, len(actions))
+		if actions[index].Disabled {
+			return m, nil
+		}
 		switch actions[index].ID {
 		case redditActionSignIn:
 			return m.startRedditSignIn()
@@ -2027,14 +2032,15 @@ func (m Model) redditNotesView() string {
 func (m Model) redditConnectView() string {
 	spec := layoutSpec(m.width, m.height)
 	status := m.redditConnectionRows()
-	if current, ok := builtInPlatforms.Get(platform.PlatformReddit); ok {
-		status = append(status, "", m.styles.separator.Render("Capabilities"))
-		for _, capability := range current.Capabilities {
-			status = append(status, m.styles.body.Render(platformCapabilityLine(capability, spec.detailWidth-4)))
+	actions := m.redditConnectActions()
+	actionLabels, disabled := redditActionRows(actions)
+	actionLines := m.menuRowsWithDisabled(actionLabels, disabled, m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
+	if len(actions) > 0 {
+		selected := actions[clampCursor(m.redditConnectCursor, len(actions))]
+		if selected.Disabled && strings.TrimSpace(selected.Reason) != "" {
+			status = append(status, "", m.notice("warning", selected.Reason))
 		}
 	}
-	actions := m.redditConnectActions()
-	actionLines := m.menuRows(redditActionLabels(actions), m.redditConnectCursor, spec.sidebarWidth, hitPlatformAction)
 
 	body := m.twoPane(
 		spec,
@@ -2106,7 +2112,7 @@ func platformActionRows(current platform.Platform) ([]string, map[int]bool) {
 }
 
 func platformCapabilityLine(capability platform.Capability, width int) string {
-	line := fmt.Sprintf("%s: %s - %s", capability.Label, capability.Support, capability.Description)
+	line := fmt.Sprintf("%s: %s", capability.Label, capability.Support)
 	return truncateEnd(line, maxInt(8, width))
 }
 
@@ -3794,15 +3800,33 @@ func (m *Model) ensureRedditAuthURL() bool {
 func (m Model) redditConnectActions() []redditAction {
 	if m.redditConnected() {
 		return []redditAction{
-			{ID: redditActionScan, Label: "Scan activity"},
+			m.redditCapabilityAction(redditActionScan, "Scan activity", platform.ActionScanActivity),
 			{ID: redditActionDisconnect, Label: "Disconnect"},
 			{ID: redditActionBack, Label: "Back"},
 		}
 	}
 	return []redditAction{
-		{ID: redditActionSignIn, Label: "Sign in with Reddit"},
+		m.redditCapabilityAction(redditActionSignIn, "Sign in with Reddit", platform.ActionConnectAccount),
 		{ID: redditActionBack, Label: "Back"},
 	}
+}
+
+func (m Model) redditCapabilityAction(id redditActionID, label, platformActionID string) redditAction {
+	action := redditAction{ID: id, Label: label, Disabled: true, Reason: "Action is unavailable."}
+	current, ok := builtInPlatforms.Get(platform.PlatformReddit)
+	if !ok {
+		return action
+	}
+	metadata, ok := current.Action(platformActionID)
+	if !ok {
+		return action
+	}
+	available, reason := current.ActionAvailable(metadata)
+	action.Disabled = !available
+	if strings.TrimSpace(reason) != "" {
+		action.Reason = reason
+	}
+	return action
 }
 
 func redditActionLabels(actions []redditAction) []string {
@@ -3811,6 +3835,20 @@ func redditActionLabels(actions []redditAction) []string {
 		labels = append(labels, action.Label)
 	}
 	return labels
+}
+
+func redditActionRows(actions []redditAction) ([]string, map[int]bool) {
+	labels := redditActionLabels(actions)
+	disabled := make(map[int]bool)
+	for i, action := range actions {
+		if action.Disabled {
+			disabled[i] = true
+		}
+	}
+	if len(disabled) == 0 {
+		disabled = nil
+	}
+	return labels, disabled
 }
 
 func (m Model) redditHomeDetailLines() []string {

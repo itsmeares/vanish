@@ -27,12 +27,13 @@ func (executor *fakeExecutor) Execute(_ context.Context, action domain.CleanupAc
 }
 
 type fakeProvider struct {
-	platform      domain.PlatformName
-	mode          ExecutionMode
-	executorID    ExecutorID
-	supported     map[domain.ActionType]bool
-	prerequisites func(domain.CleanupPlan, RuntimeState) []Prerequisite
-	executor      Executor
+	platform        domain.PlatformName
+	mode            ExecutionMode
+	executorID      ExecutorID
+	supported       map[domain.ActionType]bool
+	prerequisites   func(domain.CleanupPlan, RuntimeState) []Prerequisite
+	executor        Executor
+	executorFactory func() Executor
 }
 
 func (provider fakeProvider) Platform() domain.PlatformName { return provider.platform }
@@ -47,7 +48,12 @@ func (provider fakeProvider) Prerequisites(plan domain.CleanupPlan, state Runtim
 	}
 	return provider.prerequisites(plan, state)
 }
-func (provider fakeProvider) Executor() Executor { return provider.executor }
+func (provider fakeProvider) Executor() Executor {
+	if provider.executorFactory != nil {
+		return provider.executorFactory()
+	}
+	return provider.executor
+}
 
 func TestPreviewRoutesSupportedPlanToProvider(t *testing.T) {
 	executor := &fakeExecutor{}
@@ -180,6 +186,18 @@ func TestRunnerPreservesFailureCancellationSkipAndStopStates(t *testing.T) {
 		if execution.State != ExecutionStateSkipped || execution.Counts.Skipped != 1 {
 			t.Fatalf("expected skipped execution, got %#v", execution)
 		}
+		foundSkipped := false
+		for _, event := range execution.Events {
+			if event.Type == EventActionSkipped && (event.Mode != ExecutionModeSimulation || event.Executor != "test-simulation") {
+				t.Fatalf("skipped execution event lost route identity: %#v", event)
+			}
+			if event.Type == EventActionSkipped {
+				foundSkipped = true
+			}
+		}
+		if !foundSkipped {
+			t.Fatalf("expected skipped execution event, got %#v", execution.Events)
+		}
 	})
 
 	t.Run("stopped", func(t *testing.T) {
@@ -214,9 +232,9 @@ func TestSkipRetryStopCancelPrimitives(t *testing.T) {
 		applyTestAction("done", testPlatform, domain.ActionUnfollow, domain.ActionStatusDone),
 	})
 
-	event, err := SkipAction(&plan, "pending", "user skipped")
-	if err != nil || event.Type != EventActionSkipped || plan.Actions[0].Status != domain.ActionStatusSkipped {
-		t.Fatalf("expected skipped pending action, event=%#v err=%v", event, err)
+	edit, err := SkipAction(&plan, "pending", "user skipped")
+	if err != nil || edit.PlanID != plan.ID || edit.ActionID != "pending" || edit.Status != domain.ActionStatusSkipped || plan.Actions[0].Status != domain.ActionStatusSkipped {
+		t.Fatalf("expected standalone skipped plan edit, edit=%#v err=%v", edit, err)
 	}
 	if err := RetryAction(&plan, "failed"); err != nil || plan.Actions[1].Status != domain.ActionStatusPending {
 		t.Fatalf("expected failed action retried, err=%v plan=%#v", err, plan)
@@ -241,9 +259,43 @@ func TestProviderRegistryRejectsInvalidAndDuplicateRoutes(t *testing.T) {
 	if _, err := NewProviderRegistry(provider, provider); err == nil {
 		t.Fatal("expected duplicate provider route rejection")
 	}
-	provider.executor = nil
-	if _, err := NewProviderRegistry(provider); err == nil {
-		t.Fatal("expected nil executor rejection")
+}
+
+func TestRunnerResolvesOneStableExecutorInstance(t *testing.T) {
+	first := &fakeExecutor{}
+	second := &fakeExecutor{}
+	calls := 0
+	provider := testProvider(nil)
+	provider.executorFactory = func() Executor {
+		calls++
+		if calls == 1 {
+			return first
+		}
+		return second
+	}
+	runner := testRunner(t, provider, RuntimeState{})
+	if calls != 0 {
+		t.Fatalf("registry construction resolved executor %d times", calls)
+	}
+	plan := applyTestPlan(testPlatform, []domain.CleanupAction{
+		applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+		applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+	})
+
+	execution := runner.Run(context.Background(), plan, ExecutionModeSimulation)
+
+	if execution.State != ExecutionStateDone || calls != 1 || len(first.calls) != 2 || len(second.calls) != 0 {
+		t.Fatalf("expected one stable executor, execution=%#v calls=%d first=%#v second=%#v", execution, calls, first.calls, second.calls)
+	}
+}
+
+func TestRunnerFailsClosedWhenProviderHasNoExecutor(t *testing.T) {
+	execution := testRunner(t, testProvider(nil), RuntimeState{}).Run(context.Background(), singleActionPlan(), ExecutionModeSimulation)
+	if execution.State != ExecutionStateFailed || execution.Preview.CanApply || execution.Preview.ProviderReady || !hasBlocker(execution.Preview, "executor_unavailable") || len(execution.Results) != 0 {
+		t.Fatalf("expected missing executor to fail closed, got %#v", execution)
+	}
+	if len(execution.Events) != 1 || execution.Events[0].Executor != "test-simulation" || execution.Events[0].Mode != ExecutionModeSimulation {
+		t.Fatalf("missing executor finish event lost route identity: %#v", execution.Events)
 	}
 }
 

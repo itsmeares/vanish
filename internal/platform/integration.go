@@ -112,6 +112,15 @@ func (p Platform) CapabilityState(id CapabilityID) (CapabilitySupport, bool) {
 	return capability.Support, true
 }
 
+func (p Platform) Action(id string) (PlatformAction, bool) {
+	for _, action := range p.Actions {
+		if action.ID == id {
+			return action, true
+		}
+	}
+	return PlatformAction{}, false
+}
+
 func (p Platform) ActionAvailable(action PlatformAction) (bool, string) {
 	if action.Disabled {
 		return false, strings.TrimSpace(action.Reason)
