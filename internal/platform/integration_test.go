@@ -8,115 +8,126 @@ import (
 	"github.com/itsmeares/vanish/internal/reddit"
 )
 
-func TestRegistryOrderAndGet(t *testing.T) {
-	registry := platform.NewRegistry(instagram.Platform(), reddit.Platform())
-	list := registry.List()
-	if len(list) != 2 {
-		t.Fatalf("expected two platforms, got %d", len(list))
+var capabilityOrder = []platform.CapabilityID{
+	platform.CapabilityLocalImport,
+	platform.CapabilityOfficialAPIScan,
+	platform.CapabilityReview,
+	platform.CapabilityCleanupPlanning,
+	platform.CapabilityAssistedCleanup,
+	platform.CapabilityAutomaticCleanup,
+	platform.CapabilityAccountAuthentication,
+	platform.CapabilityNetworkAPIAccess,
+}
+
+func TestRegistryOrderLookupAndDefensiveCopies(t *testing.T) {
+	instagramPlatform := instagram.Platform()
+	registry, err := platform.NewRegistry(instagramPlatform, reddit.Platform())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if list[0].ID != platform.PlatformInstagramExport || list[1].ID != platform.PlatformReddit {
+	instagramPlatform.Capabilities[0].Label = "mutated input"
+	instagramPlatform.Actions[0].Label = "mutated input"
+	instagramPlatform.Notes[0] = "mutated input"
+
+	list := registry.List()
+	if len(list) != 2 || list[0].ID != platform.PlatformInstagramExport || list[1].ID != platform.PlatformReddit {
 		t.Fatalf("unexpected registry order: %#v", list)
 	}
+	list[0].Capabilities[0].Label = "mutated output"
+	list[0].Actions[0].Label = "mutated output"
+	list[0].Notes[0] = "mutated output"
 
-	current, ok := registry.Get(platform.PlatformReddit)
-	if !ok || current.ID != platform.PlatformReddit {
-		t.Fatalf("expected Get(reddit) to succeed, got platform=%#v ok=%v", current, ok)
+	current, ok := registry.Get(platform.PlatformInstagramExport)
+	if !ok || current.Capabilities[0].Label != "Local import" || current.Actions[0].Label != "Request Instagram export" || current.Notes[0] == "mutated output" {
+		t.Fatalf("registry leaked shared references: %#v", current)
+	}
+	current.Capabilities[0].Label = "another mutation"
+	again, _ := registry.Get(platform.PlatformInstagramExport)
+	if again.Capabilities[0].Label != "Local import" {
+		t.Fatalf("Get returned shared capability storage: %#v", again)
 	}
 	if _, ok := registry.Get(platform.PlatformID("unknown")); ok {
-		t.Fatalf("expected unknown platform lookup to return false")
+		t.Fatal("expected unknown platform lookup to fail")
 	}
 }
 
-func TestInstagramPlatformCapabilitiesAndActions(t *testing.T) {
+func TestRegistryRejectsDuplicateAndInvalidDefinitions(t *testing.T) {
 	current := instagram.Platform()
-	if current.ID != platform.PlatformInstagramExport || current.Status != platform.StatusPrototype {
-		t.Fatalf("unexpected Instagram platform identity: %#v", current)
+	if _, err := platform.NewRegistry(current, current); err == nil {
+		t.Fatal("expected duplicate platform id rejection")
 	}
-
-	wantCapabilities := map[string]platform.CapabilitySupport{
-		"Local ZIP scan":       platform.SupportPrototype,
-		"Review":               platform.SupportYes,
-		"Dry-run plan":         platform.SupportPrototype,
-		"Apply / execution":    platform.SupportNo,
-		"Login / account auth": platform.SupportNo,
-		"Network access":       platform.SupportNo,
+	current = instagram.Platform()
+	current.Capabilities = append(current.Capabilities, current.Capabilities[0])
+	if _, err := platform.NewRegistry(current); err == nil {
+		t.Fatal("expected duplicate capability id rejection")
 	}
-	assertCapabilities(t, current.Capabilities, wantCapabilities)
-
-	wantActions := []string{
-		platform.ActionRequestInstagramExport,
-		platform.ActionChooseExportZIP,
-		platform.ActionDemoImport,
-		platform.ActionBack,
+	current = instagram.Platform()
+	current.ID = ""
+	if _, err := platform.NewRegistry(current); err == nil {
+		t.Fatal("expected empty platform id rejection")
 	}
-	assertActionIDs(t, current.Actions, wantActions)
-	for _, action := range current.Actions {
-		if action.Disabled {
-			t.Fatalf("expected Instagram action %q to be enabled", action.ID)
-		}
+	current = instagram.Platform()
+	current.Capabilities[0].ID = ""
+	if _, err := platform.NewRegistry(current); err == nil {
+		t.Fatal("expected empty capability id rejection")
 	}
 }
 
-func TestRedditPlatformPrototypeActions(t *testing.T) {
-	current := reddit.Platform()
-	if current.ID != platform.PlatformReddit || current.Status != platform.StatusPrototype {
-		t.Fatalf("unexpected Reddit platform identity: %#v", current)
+func TestTypedCapabilityLookupAndActionAvailability(t *testing.T) {
+	current := instagram.Platform()
+	current.Capabilities[0].Label = "Display label may change"
+	capability, ok := current.Capability(platform.CapabilityLocalImport)
+	if !ok || capability.Support != platform.SupportSupported {
+		t.Fatalf("typed capability lookup failed: %#v %v", capability, ok)
 	}
-
-	wantCapabilities := map[string]platform.CapabilitySupport{
-		"Scan own comments/posts": platform.SupportPrototype,
-		"Scan saved items":        platform.SupportPlanned,
-		"Scan votes":              platform.SupportPlanned,
-		"Generate dry-run plans":  platform.SupportPrototype,
-		"Apply cleanup":           platform.SupportLater,
-		"OAuth":                   platform.SupportPrototype,
-		"Network/API access":      platform.SupportPrototype,
+	state, ok := current.CapabilityState(platform.CapabilityAutomaticCleanup)
+	if !ok || state != platform.SupportUnsupported {
+		t.Fatalf("typed capability state failed: %q %v", state, ok)
 	}
-	assertCapabilities(t, current.Capabilities, wantCapabilities)
-
-	wantActions := []string{
-		platform.ActionConnectAccount,
-		platform.ActionScanActivity,
-		platform.ActionBack,
+	if available, _ := current.ActionAvailable(current.Actions[0]); !available {
+		t.Fatal("supported local import action should be available")
 	}
-	assertActionIDs(t, current.Actions, wantActions)
-
-	for _, action := range current.Actions {
-		if action.Disabled {
-			t.Fatalf("expected Reddit prototype action %q to be enabled", action.ID)
-		}
+	automatic := platform.PlatformAction{ID: "automatic", Label: "Automatic cleanup", RequiredCapability: platform.CapabilityAutomaticCleanup}
+	if available, reason := current.ActionAvailable(automatic); available || reason == "" {
+		t.Fatalf("unsupported automatic action should block, available=%v reason=%q", available, reason)
 	}
 }
 
-func assertCapabilities(t *testing.T, got []platform.Capability, want map[string]platform.CapabilitySupport) {
+func TestInstagramCapabilityDeclaration(t *testing.T) {
+	assertCapabilities(t, instagram.Platform(), []platform.CapabilitySupport{
+		platform.SupportSupported,
+		platform.SupportUnsupported,
+		platform.SupportSupported,
+		platform.SupportSupported,
+		platform.SupportSupported,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+	})
+}
+
+func TestRedditCapabilityDeclaration(t *testing.T) {
+	assertCapabilities(t, reddit.Platform(), []platform.CapabilitySupport{
+		platform.SupportUnsupported,
+		platform.SupportPrototype,
+		platform.SupportSupported,
+		platform.SupportPrototype,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+		platform.SupportPrototype,
+		platform.SupportPrototype,
+	})
+}
+
+func assertCapabilities(t *testing.T, current platform.Platform, support []platform.CapabilitySupport) {
 	t.Helper()
-
-	if len(got) != len(want) {
-		t.Fatalf("capability count = %d, want %d: %#v", len(got), len(want), got)
+	if len(current.Capabilities) != len(capabilityOrder) || len(support) != len(capabilityOrder) {
+		t.Fatalf("unexpected capability count: %#v", current.Capabilities)
 	}
-	for _, capability := range got {
-		wantSupport, ok := want[capability.Label]
-		if !ok {
-			t.Fatalf("unexpected capability %q", capability.Label)
-		}
-		if capability.Support != wantSupport {
-			t.Fatalf("capability %q support = %q, want %q", capability.Label, capability.Support, wantSupport)
-		}
-		if capability.Description == "" {
-			t.Fatalf("capability %q missing description", capability.Label)
-		}
-	}
-}
-
-func assertActionIDs(t *testing.T, got []platform.PlatformAction, want []string) {
-	t.Helper()
-
-	if len(got) != len(want) {
-		t.Fatalf("action count = %d, want %d: %#v", len(got), len(want), got)
-	}
-	for i, wantID := range want {
-		if got[i].ID != wantID {
-			t.Fatalf("action[%d] = %q, want %q", i, got[i].ID, wantID)
+	for i, id := range capabilityOrder {
+		capability := current.Capabilities[i]
+		if capability.ID != id || capability.Support != support[i] || capability.Label == "" || capability.Description == "" {
+			t.Fatalf("capability[%d] mismatch: %#v", i, capability)
 		}
 	}
 }

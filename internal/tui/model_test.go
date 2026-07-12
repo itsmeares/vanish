@@ -199,22 +199,26 @@ func TestHomeEnterOpensPlatformDetail(t *testing.T) {
 	}
 }
 
-func TestPlatformDetailShowsActionsBeforeShortContext(t *testing.T) {
+func TestPlatformDetailShowsTypedCapabilitiesAfterActions(t *testing.T) {
 	m := NewModel()
 	m.openPlatformDetail(0)
 	plain := stripANSI(m.View().Content)
 	actions := strings.Index(plain, "Actions")
-	here := strings.Index(plain, "Here")
-	if actions < 0 || here < 0 {
-		t.Fatalf("expected platform actions and short context, got:\n%s", plain)
+	status := strings.Index(plain, "Status")
+	capabilities := strings.Index(plain, "Capabilities")
+	if actions < 0 || status < 0 || capabilities < 0 {
+		t.Fatalf("expected actions, status, and capabilities, got:\n%s", plain)
 	}
-	if actions > here {
-		t.Fatalf("expected actions before context, got:\n%s", plain)
+	if actions > status || status > capabilities {
+		t.Fatalf("expected actions before status and capabilities, got:\n%s", plain)
 	}
-	for _, unwanted := range []string{"Capabilities", "Notes / Guide", "Status: prototype"} {
-		if strings.Contains(plain, unwanted) {
-			t.Fatalf("expected platform detail not to show %q, got:\n%s", unwanted, plain)
+	for _, want := range []string{"Local import: supported", "Automatic cleanup: unsupported", "Account authentication: unsupported"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected platform detail to show %q, got:\n%s", want, plain)
 		}
+	}
+	if strings.Contains(plain, "Notes / Guide") {
+		t.Fatalf("expected concise platform detail, got:\n%s", plain)
 	}
 }
 
@@ -525,6 +529,8 @@ func TestRedditConnectedShowsScanDisconnectBack(t *testing.T) {
 		"Scan activity",
 		"Disconnect",
 		"Back",
+		"Official API scan: prototype",
+		"Automatic cleanup: unsupported",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected Reddit connected state to contain %q, got:\n%s", want, view)
@@ -2187,9 +2193,10 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	for _, want := range []string{
 		"Apply Preview",
 		"Platform: instagram",
-		"Executor: noop",
+		"Mode: simulation",
+		"Executor: instagram-simulation",
 		"Status: Ready",
-		"Reddit account: ready",
+		"Provider ready: ready",
 		"Pending: 3",
 		"Unsupported: 0",
 		"Simulate no-op run",
@@ -2198,7 +2205,13 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 			t.Fatalf("expected apply preview to contain %q, got:\n%s", want, view)
 		}
 	}
-	requireAuditEvent(t, w, string(apply.EventPreviewed))
+	previewEvent := requireAuditEvent(t, w, string(apply.EventPreviewed))
+	if previewEvent.Fields["execution_mode"] != "simulation" || previewEvent.Fields["executor"] != "instagram-simulation" || previewEvent.Fields["provider_ready"] != true {
+		t.Fatalf("unexpected provider-routed preview audit: %#v", previewEvent.Fields)
+	}
+	if _, ok := previewEvent.Fields["reddit_account_ready"]; ok {
+		t.Fatalf("preview audit retained Reddit-specific readiness: %#v", previewEvent.Fields)
+	}
 
 	next = updateModel(t, next, keyPress("enter"))
 	if next.current != screenApplyConfirm {
@@ -2218,7 +2231,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	if next.current != screenApplyRunning {
 		t.Fatalf("expected apply running, got %v", next.current)
 	}
-	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.redditConnected())())
+	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.applyRuntimeState())())
 
 	if next.current != screenApplyResult || next.applyExecution.State != apply.ExecutionStateDone {
 		t.Fatalf("expected apply result, screen=%v execution=%#v", next.current, next.applyExecution)
@@ -2246,6 +2259,9 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	requireAuditEvent(t, w, string(apply.EventConfirmed))
 	requireAuditEvent(t, w, string(apply.EventExecutionStarted))
 	actionEvent := requireAuditEvent(t, w, string(apply.EventActionResult))
+	if actionEvent.Fields["execution_mode"] != "simulation" || actionEvent.Fields["executor"] != "instagram-simulation" {
+		t.Fatalf("unexpected provider-routed action audit: %#v", actionEvent.Fields)
+	}
 	if _, ok := actionEvent.Fields["target_url"]; ok {
 		t.Fatalf("apply action audit should not include target URL: %#v", actionEvent.Fields)
 	}
@@ -2739,8 +2755,8 @@ func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
 	view := next.View().Content
 	for _, want := range []string{
 		"Status: Blocked",
-		"Reddit account: not ready",
-		"Connect Reddit before applying this plan.",
+		"Provider ready: not ready",
+		"Connect Reddit before simulating this plan.",
 		"Back",
 	} {
 		if !strings.Contains(view, want) {
@@ -2753,11 +2769,32 @@ func TestLoadedRedditApplyPreviewRequiresConnectedAccount(t *testing.T) {
 
 	next.localConfig.Reddit = &workspace.RedditConfig{Username: "test_user"}
 	next.openApplyPreview(applySourceLoaded)
-	if !next.applyPreview.CanApply || !next.applyPreview.AccountReady {
+	if !next.applyPreview.CanApply || !next.applyPreview.ProviderReady {
 		t.Fatalf("expected connected reddit preview to be ready: %#v", next.applyPreview)
 	}
-	if !strings.Contains(next.View().Content, "Reddit account: ready") {
-		t.Fatalf("expected ready reddit account label, got:\n%s", next.View().Content)
+	if !strings.Contains(next.View().Content, "Provider ready: ready") {
+		t.Fatalf("expected ready provider label, got:\n%s", next.View().Content)
+	}
+}
+
+func TestUnknownProviderShowsBlockedApplyPreview(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	next := NewModel()
+	next.loadedPlan = domain.NewCleanupPlan("unknown-plan", "unknown", "test", now, []domain.CleanupAction{{
+		ID: "action-1", Platform: "unknown", Type: domain.ActionUnlike, TargetID: "target-1", SourceActivityItemID: "item-1", Status: domain.ActionStatusPending, CreatedAt: now,
+	}})
+	next.loadedPlanSummary = domain.SummarizeCleanupPlan(next.loadedPlan)
+	next.current = screenLoadedPlanSummary
+
+	next = updateModel(t, next, keyPress("enter"))
+	view := next.View().Content
+	for _, want := range []string{"Status: Blocked", "Executor: -", "This plan's platform is unavailable for simulation.", "Back"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected unknown provider preview to contain %q, got:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Simulate no-op run") {
+		t.Fatalf("unknown provider preview offered execution: %s", view)
 	}
 }
 

@@ -9,8 +9,6 @@ import (
 	"github.com/itsmeares/vanish/internal/domain"
 )
 
-const ExecutorNoop = "noop"
-
 type ExecutionState string
 
 const (
@@ -36,10 +34,6 @@ const (
 	EventExecutionFinished  EventType = "apply_execution_finished"
 )
 
-type AccountState struct {
-	RedditConnected bool
-}
-
 type Prerequisite struct {
 	Code     string
 	Message  string
@@ -57,11 +51,12 @@ type UnsupportedAction struct {
 type Preview struct {
 	PlanID           string
 	Platform         domain.PlatformName
-	Executor         string
+	Mode             ExecutionMode
+	Executor         ExecutorID
 	Summary          domain.CleanupPlanSummary
 	PendingCount     int
 	UnsupportedCount int
-	AccountReady     bool
+	ProviderReady    bool
 	CanApply         bool
 	Blockers         []Prerequisite
 	Unsupported      []UnsupportedAction
@@ -95,7 +90,8 @@ type ExecutionEvent struct {
 	State      ExecutionState
 	Message    string
 	Counts     ResultCounts
-	Executor   string
+	Mode       ExecutionMode
+	Executor   ExecutorID
 }
 
 type Execution struct {
@@ -127,20 +123,18 @@ func (NoopExecutor) Execute(ctx context.Context, action domain.CleanupAction) (A
 }
 
 type Runner struct {
-	Executor Executor
-	Accounts AccountState
+	Providers ProviderRegistry
+	State     RuntimeState
 }
 
-func (runner Runner) Preview(plan domain.CleanupPlan) Preview {
-	executorName := ExecutorNoop
+func (runner Runner) Preview(plan domain.CleanupPlan, mode ExecutionMode) Preview {
 	summary := domain.SummarizeCleanupPlan(plan)
 	preview := Preview{
 		PlanID:       plan.ID,
 		Platform:     plan.Platform,
-		Executor:     executorName,
+		Mode:         mode,
 		Summary:      summary,
 		PendingCount: summary.StatusCounts[domain.ActionStatusPending],
-		AccountReady: true,
 	}
 
 	if err := plan.Validate(); err != nil {
@@ -152,6 +146,20 @@ func (runner Runner) Preview(plan domain.CleanupPlan) Preview {
 		preview.CanApply = false
 		return preview
 	}
+
+	provider, err := runner.Providers.Resolve(plan.Platform, mode)
+	if err != nil {
+		code := "provider_unavailable"
+		message := "This plan's platform is unavailable for simulation."
+		if errors.Is(err, ErrExecutionModeUnavailable) {
+			code = "execution_mode_unavailable"
+			message = "The requested execution mode is unavailable for this platform."
+		}
+		preview.Blockers = append(preview.Blockers, Prerequisite{Code: code, Message: message, Blocking: true})
+		return preview
+	}
+	preview.Executor = provider.ExecutorID()
+	preview.ProviderReady = true
 
 	if preview.PendingCount == 0 {
 		preview.Blockers = append(preview.Blockers, Prerequisite{
@@ -172,17 +180,16 @@ func (runner Runner) Preview(plan domain.CleanupPlan) Preview {
 			})
 			continue
 		}
-		if ok, reason := SupportedAction(action); !ok {
+		if !provider.Supports(action.Type) {
 			preview.Unsupported = append(preview.Unsupported, UnsupportedAction{
 				ActionID: action.ID,
 				Platform: action.Platform,
 				Type:     action.Type,
 				Status:   action.Status,
-				Reason:   reason,
+				Reason:   fmt.Sprintf("%s is not supported by %s", action.Type, provider.ExecutorID()),
 			})
 		}
 	}
-	preview.AccountReady = !requiresRedditAccount(plan) || runner.Accounts.RedditConnected
 	preview.UnsupportedCount = len(preview.Unsupported)
 	if preview.UnsupportedCount > 0 {
 		preview.Blockers = append(preview.Blockers, Prerequisite{
@@ -192,27 +199,22 @@ func (runner Runner) Preview(plan domain.CleanupPlan) Preview {
 		})
 	}
 
-	if requiresRedditAccount(plan) && !runner.Accounts.RedditConnected {
-		preview.Blockers = append(preview.Blockers, Prerequisite{
-			Code:     "reddit_account_required",
-			Message:  "Connect Reddit before applying this plan.",
-			Blocking: true,
-		})
+	providerPrerequisites := provider.Prerequisites(plan, runner.State)
+	preview.Blockers = append(preview.Blockers, providerPrerequisites...)
+	if hasBlockingPrerequisites(providerPrerequisites) {
+		preview.ProviderReady = false
 	}
 
 	preview.CanApply = !hasBlockingPrerequisites(preview.Blockers)
 	return preview
 }
 
-func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan) Execution {
+func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode ExecutionMode) Execution {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if runner.Executor == nil {
-		runner.Executor = NoopExecutor{}
-	}
 
-	preview := runner.Preview(plan)
+	preview := runner.Preview(plan, mode)
 	execution := Execution{
 		Plan:    plan,
 		Preview: preview,
@@ -221,9 +223,17 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan) Execution
 	if !preview.CanApply {
 		execution.State = ExecutionStateFailed
 		execution.Counts = CountsForPlan(plan)
-		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts))
+		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor))
 		return execution
 	}
+	provider, err := runner.Providers.Resolve(plan.Platform, mode)
+	if err != nil || provider.Executor() == nil {
+		execution.State = ExecutionStateFailed
+		execution.Counts = CountsForPlan(plan)
+		execution.Events = append(execution.Events, executionFinishedEvent(plan, execution.State, execution.Counts, preview.Mode, preview.Executor))
+		return execution
+	}
+	executor := provider.Executor()
 
 	execution.State = ExecutionStateRunning
 	execution.Events = append(execution.Events, ExecutionEvent{
@@ -232,7 +242,8 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan) Execution
 		Platform: plan.Platform,
 		State:    ExecutionStateRunning,
 		Counts:   CountsForPlan(execution.Plan),
-		Executor: ExecutorNoop,
+		Mode:     mode,
+		Executor: provider.ExecutorID(),
 	})
 
 	for i := range execution.Plan.Actions {
@@ -243,14 +254,14 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan) Execution
 		if err := ctx.Err(); err != nil {
 			result := setActionResult(action, domain.ActionStatusCancelled, err.Error())
 			execution.Results = append(execution.Results, result)
-			execution.Events = append(execution.Events, eventForActionResult(plan.ID, result))
+			execution.Events = append(execution.Events, eventForActionResult(plan.ID, result, mode, provider.ExecutorID()))
 			CancelPending(&execution.Plan, "Execution cancelled.")
 			execution.State = ExecutionStateCancelled
 			break
 		}
 
 		action.Status = domain.ActionStatusRunning
-		result, err := runner.Executor.Execute(ctx, *action)
+		result, err := executor.Execute(ctx, *action)
 		if err != nil {
 			result = ActionResult{
 				ActionID: action.ID,
@@ -263,7 +274,7 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan) Execution
 		result = normalizeActionResult(*action, result)
 		action.Status = result.Status
 		execution.Results = append(execution.Results, result)
-		execution.Events = append(execution.Events, eventForActionResult(plan.ID, result))
+		execution.Events = append(execution.Events, eventForActionResult(plan.ID, result, mode, provider.ExecutorID()))
 
 		switch result.Status {
 		case domain.ActionStatusStopped:
@@ -282,24 +293,8 @@ func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan) Execution
 	if execution.State == ExecutionStateRunning {
 		execution.State = stateForCounts(execution.Counts)
 	}
-	execution.Events = append(execution.Events, executionFinishedEvent(execution.Plan, execution.State, execution.Counts))
+	execution.Events = append(execution.Events, executionFinishedEvent(execution.Plan, execution.State, execution.Counts, mode, provider.ExecutorID()))
 	return execution
-}
-
-func SupportedAction(action domain.CleanupAction) (bool, string) {
-	switch action.Platform {
-	case domain.PlatformInstagram:
-		switch action.Type {
-		case domain.ActionUnlike, domain.ActionDeleteComment, domain.ActionUnfollow:
-			return true, ""
-		}
-	case domain.PlatformReddit:
-		switch action.Type {
-		case domain.ActionRedditDeleteComment, domain.ActionRedditDeletePost:
-			return true, ""
-		}
-	}
-	return false, fmt.Sprintf("%s/%s is not supported by the no-op apply engine", action.Platform, action.Type)
 }
 
 func RetryAction(plan *domain.CleanupPlan, actionID string) error {
@@ -334,7 +329,7 @@ func SkipAction(plan *domain.CleanupPlan, actionID, reason string) (ExecutionEve
 		Status:   action.Status,
 		Message:  cleanMessage(reason, "Action skipped."),
 	}
-	return eventForActionResult(plan.ID, result), nil
+	return eventForActionResult(plan.ID, result, "", ""), nil
 }
 
 func StopPending(plan *domain.CleanupPlan, reason string) int {
@@ -361,18 +356,6 @@ func CountsForPlan(plan domain.CleanupPlan) ResultCounts {
 func hasBlockingPrerequisites(prerequisites []Prerequisite) bool {
 	for _, prerequisite := range prerequisites {
 		if prerequisite.Blocking {
-			return true
-		}
-	}
-	return false
-}
-
-func requiresRedditAccount(plan domain.CleanupPlan) bool {
-	if plan.Platform == domain.PlatformReddit {
-		return true
-	}
-	for _, action := range plan.Actions {
-		if action.Platform == domain.PlatformReddit {
 			return true
 		}
 	}
@@ -448,7 +431,7 @@ func isTerminalStatus(status domain.ActionStatus) bool {
 	}
 }
 
-func eventForActionResult(planID string, result ActionResult) ExecutionEvent {
+func eventForActionResult(planID string, result ActionResult, mode ExecutionMode, executor ExecutorID) ExecutionEvent {
 	eventType := EventActionResult
 	switch result.Status {
 	case domain.ActionStatusSkipped:
@@ -466,18 +449,20 @@ func eventForActionResult(planID string, result ActionResult) ExecutionEvent {
 		ActionType: result.Type,
 		Status:     result.Status,
 		Message:    result.Message,
-		Executor:   ExecutorNoop,
+		Mode:       mode,
+		Executor:   executor,
 	}
 }
 
-func executionFinishedEvent(plan domain.CleanupPlan, state ExecutionState, counts ResultCounts) ExecutionEvent {
+func executionFinishedEvent(plan domain.CleanupPlan, state ExecutionState, counts ResultCounts, mode ExecutionMode, executor ExecutorID) ExecutionEvent {
 	return ExecutionEvent{
 		Type:     EventExecutionFinished,
 		PlanID:   plan.ID,
 		Platform: plan.Platform,
 		State:    state,
 		Counts:   counts,
-		Executor: ExecutorNoop,
+		Mode:     mode,
+		Executor: executor,
 	}
 }
 
