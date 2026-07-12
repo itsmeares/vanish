@@ -117,10 +117,15 @@ func (plan CleanupPlan) Validate() error {
 	if !isKnownPlanMode(plan.Mode) {
 		return validationError("cleanup plan mode %q is not supported", plan.Mode)
 	}
+	seenActionIDs := make(map[string]int, len(plan.Actions))
 	for i, action := range plan.Actions {
 		if err := action.Validate(); err != nil {
 			return validationError("cleanup plan action %d: %v", i, err)
 		}
+		if firstIndex, exists := seenActionIDs[action.ID]; exists {
+			return validationError("cleanup plan action %d has duplicate id %q; first used by action %d", i, action.ID, firstIndex)
+		}
+		seenActionIDs[action.ID] = i
 	}
 	return nil
 }

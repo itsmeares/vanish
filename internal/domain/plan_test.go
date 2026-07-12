@@ -180,6 +180,15 @@ func TestCleanupPlanValidateRequiresFields(t *testing.T) {
 			},
 			wantErr: "source_activity_item_id is required",
 		},
+		{
+			name: "duplicate action id",
+			mutate: func(plan *CleanupPlan) {
+				duplicate := plan.Actions[0]
+				duplicate.Type = ActionDeleteComment
+				plan.Actions = append(plan.Actions, duplicate)
+			},
+			wantErr: `duplicate id "action-1"`,
+		},
 	}
 
 	for _, tt := range tests {

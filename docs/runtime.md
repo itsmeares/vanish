@@ -22,9 +22,10 @@ retry safety from an unknown result or a generic error.
 ## Bounded Retry and Halts
 
 The default policy performs one attempt per action and continues after an
-ordinary final failure. A caller may configure a finite maximum and may stop
-after the first final failed action. Only `retryable_failure` can be attempted
-again automatically, and the maximum is never exceeded.
+ordinary final failure. A caller may configure up to five attempts and may stop
+after the first final failed action. Larger values are clamped to five. Only
+`retryable_failure` can be attempted again automatically, and the effective
+maximum is never exceeded.
 
 Vanish does not sleep or wait in the background. A positive retry-after value,
 rate limit, or authentication loss halts the execution and leaves untouched
@@ -33,8 +34,10 @@ loss requires reconnection; this runtime does not add a credential flow.
 
 ## Safety and Deferred Work
 
-Provider results contain only an outcome, safe message, optional retry-after,
-and optional diagnostic code. The runner owns action identity, route identity,
+Provider results contain only an outcome, optional structured message ID,
+optional retry-after, and optional diagnostic code. User-facing messages are
+runtime-owned; arbitrary provider text is never copied into normalized results,
+events, audit, or the TUI. The runner owns action identity, route identity,
 attempts, retry decisions, and domain status. Raw platform responses, raw
 errors, target URLs, credentials, tokens, cookies, sessions, authorization
 values, and private content do not enter execution audit metadata.

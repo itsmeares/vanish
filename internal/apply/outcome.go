@@ -2,11 +2,8 @@ package apply
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/itsmeares/vanish/internal/domain"
 )
@@ -31,10 +28,16 @@ const (
 // supplies action identity, status, attempt, route, and retry decisions.
 type ProviderResult struct {
 	Outcome      ActionOutcome
-	SafeMessage  string
+	Message      ProviderMessage
 	RetryAfter   time.Duration
 	ProviderCode string
 }
+
+// ProviderMessage is a closed identifier for runtime-owned user-facing copy.
+// Arbitrary provider text is never copied into normalized results.
+type ProviderMessage string
+
+const ProviderMessageNoopCompleted ProviderMessage = "noop_completed"
 
 type ActionResult struct {
 	ActionID     string
@@ -59,6 +62,10 @@ type RunPolicy struct {
 	StopAfterFinalFailure bool
 }
 
+// MaxAutomaticAttemptsPerAction is the hard runtime ceiling for tight,
+// automatic retry loops. Policies above this value are safely clamped.
+const MaxAutomaticAttemptsPerAction = 5
+
 func DefaultRunPolicy() RunPolicy {
 	return RunPolicy{MaxAttemptsPerAction: 1}
 }
@@ -66,6 +73,8 @@ func DefaultRunPolicy() RunPolicy {
 func (policy RunPolicy) normalized() RunPolicy {
 	if policy.MaxAttemptsPerAction <= 0 {
 		policy.MaxAttemptsPerAction = 1
+	} else if policy.MaxAttemptsPerAction > MaxAutomaticAttemptsPerAction {
+		policy.MaxAttemptsPerAction = MaxAutomaticAttemptsPerAction
 	}
 	return policy
 }
@@ -81,47 +90,37 @@ func (NoopExecutor) Execute(ctx context.Context, _ domain.CleanupAction) (Provid
 		return ProviderResult{}, err
 	}
 	return ProviderResult{
-		Outcome:     OutcomeSucceeded,
-		SafeMessage: "No-op apply completed.",
+		Outcome: OutcomeSucceeded,
+		Message: ProviderMessageNoopCompleted,
 	}, nil
 }
 
 func normalizeProviderResult(ctx context.Context, action domain.CleanupAction, attempt int, providerResult ProviderResult, executeErr error) ActionResult {
-	if contextCancelled(ctx, executeErr) {
-		return normalizedActionResult(action, attempt, ProviderResult{
-			Outcome:     OutcomeCancelled,
-			SafeMessage: "Execution cancelled.",
-		})
+	if runnerContextDone(ctx) {
+		return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomeCancelled}, "Execution cancelled.")
 	}
 	if executeErr != nil {
-		return normalizedActionResult(action, attempt, ProviderResult{
-			Outcome:     OutcomePermanentFailure,
-			SafeMessage: "Executor failed unexpectedly.",
-		})
+		return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomePermanentFailure}, "Executor failed unexpectedly.")
 	}
 
-	providerResult.SafeMessage = strings.TrimSpace(providerResult.SafeMessage)
 	providerResult.ProviderCode = strings.TrimSpace(providerResult.ProviderCode)
-	if !validProviderResult(providerResult) {
-		return normalizedActionResult(action, attempt, ProviderResult{
-			Outcome:     OutcomePermanentFailure,
-			SafeMessage: "Executor returned an invalid result.",
-		})
+	if !validProviderResultMetadata(providerResult) {
+		return normalizedActionResult(action, attempt, ProviderResult{Outcome: OutcomePermanentFailure}, "Executor returned an invalid result.")
 	}
-	if providerResult.SafeMessage == "" {
-		providerResult.SafeMessage = defaultOutcomeMessage(providerResult.Outcome)
+	message, knownMessage := runtimeProviderMessage(providerResult.Outcome, providerResult.Message)
+	if !knownMessage {
+		providerResult.Message = ""
+		providerResult.ProviderCode = ""
 	}
-	return normalizedActionResult(action, attempt, providerResult)
+	return normalizedActionResult(action, attempt, providerResult, message)
 }
 
-func normalizedActionResult(action domain.CleanupAction, attempt int, providerResult ProviderResult) ActionResult {
+func normalizedActionResult(action domain.CleanupAction, attempt int, providerResult ProviderResult, message string) ActionResult {
 	status, ok := statusForOutcome(providerResult.Outcome)
 	if !ok {
 		status = domain.ActionStatusFailed
-		providerResult = ProviderResult{
-			Outcome:     OutcomePermanentFailure,
-			SafeMessage: "Executor returned an invalid result.",
-		}
+		providerResult = ProviderResult{Outcome: OutcomePermanentFailure}
+		message = "Executor returned an invalid result."
 	}
 	return ActionResult{
 		ActionID:     action.ID,
@@ -132,11 +131,11 @@ func normalizedActionResult(action domain.CleanupAction, attempt int, providerRe
 		Attempt:      attempt,
 		RetryAfter:   providerResult.RetryAfter,
 		ProviderCode: providerResult.ProviderCode,
-		Message:      providerResult.SafeMessage,
+		Message:      message,
 	}
 }
 
-func validProviderResult(result ProviderResult) bool {
+func validProviderResultMetadata(result ProviderResult) bool {
 	if _, ok := statusForOutcome(result.Outcome); !ok {
 		return false
 	}
@@ -146,7 +145,7 @@ func validProviderResult(result ProviderResult) bool {
 	if result.RetryAfter > 0 && result.Outcome != OutcomeRetryableFailure && result.Outcome != OutcomeRateLimited {
 		return false
 	}
-	if !validSafeMessage(result.SafeMessage) || !validProviderCode(result.ProviderCode) {
+	if !validProviderCode(result.ProviderCode) {
 		return false
 	}
 	return true
@@ -167,26 +166,8 @@ func statusForOutcome(outcome ActionOutcome) (domain.ActionStatus, bool) {
 	}
 }
 
-func contextCancelled(ctx context.Context, err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
+func runnerContextDone(ctx context.Context) bool {
 	return ctx != nil && ctx.Err() != nil
-}
-
-func validSafeMessage(message string) bool {
-	if message == "" {
-		return true
-	}
-	if utf8.RuneCountInString(message) > 240 || strings.ContainsAny(message, "\r\n") {
-		return false
-	}
-	for _, char := range message {
-		if unicode.IsControl(char) {
-			return false
-		}
-	}
-	return true
 }
 
 func validProviderCode(code string) bool {
@@ -208,6 +189,18 @@ func validProviderCode(code string) bool {
 		}
 	}
 	return true
+}
+
+func runtimeProviderMessage(outcome ActionOutcome, message ProviderMessage) (string, bool) {
+	switch message {
+	case "":
+		return defaultOutcomeMessage(outcome), true
+	case ProviderMessageNoopCompleted:
+		if outcome == OutcomeSucceeded {
+			return "No-op apply completed.", true
+		}
+	}
+	return defaultOutcomeMessage(outcome), false
 }
 
 func defaultOutcomeMessage(outcome ActionOutcome) string {

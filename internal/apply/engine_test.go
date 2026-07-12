@@ -54,7 +54,7 @@ func (executor *fakeExecutor) Execute(_ context.Context, action domain.CleanupAc
 	if result, ok := executor.results[action.ID]; ok {
 		return result, nil
 	}
-	return ProviderResult{Outcome: OutcomeSucceeded, SafeMessage: "fake done"}, nil
+	return ProviderResult{Outcome: OutcomeSucceeded}, nil
 }
 
 type fakeProvider struct {
@@ -138,6 +138,34 @@ func TestPreviewFailsClosedForInvalidUnsupportedAndMissingRoutes(t *testing.T) {
 	}
 }
 
+func TestPreviewRejectsDuplicateActionIDsBeforeProviderUse(t *testing.T) {
+	executor := &fakeExecutor{}
+	prerequisiteCalls := 0
+	provider := testProvider(executor)
+	provider.prerequisites = func(domain.CleanupPlan, RuntimeState) []Prerequisite {
+		prerequisiteCalls++
+		return nil
+	}
+	runner := testRunner(t, provider, RuntimeState{})
+	plan := applyTestPlan(testPlatform, []domain.CleanupAction{
+		applyTestAction("duplicate", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+		applyTestAction("duplicate", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+	})
+
+	preview := runner.Preview(plan, ExecutionModeSimulation)
+	if preview.CanApply || preview.Executor != "" || !hasBlocker(preview, "plan_invalid") || prerequisiteCalls != 0 {
+		t.Fatalf("duplicate IDs reached provider preview: preview=%#v prerequisite_calls=%d", preview, prerequisiteCalls)
+	}
+	if len(preview.Blockers) == 0 || !strings.Contains(preview.Blockers[0].Message, `duplicate id "duplicate"`) {
+		t.Fatalf("duplicate ID error was not clear: %#v", preview.Blockers)
+	}
+
+	execution := runner.Run(context.Background(), plan, ExecutionModeSimulation)
+	if execution.State != ExecutionStateFailed || len(execution.Results) != 0 || len(executor.calls) != 0 || prerequisiteCalls != 0 {
+		t.Fatalf("duplicate IDs reached execution: execution=%#v calls=%#v prerequisites=%d", execution, executor.calls, prerequisiteCalls)
+	}
+}
+
 func TestProviderPrerequisiteUsesMatchingRuntimeConnection(t *testing.T) {
 	provider := testProvider(&fakeExecutor{})
 	provider.prerequisites = func(_ domain.CleanupPlan, state RuntimeState) []Prerequisite {
@@ -192,9 +220,9 @@ func TestRunnerExecutesSequentiallyAndReportsSelectedIdentity(t *testing.T) {
 
 func TestRunnerPreservesFailureCancellationSkipAndStopStates(t *testing.T) {
 	t.Run("failure", func(t *testing.T) {
-		executor := &fakeExecutor{results: map[string]ProviderResult{"action-1": {Outcome: OutcomePermanentFailure, SafeMessage: "fake failure"}}}
+		executor := &fakeExecutor{results: map[string]ProviderResult{"action-1": {Outcome: OutcomePermanentFailure}}}
 		execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(context.Background(), singleActionPlan(), ExecutionModeSimulation)
-		if execution.State != ExecutionStateFailed || execution.Counts.Failed != 1 || execution.Results[0].Message != "fake failure" {
+		if execution.State != ExecutionStateFailed || execution.Counts.Failed != 1 || execution.Results[0].Message != "Action failed." {
 			t.Fatalf("expected failed execution, got %#v", execution)
 		}
 	})
@@ -212,6 +240,19 @@ func TestRunnerPreservesFailureCancellationSkipAndStopStates(t *testing.T) {
 		}
 	})
 
+	t.Run("expired context", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		executor := &fakeExecutor{}
+		execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(ctx, applyTestPlan(testPlatform, []domain.CleanupAction{
+			applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+			applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+		}), ExecutionModeSimulation)
+		if execution.State != ExecutionStateCancelled || execution.Counts.Cancelled != 2 || len(executor.calls) != 0 {
+			t.Fatalf("expected deadline cancellation before executor call, execution=%#v calls=%#v", execution, executor.calls)
+		}
+	})
+
 	t.Run("already satisfied", func(t *testing.T) {
 		executor := &fakeExecutor{results: map[string]ProviderResult{"action-1": {Outcome: OutcomeAlreadySatisfied}}}
 		execution := testRunner(t, testProvider(executor), RuntimeState{}).Run(context.Background(), singleActionPlan(), ExecutionModeSimulation)
@@ -221,7 +262,7 @@ func TestRunnerPreservesFailureCancellationSkipAndStopStates(t *testing.T) {
 	})
 
 	t.Run("stopped", func(t *testing.T) {
-		executor := &fakeExecutor{results: map[string]ProviderResult{"action-1": {Outcome: OutcomeStopped, SafeMessage: "stop requested"}}}
+		executor := &fakeExecutor{results: map[string]ProviderResult{"action-1": {Outcome: OutcomeStopped}}}
 		plan := applyTestPlan(testPlatform, []domain.CleanupAction{
 			applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
 			applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
@@ -384,7 +425,6 @@ func TestNormalizeProviderResultFailsClosed(t *testing.T) {
 		{name: "contradictory retry after", result: ProviderResult{Outcome: OutcomeSucceeded, RetryAfter: time.Second}},
 		{name: "secret-like provider code", result: ProviderResult{Outcome: OutcomePermanentFailure, ProviderCode: "session_token"}},
 		{name: "unsafe provider code", result: ProviderResult{Outcome: OutcomePermanentFailure, ProviderCode: "https://example.test/raw"}},
-		{name: "multiline message", result: ProviderResult{Outcome: OutcomePermanentFailure, SafeMessage: "raw\nresponse"}},
 	}
 	action := applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusRunning)
 	for _, test := range tests {
@@ -400,12 +440,51 @@ func TestNormalizeProviderResultFailsClosed(t *testing.T) {
 	}
 
 	valid := normalizeProviderResult(context.Background(), action, 1, ProviderResult{
-		Outcome:      OutcomePermanentFailure,
-		SafeMessage:  "  Safe failure.  ",
+		Outcome:      OutcomeSucceeded,
+		Message:      ProviderMessageNoopCompleted,
 		ProviderCode: "  http_503  ",
 	}, nil)
-	if valid.Message != "Safe failure." || valid.ProviderCode != "http_503" {
+	if valid.Message != "No-op apply completed." || valid.ProviderCode != "http_503" {
 		t.Fatalf("safe provider metadata not normalized: %#v", valid)
+	}
+}
+
+func TestNormalizeUnsafeProviderMessagesUsesRuntimeDefaults(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{name: "authorization", message: "Authorization: Basic dXNlcjpwYXNz"},
+		{name: "bearer", message: "Bearer eyJhbGciOiJIUzI1NiJ9"},
+		{name: "token", message: "access_token=private-value"},
+		{name: "cookie", message: "Cookie: sid=private-value"},
+		{name: "session", message: "session_id=private-value"},
+		{name: "password", message: "password=private-value"},
+		{name: "secret", message: "client_secret=private-value"},
+		{name: "credential", message: "credential=private-value"},
+		{name: "raw json", message: `{"error":"private response"}`},
+		{name: "raw html", message: "<html><body>private response</body></html>"},
+		{name: "credential URL query", message: "https://example.test/callback?code=private-value"},
+		{name: "credential URL fragment", message: "https://example.test/#private-value"},
+		{name: "multiline", message: "raw\nresponse"},
+		{name: "terminal control", message: "private\x1b[31mresponse"},
+	}
+	action := applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusRunning)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := normalizeProviderResult(context.Background(), action, 2, ProviderResult{
+				Outcome:      OutcomeRateLimited,
+				Message:      ProviderMessage(test.message),
+				RetryAfter:   30 * time.Second,
+				ProviderCode: "safe_code",
+			}, nil)
+			if result.Outcome != OutcomeRateLimited || result.Status != domain.ActionStatusFailed || result.RetryAfter != 30*time.Second {
+				t.Fatalf("unsafe message changed typed outcome: %#v", result)
+			}
+			if result.Message != "Provider rate limit reached." || result.ProviderCode != "" || strings.Contains(result.Message, test.message) {
+				t.Fatalf("unsafe provider text survived normalization: %#v", result)
+			}
+		})
 	}
 }
 
@@ -426,12 +505,36 @@ func TestNormalizeExecutorErrorsWithoutRawDetails(t *testing.T) {
 	}
 }
 
+func TestNormalizeCancellationUsesRunnerContextOnly(t *testing.T) {
+	action := applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusRunning)
+	for _, executorErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		result := normalizeProviderResult(context.Background(), action, 1, ProviderResult{}, executorErr)
+		if result.Outcome != OutcomePermanentFailure || result.Status != domain.ActionStatusFailed || result.Message != "Executor failed unexpectedly." {
+			t.Fatalf("active runner context misclassified executor error %v: %#v", executorErr, result)
+		}
+	}
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelled := normalizeProviderResult(cancelledCtx, action, 1, ProviderResult{}, errors.New("provider error"))
+	if cancelled.Outcome != OutcomeCancelled || cancelled.Status != domain.ActionStatusCancelled {
+		t.Fatalf("cancelled runner context not classified: %#v", cancelled)
+	}
+
+	expiredCtx, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	expired := normalizeProviderResult(expiredCtx, action, 1, ProviderResult{}, errors.New("provider error"))
+	if expired.Outcome != OutcomeCancelled || expired.Status != domain.ActionStatusCancelled {
+		t.Fatalf("expired runner context not classified: %#v", expired)
+	}
+}
+
 func TestRunnerBoundedRetryPolicy(t *testing.T) {
 	retryThenSuccess := func() *scriptedExecutor {
 		return &scriptedExecutor{scripts: map[string][]scriptedStep{
 			"action-1": {
 				{result: ProviderResult{Outcome: OutcomeRetryableFailure, ProviderCode: "temporary_failure"}},
-				{result: ProviderResult{Outcome: OutcomeSucceeded, SafeMessage: "done later"}},
+				{result: ProviderResult{Outcome: OutcomeSucceeded}},
 			},
 		}}
 	}
@@ -513,16 +616,36 @@ func TestRunnerFailureContinuationPolicy(t *testing.T) {
 	}
 }
 
-func TestRunPolicyNormalizesNegativeMaximumToOneAttempt(t *testing.T) {
-	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{"action-1": {
-		{result: ProviderResult{Outcome: OutcomeRetryableFailure}},
-		{result: ProviderResult{Outcome: OutcomeSucceeded}},
-	}}}
+func TestRunPolicyNormalizesAttemptLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		max  int
+		want int
+	}{
+		{name: "zero", max: 0, want: 1},
+		{name: "negative", max: -4, want: 1},
+		{name: "normal", max: 3, want: 3},
+		{name: "boundary", max: MaxAutomaticAttemptsPerAction, want: MaxAutomaticAttemptsPerAction},
+		{name: "excessive", max: MaxAutomaticAttemptsPerAction + 1000, want: MaxAutomaticAttemptsPerAction},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := (RunPolicy{MaxAttemptsPerAction: test.max}).normalized().MaxAttemptsPerAction; got != test.want {
+				t.Fatalf("normalized attempts = %d, want %d", got, test.want)
+			}
+		})
+	}
+
+	steps := make([]scriptedStep, MaxAutomaticAttemptsPerAction+1)
+	for i := range steps {
+		steps[i] = scriptedStep{result: ProviderResult{Outcome: OutcomeRetryableFailure}}
+	}
+	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{"action-1": steps}}
 	runner := testRunner(t, testProvider(executor), RuntimeState{})
-	runner.Policy = RunPolicy{MaxAttemptsPerAction: -4}
+	runner.Policy = RunPolicy{MaxAttemptsPerAction: MaxAutomaticAttemptsPerAction + 1000}
 	execution := runner.Run(context.Background(), singleActionPlan(), ExecutionModeSimulation)
-	if len(executor.calls) != 1 || execution.State != ExecutionStateFailed {
-		t.Fatalf("negative maximum did not normalize safely: execution=%#v calls=%#v", execution, executor.calls)
+	if len(executor.calls) != MaxAutomaticAttemptsPerAction || execution.Results[len(execution.Results)-1].Attempt != MaxAutomaticAttemptsPerAction || execution.State != ExecutionStateFailed {
+		t.Fatalf("excessive policy exceeded hard maximum: execution=%#v calls=%#v", execution, executor.calls)
 	}
 }
 
@@ -543,6 +666,39 @@ func TestRunnerUnexpectedExecutorErrorFailsClosedAndContinues(t *testing.T) {
 		if strings.Contains(event.Message, "raw response") {
 			t.Fatalf("raw executor error entered event: %#v", event)
 		}
+	}
+}
+
+func TestRunnerInternalContextErrorsFollowFailurePolicy(t *testing.T) {
+	for _, executorErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(executorErr.Error(), func(t *testing.T) {
+			newPlan := func() domain.CleanupPlan {
+				return applyTestPlan(testPlatform, []domain.CleanupAction{
+					applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+					applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+				})
+			}
+			newExecutor := func() *scriptedExecutor {
+				return &scriptedExecutor{scripts: map[string][]scriptedStep{
+					"action-1": {{err: executorErr}},
+					"action-2": {{result: ProviderResult{Outcome: OutcomeSucceeded}}},
+				}}
+			}
+
+			continued := newExecutor()
+			continuedExecution := testRunner(t, testProvider(continued), RuntimeState{}).Run(context.Background(), newPlan(), ExecutionModeSimulation)
+			if continuedExecution.State != ExecutionStateFailed || continuedExecution.Counts.Failed != 1 || continuedExecution.Counts.Done != 1 || continuedExecution.Counts.Cancelled != 0 || len(continued.calls) != 2 {
+				t.Fatalf("internal timeout cancelled continued run: execution=%#v calls=%#v", continuedExecution, continued.calls)
+			}
+
+			stopped := newExecutor()
+			runner := testRunner(t, testProvider(stopped), RuntimeState{})
+			runner.Policy = RunPolicy{StopAfterFinalFailure: true}
+			stoppedExecution := runner.Run(context.Background(), newPlan(), ExecutionModeSimulation)
+			if stoppedExecution.State != ExecutionStateFailed || stoppedExecution.Counts.Failed != 1 || stoppedExecution.Counts.Pending != 1 || stoppedExecution.Counts.Cancelled != 0 || len(stopped.calls) != 1 {
+				t.Fatalf("internal timeout ignored stop policy: execution=%#v calls=%#v", stoppedExecution, stopped.calls)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,46 @@ import (
 	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/workspace"
 )
+
+type unsafeMessageTestProvider struct {
+	message string
+}
+
+func (provider unsafeMessageTestProvider) Platform() domain.PlatformName {
+	return domain.PlatformInstagram
+}
+
+func (provider unsafeMessageTestProvider) Mode() apply.ExecutionMode {
+	return apply.ExecutionModeSimulation
+}
+
+func (provider unsafeMessageTestProvider) ExecutorID() apply.ExecutorID {
+	return "unsafe-message-test"
+}
+
+func (provider unsafeMessageTestProvider) Supports(domain.ActionType) bool {
+	return true
+}
+
+func (provider unsafeMessageTestProvider) Prerequisites(domain.CleanupPlan, apply.RuntimeState) []apply.Prerequisite {
+	return nil
+}
+
+func (provider unsafeMessageTestProvider) Executor() apply.Executor {
+	return unsafeMessageTestExecutor{message: provider.message}
+}
+
+type unsafeMessageTestExecutor struct {
+	message string
+}
+
+func (executor unsafeMessageTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+	return apply.ProviderResult{
+		Outcome:      apply.OutcomePermanentFailure,
+		Message:      apply.ProviderMessage(executor.message),
+		ProviderCode: "safe_code",
+	}, nil
+}
 
 func TestInitialViewContainsSelectableHomeMenu(t *testing.T) {
 	m := NewModel()
@@ -738,6 +779,53 @@ func TestApplyResultViewShowsConciseTypedOutcomeDetails(t *testing.T) {
 			t.Fatalf("retry-after halt details missing:\n%s", view)
 		}
 	})
+}
+
+func TestApplyResultViewNeverShowsUnsafeProviderMessage(t *testing.T) {
+	const unsafeMessage = "Authorization: Bearer top-secret-token"
+	registry, err := apply.NewProviderRegistry(unsafeMessageTestProvider{message: unsafeMessage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := fakeCleanupPlan()
+	execution := (apply.Runner{Providers: registry}).Run(context.Background(), plan, apply.ExecutionModeSimulation)
+	if execution.State != apply.ExecutionStateFailed || len(execution.Results) == 0 {
+		t.Fatalf("unexpected execution: %#v", execution)
+	}
+	for _, result := range execution.Results {
+		if strings.Contains(result.Message, unsafeMessage) || result.ProviderCode != "" || result.Message != "Action failed." {
+			t.Fatalf("unsafe provider text entered result: %#v", result)
+		}
+	}
+	for _, event := range execution.Events {
+		if strings.Contains(event.Message, unsafeMessage) || event.ProviderCode != "" {
+			t.Fatalf("unsafe provider text entered event: %#v", event)
+		}
+	}
+
+	m := NewModel()
+	m.width = 120
+	m.height = 40
+	m.current = screenApplyResult
+	m.applyExecution = execution
+	view := stripANSI(m.View().Content)
+	for _, forbidden := range []string{unsafeMessage, "top-secret-token", "Bearer"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("unsafe provider text entered TUI: %q\n%s", forbidden, view)
+		}
+	}
+}
+
+func TestFinalActionResultsAssociatesUniqueActionRetryHistory(t *testing.T) {
+	results := []apply.ActionResult{
+		{ActionID: "action-1", Outcome: apply.OutcomeRetryableFailure, Attempt: 1},
+		{ActionID: "action-2", Outcome: apply.OutcomeSucceeded, Attempt: 1},
+		{ActionID: "action-1", Outcome: apply.OutcomeSucceeded, Attempt: 2},
+	}
+	final := finalActionResults(results)
+	if len(final) != 2 || final[0].ActionID != "action-1" || final[0].Attempt != 2 || final[1].ActionID != "action-2" || final[1].Attempt != 1 {
+		t.Fatalf("unique action results associated incorrectly: %#v", final)
+	}
 }
 
 func TestTabClicksRouteToSafeScreens(t *testing.T) {
