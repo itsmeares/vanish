@@ -58,8 +58,8 @@ Durability ordering is part of the safety contract:
 4. Terminal, halt, stop, resume, and abandon transitions are appended in order.
 
 Manifest and summary replacement use a synced temporary file and atomic rename.
-Journal appends are synced before returning. On platforms with directory sync,
-the containing directory is synced as well.
+Journal appends are synced before returning. When `journal.jsonl` is first
+created, its execution directory is also synced where supported.
 
 ## Replay and Safe Resume
 
@@ -67,8 +67,10 @@ Replay validates the manifest, identity fingerprint, event schema, sequence,
 timestamps, route, action order, attempt numbers, outcomes, statuses, and
 terminal transitions. It builds an action index once, so validation is linear in
 the number of actions plus journal events. A malformed newline-terminated record
-is corruption. Only an unterminated final record may be ignored, with a visible
-recovery warning, because it can represent an interrupted append.
+is corruption. Read-only replay may ignore one unterminated final record with a
+visible recovery warning. Before appending, a locked writer truncates only that
+partial tail to the last complete record boundary, syncs the repair, and replays
+the journal. Terminated and interior corruption is never repaired.
 
 If an attempt-start record exists without a durable result, the action's outcome
 is unknown. Vanish never retries that action and never infers success or failure.
@@ -99,5 +101,5 @@ values, and private content do not enter execution audit metadata.
 
 This runtime still uses no-op simulation executors and enables no platform
 mutation or new network behavior. Idempotency keys and remote-state
-reconciliation remain deferred to PR 15, and production executors remain
-deferred to PR 16.
+reconciliation remain deferred to PR 15. Runtime simulator and fault scenarios
+remain deferred to PR 16. Real platform execution remains deferred.

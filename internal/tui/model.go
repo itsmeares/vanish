@@ -3021,12 +3021,7 @@ func (m Model) executionDetailView() string {
 	if len(actions) > 0 && actions[clampCursor(m.executionActionCursor, len(actions))].Disabled {
 		lines = append(lines, "", m.notice("warning", actions[clampCursor(m.executionActionCursor, len(actions))].Reason))
 	}
-	body := m.twoPane(spec, "Execution", "Durable local progress", lines, "Safety", "Resume is always explicit", []string{
-		m.styles.body.Render("Completed actions are never run again."),
-		m.styles.body.Render("Unknown in-flight work can only be abandoned."),
-		m.styles.body.Render("No platform changes occur in current simulations."),
-	})
-	return m.appShell("Execution", body, m.footer(footerActionMenu))
+	return m.singlePaneFooter("Execution", "Durable local progress", lines, m.footer(footerActionMenu))
 }
 
 func (m Model) executionConfirmView(abandon bool) string {
@@ -3036,7 +3031,7 @@ func (m Model) executionConfirmView(abandon bool) string {
 		title = "Abandon Execution?"
 		message = "Abandon this execution without invoking any provider action?"
 	}
-	lines := []string{m.notice("warning", message), m.styles.body.Render("This does not claim any platform action succeeded or failed."), ""}
+	lines := []string{m.notice("warning", message), ""}
 	lines = append(lines, m.menuRows(executionConfirmMenuItems, m.executionConfirmCursor, layoutSpec(m.width, m.height).contentWidth, hitExecutionConfirm)...)
 	return m.singlePaneFooter(title, "Defaults to Cancel", lines, m.footer(footerConfirm))
 }

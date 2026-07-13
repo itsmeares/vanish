@@ -26,7 +26,12 @@ func (runner Runner) Start(ctx context.Context, plan domain.CleanupPlan, mode Ex
 		return execution, ErrExecutionStoreUnavailable
 	}
 	provider, err := runner.Providers.Resolve(plan.Platform, mode)
-	if err != nil || provider.Executor() == nil {
+	if err != nil {
+		execution.State = ExecutionStateFailed
+		return execution, ErrProviderUnavailable
+	}
+	executor := provider.Executor()
+	if executor == nil {
 		execution.State = ExecutionStateFailed
 		return execution, ErrProviderUnavailable
 	}
@@ -58,7 +63,7 @@ func (runner Runner) Start(ctx context.Context, plan domain.CleanupPlan, mode Ex
 		State: ExecutionStateRunning, Counts: CountsForPlan(execution.Plan), Mode: manifest.Mode,
 		Executor: manifest.Executor, ExecutionID: manifest.ExecutionID, Sequence: 1,
 	})
-	return runner.executeDurable(ctx, writer, execution, provider, make(map[string]int))
+	return runner.executeDurable(ctx, writer, execution, executor, make(map[string]int))
 }
 
 func (runner Runner) Resume(ctx context.Context, id ExecutionID) (Execution, error) {
@@ -89,7 +94,11 @@ func (runner Runner) Resume(ctx context.Context, id ExecutionID) (Execution, err
 		return execution, ErrExecutionNotReady
 	}
 	provider, err := runner.Providers.Resolve(view.Manifest.Platform, view.Manifest.Mode)
-	if err != nil || provider.Executor() == nil || validateResumeIdentity(view, provider, runner.Policy) != nil {
+	if err != nil || validateResumeIdentity(view, provider, runner.Policy) != nil {
+		return executionFromView(view), ErrExecutionIdentityMismatch
+	}
+	executor := provider.Executor()
+	if executor == nil {
 		return executionFromView(view), ErrExecutionIdentityMismatch
 	}
 	prerequisites := provider.Prerequisites(view.Plan, runner.State)
@@ -116,7 +125,7 @@ func (runner Runner) Resume(ctx context.Context, id ExecutionID) (Execution, err
 		State: ExecutionStateRunning, Counts: CountsForPlan(execution.Plan), Mode: view.Manifest.Mode,
 		Executor: view.Manifest.Executor, ExecutionID: view.Manifest.ExecutionID, Sequence: resumed.Sequence,
 	})
-	return runner.executeDurable(ctx, writer, execution, provider, cloneAttemptCounts(view.LastAttempts))
+	return runner.executeDurable(ctx, writer, execution, executor, cloneAttemptCounts(view.LastAttempts))
 }
 
 func (runner Runner) Abandon(id ExecutionID) (Execution, error) {
@@ -136,9 +145,8 @@ func (runner Runner) Abandon(id ExecutionID) (Execution, error) {
 	return execution, nil
 }
 
-func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter, execution Execution, provider Provider, attempts map[string]int) (Execution, error) {
+func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter, execution Execution, executor Executor, attempts map[string]int) (Execution, error) {
 	policy := writer.manifest.Policy
-	executor := provider.Executor()
 	// A durable cancelled result is authoritative even if the process stopped
 	// before it could append the execution-level cancellation record. Finalize
 	// untouched actions without invoking the executor again.
@@ -183,28 +191,18 @@ func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter
 				return execution, err
 			}
 			attempts[action.ID] = attempt
+			if ctx.Err() != nil {
+				result := normalizedActionResult(*action, attempt, ProviderResult{Outcome: OutcomeCancelled}, "Execution cancelled.")
+				if err := runner.persistDurableResult(writer, &execution, action, result, policy); err != nil {
+					return execution, err
+				}
+				return runner.finishDurable(writer, &execution, JournalExecutionCancelled, ExecutionStateCancelled, "")
+			}
 			providerResult, executeErr := executor.Execute(ctx, *action)
 			result := normalizeProviderResult(ctx, *action, attempt, providerResult, executeErr)
-			transitionResultCount(&execution.Counts, domain.ActionStatusRunning, result.Status)
-			action.Status = result.Status
-			resultState, resultResume, resultBlock := stateAfterResult(result, attempt, policy)
-			resultSummary := summaryForRuntime(writer.manifest, execution.Counts, resultState, resultResume, resultBlock, result.Outcome, runner.now())
-			recorded, appendErr := writer.Append(journalEventForResult(result, runner.now()), resultSummary)
-			if recorded.Sequence != 0 {
-				execution.Results = append(execution.Results, result)
-				publicEvent := eventForActionResult(writer.manifest.PlanID, result, writer.manifest.Mode, writer.manifest.Executor)
-				publicEvent.ExecutionID = writer.manifest.ExecutionID
-				publicEvent.Sequence = recorded.Sequence
-				execution.Events = append(execution.Events, publicEvent)
-			}
-			if appendErr != nil {
-				execution.Resumability = ResumabilityResolution
-				execution.BlockReason = RuntimeErrorMessage(appendErr)
-				if view, replayErr := writer.store.Replay(writer.manifest.ExecutionID); replayErr == nil {
-					execution = mergeExecutionView(execution, view)
-				}
+			if err := runner.persistDurableResult(writer, &execution, action, result, policy); err != nil {
 				_ = started
-				return execution, appendErr
+				return execution, err
 			}
 			if ctx.Err() != nil {
 				return runner.finishDurable(writer, &execution, JournalExecutionCancelled, ExecutionStateCancelled, "")
@@ -240,6 +238,30 @@ func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter
 		return runner.finishDurable(writer, &execution, JournalExecutionFailed, ExecutionStateFailed, "")
 	}
 	return runner.finishDurable(writer, &execution, JournalExecutionCompleted, stateForCounts(execution.Counts), "")
+}
+
+func (runner Runner) persistDurableResult(writer *ExecutionWriter, execution *Execution, action *domain.CleanupAction, result ActionResult, policy RunPolicy) error {
+	transitionResultCount(&execution.Counts, domain.ActionStatusRunning, result.Status)
+	action.Status = result.Status
+	resultState, resultResume, resultBlock := stateAfterResult(result, result.Attempt, policy)
+	resultSummary := summaryForRuntime(writer.manifest, execution.Counts, resultState, resultResume, resultBlock, result.Outcome, runner.now())
+	recorded, appendErr := writer.Append(journalEventForResult(result, runner.now()), resultSummary)
+	if recorded.Sequence != 0 {
+		execution.Results = append(execution.Results, result)
+		publicEvent := eventForActionResult(writer.manifest.PlanID, result, writer.manifest.Mode, writer.manifest.Executor)
+		publicEvent.ExecutionID = writer.manifest.ExecutionID
+		publicEvent.Sequence = recorded.Sequence
+		execution.Events = append(execution.Events, publicEvent)
+	}
+	if appendErr == nil {
+		return nil
+	}
+	execution.Resumability = ResumabilityResolution
+	execution.BlockReason = RuntimeErrorMessage(appendErr)
+	if view, replayErr := writer.store.Replay(writer.manifest.ExecutionID); replayErr == nil {
+		*execution = mergeExecutionView(*execution, view)
+	}
+	return appendErr
 }
 
 func (runner Runner) finishDurable(writer *ExecutionWriter, execution *Execution, kind JournalEventKind, state ExecutionState, haltReason ActionOutcome) (Execution, error) {

@@ -28,10 +28,12 @@ const (
 )
 
 type executionStoreHooks struct {
-	beforeManifest func() error
-	beforeAppend   func(JournalEvent) error
-	beforeSummary  func() error
-	onAppend       func(JournalEvent)
+	beforeManifest      func() error
+	beforeAppend        func(JournalEvent) error
+	beforeSummary       func() error
+	beforeDirectorySync func(string) error
+	beforeJournalRepair func() error
+	onAppend            func(JournalEvent)
 }
 
 type ExecutionStore struct {
@@ -169,17 +171,26 @@ func (store *ExecutionStore) OpenWriter(id ExecutionID) (*ExecutionWriter, Execu
 		_ = writerLock.Close()
 		return nil, ExecutionView{}, ErrExecutionLocked
 	}
+	writer := &ExecutionWriter{store: store, lock: writerLock}
 	view, err := store.Replay(id)
 	if err != nil {
-		writerLock.Close()
+		writer.Close()
 		return nil, ExecutionView{}, err
 	}
-	return &ExecutionWriter{
-		store:        store,
-		manifest:     view.Manifest,
-		lock:         writerLock,
-		nextSequence: view.LastSequence + 1,
-	}, view, nil
+	if view.ignoredPartialTail {
+		if err := writer.repairPartialJournal(view); err != nil {
+			writer.Close()
+			return nil, ExecutionView{}, err
+		}
+		view, err = store.Replay(id)
+		if err != nil || view.ignoredPartialTail {
+			writer.Close()
+			return nil, ExecutionView{}, ErrExecutionCorrupt
+		}
+	}
+	writer.manifest = view.Manifest
+	writer.nextSequence = view.LastSequence + 1
+	return writer, view, nil
 }
 
 func (writer *ExecutionWriter) Append(event JournalEvent, summary ExecutionSummary) (JournalEvent, error) {
@@ -215,8 +226,15 @@ func (writer *ExecutionWriter) Append(event JournalEvent, summary ExecutionSumma
 	}
 	encoded = append(encoded, '\n')
 	journalPath := filepath.Join(dir, journalFileName)
-	if err := rejectExistingSymlink(journalPath); err != nil {
-		return JournalEvent{}, err
+	createdJournal := false
+	if info, statErr := os.Lstat(journalPath); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return JournalEvent{}, ErrExecutionCorrupt
+		}
+	} else if errors.Is(statErr, os.ErrNotExist) {
+		createdJournal = true
+	} else {
+		return JournalEvent{}, statErr
 	}
 	file, err := os.OpenFile(journalPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -239,6 +257,11 @@ func (writer *ExecutionWriter) Append(event JournalEvent, summary ExecutionSumma
 	}
 	if writeErr != nil {
 		return JournalEvent{}, writeErr
+	}
+	if createdJournal {
+		if err := writer.store.syncDirectory(dir); err != nil {
+			return JournalEvent{}, err
+		}
 	}
 	writer.nextSequence++
 	if writer.store.hooks.onAppend != nil {
@@ -267,6 +290,61 @@ func (writer *ExecutionWriter) Append(event JournalEvent, summary ExecutionSumma
 		return event, err
 	}
 	return event, nil
+}
+
+func (writer *ExecutionWriter) repairPartialJournal(view ExecutionView) error {
+	if writer == nil || writer.store == nil || writer.lock == nil || !writer.lock.Locked() || writer.closed || !view.ignoredPartialTail || view.journalCompleteAt < 0 {
+		return ErrExecutionCorrupt
+	}
+	if writer.store.hooks.beforeJournalRepair != nil {
+		if err := writer.store.hooks.beforeJournalRepair(); err != nil {
+			return err
+		}
+	}
+	dir, err := writer.store.executionDir(view.Manifest.ExecutionID)
+	if err != nil {
+		return err
+	}
+	if err := writer.store.validateRoot(); err != nil {
+		return err
+	}
+	if err := rejectSymlink(dir); err != nil {
+		return err
+	}
+	journalPath := filepath.Join(dir, journalFileName)
+	if err := rejectSymlink(journalPath); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(journalPath, os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	info, statErr := file.Stat()
+	if statErr != nil || info.Size() <= view.journalCompleteAt {
+		file.Close()
+		return ErrExecutionCorrupt
+	}
+	repairErr := file.Truncate(view.journalCompleteAt)
+	if repairErr == nil {
+		repairErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if repairErr == nil {
+		repairErr = closeErr
+	}
+	if repairErr != nil {
+		return repairErr
+	}
+	return writer.store.syncDirectory(dir)
+}
+
+func (store *ExecutionStore) syncDirectory(path string) error {
+	if store != nil && store.hooks.beforeDirectorySync != nil {
+		if err := store.hooks.beforeDirectorySync(path); err != nil {
+			return err
+		}
+	}
+	return syncDirectory(path)
 }
 
 func (writer *ExecutionWriter) Close() error {

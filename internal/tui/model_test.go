@@ -1490,13 +1490,17 @@ func TestResolutionFlowDefaultsToCancelAndOnlyOffersAbandon(t *testing.T) {
 	m := NewModel()
 	m.current = screenExecutionDetail
 	m.executionSelected = apply.ExecutionSummary{ExecutionID: "exec-test", Resumability: apply.ResumabilityResolution}
+	detail := m.View().Content
+	if strings.Contains(detail, "Resume is always explicit") || strings.Contains(detail, "Completed actions are never run again") {
+		t.Fatalf("execution detail retained fixed safety pane:\n%s", detail)
+	}
 	m = updateModel(t, m, keyPress("enter"))
 	if m.current != screenExecutionAbandonConfirm || m.executionConfirmCursor != 1 {
 		t.Fatalf("abandon confirmation did not default to cancel: screen=%v cursor=%d", m.current, m.executionConfirmCursor)
 	}
 	view := m.View().Content
-	if !strings.Contains(view, "without invoking any provider action") || !strings.Contains(view, "does not claim any platform action succeeded or failed") {
-		t.Fatalf("abandon safety copy missing:\n%s", view)
+	if !strings.Contains(view, "without invoking any provider action") || strings.Contains(view, "does not claim any platform action succeeded or failed") {
+		t.Fatalf("abandon confirmation copy mismatch:\n%s", view)
 	}
 	m = updateModel(t, m, keyPress("enter"))
 	if m.current != screenExecutionDetail {

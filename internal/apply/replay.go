@@ -67,6 +67,7 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 	var inFlight *JournalEvent
 	var lastKind JournalEventKind
 	var lastOutcome ActionOutcome
+	var completeAt int64
 
 	for {
 		line, readErr := reader.ReadBytes('\n')
@@ -75,6 +76,8 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			if !terminated {
 				if errors.Is(readErr, io.EOF) {
 					view.RecoveryWarning = "An interrupted final journal write was ignored."
+					view.journalCompleteAt = completeAt
+					view.ignoredPartialTail = true
 					break
 				}
 				return ExecutionView{}, ErrExecutionCorrupt
@@ -97,6 +100,7 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			view.LastSequence = event.Sequence
 			view.UpdatedAt = event.Timestamp.UTC()
 			lastKind = event.Kind
+			completeAt += int64(len(line) + 1)
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
@@ -104,6 +108,9 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			}
 			return ExecutionView{}, ErrExecutionCorrupt
 		}
+	}
+	if !view.ignoredPartialTail {
+		view.journalCompleteAt = completeAt
 	}
 	if !started {
 		return ExecutionView{}, ErrExecutionCorrupt

@@ -116,24 +116,26 @@ type UnresolvedAttempt struct {
 }
 
 type ExecutionView struct {
-	Manifest          ExecutionManifest
-	Plan              domain.CleanupPlan
-	State             ExecutionState
-	HaltReason        ActionOutcome
-	Counts            ResultCounts
-	AttemptHistory    map[string][]AttemptRecord
-	LastAttempts      map[string]int
-	NextActionID      string
-	NextAttempt       int
-	RetryNotBefore    time.Time
-	Resumability      Resumability
-	BlockReason       string
-	RecoveryWarning   string
-	Unresolved        *UnresolvedAttempt
-	NeedsFinalization bool
-	LastSequence      int64
-	UpdatedAt         time.Time
-	TerminalKind      JournalEventKind
+	Manifest           ExecutionManifest
+	Plan               domain.CleanupPlan
+	State              ExecutionState
+	HaltReason         ActionOutcome
+	Counts             ResultCounts
+	AttemptHistory     map[string][]AttemptRecord
+	LastAttempts       map[string]int
+	NextActionID       string
+	NextAttempt        int
+	RetryNotBefore     time.Time
+	Resumability       Resumability
+	BlockReason        string
+	RecoveryWarning    string
+	Unresolved         *UnresolvedAttempt
+	NeedsFinalization  bool
+	LastSequence       int64
+	UpdatedAt          time.Time
+	TerminalKind       JournalEventKind
+	journalCompleteAt  int64
+	ignoredPartialTail bool
 }
 
 var (
