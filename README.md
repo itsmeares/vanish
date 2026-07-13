@@ -28,6 +28,8 @@ It can:
 - Stop a cleanup session, close Vanish, reopen it, and resume later.
 - Load and review saved cleanup plans.
 - Keep local history, audit records, workspace data, and a local-data wipe flow.
+- Keep no-op execution progress in a durable local journal and offer explicit,
+  safety-classified resume or abandonment after restart.
 - Offer a read-only Reddit official API planner prototype.
 
 Vanish does not yet provide automatic or complete multi-platform cleanup. See
@@ -140,10 +142,11 @@ uses the official API within its documented read-only boundary. Details live in
 
 ## Local Data
 
-Vanish stores local workspace metadata, history, audit records, and safe manual
-cleanup progress in its app directory. It does not copy raw exports or persist
-raw comment text. Local-data wipe clears Vanish-managed data only; it does not
-delete export ZIPs or plan files you chose outside that directory.
+Vanish stores local workspace metadata, history, audit records, safe manual
+cleanup progress, and durable no-op execution journals in its app directory. It
+does not copy raw exports or persist raw comment text. Local-data wipe clears
+Vanish-managed data, including execution progress and locks; it does not delete
+export ZIPs or plan files you chose outside that directory.
 
 For Reddit, the operating-system credential store is primary. Only after
 explicit confirmation, an unavailable credential store may use a

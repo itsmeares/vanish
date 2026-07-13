@@ -3,8 +3,8 @@
 Vanish separates persisted action status from richer runtime outcomes. Cleanup
 plans remain format version 1 and store only the existing statuses: `pending`,
 `running`, `done`, `failed`, `skipped`, `stopped`, and `cancelled`. Outcomes,
-attempts, retry timing, and provider codes exist only in the active execution,
-its events, and safe audit metadata.
+attempts, retry timing, and provider codes exist in runtime events, durable
+execution journals, and safe audit metadata. They never enter cleanup-plan JSON.
 
 ## Outcomes and Statuses
 
@@ -36,6 +36,56 @@ A valid typed result returned without an executor error remains authoritative
 for its action. If runner cancellation races with that return, Vanish records
 the result first, then cancels only untouched remaining actions.
 
+## Durable Journal Format
+
+The execution journal has its own format version, currently `1`, independent of
+cleanup-plan format version `1`. Each execution gets a random ID and an immutable
+manifest containing a deep copy of the plan, the simulation route, normalized
+run policy, creation time, and a deterministic fingerprint of that identity.
+An identical plan, route, and policy cannot silently create a second execution.
+
+The append-only JSONL journal is authoritative. Its records use contiguous
+sequence numbers and contain only runtime-owned fields. A derived summary file
+makes the Local Data list cheap to open, but replay never trusts that cache as
+the source of truth.
+
+Durability ordering is part of the safety contract:
+
+1. The manifest and `execution_started` record are synced before an executor is
+   available to run.
+2. `action_attempt_started` is appended and synced before each executor call.
+3. `action_result_recorded` is appended and synced before another executor call.
+4. Terminal, halt, stop, resume, and abandon transitions are appended in order.
+
+Manifest and summary replacement use a synced temporary file and atomic rename.
+Journal appends are synced before returning. On platforms with directory sync,
+the containing directory is synced as well.
+
+## Replay and Safe Resume
+
+Replay validates the manifest, identity fingerprint, event schema, sequence,
+timestamps, route, action order, attempt numbers, outcomes, statuses, and
+terminal transitions. It builds an action index once, so validation is linear in
+the number of actions plus journal events. A malformed newline-terminated record
+is corruption. Only an unterminated final record may be ignored, with a visible
+recovery warning, because it can represent an interrupted append.
+
+If an attempt-start record exists without a durable result, the action's outcome
+is unknown. Vanish never retries that action and never infers success or failure.
+The execution becomes `resolution_required`; the only forward action is explicit
+abandonment. Abandonment records that the execution ended without making a claim
+about the unknown platform result and does not invoke the provider.
+
+Otherwise, explicit resume continues from the first eligible action and never
+repeats a completed action. Attempt numbers continue from the journal. Retry
+deadlines and authentication prerequisites are rechecked before new executor
+calls. Completed, failed, cancelled, and abandoned terminal executions cannot be
+resumed. Vanish never resumes automatically during startup.
+
+One writer lock protects each execution across processes. A separate identity
+lock serializes creation of matching manifests. Locked executions remain
+readable in Local Data but Resume is disabled until the other process exits.
+
 ## Safety and Deferred Work
 
 Provider results contain only an outcome, optional structured message ID,
@@ -48,5 +98,6 @@ errors, target URLs, credentials, tokens, cookies, sessions, authorization
 values, and private content do not enter execution audit metadata.
 
 This runtime still uses no-op simulation executors and enables no platform
-mutation. Durable execution journals and restart/resume belong to PR 14.
-Idempotency keys and remote-state reconciliation remain deferred to later work.
+mutation or new network behavior. Idempotency keys and remote-state
+reconciliation remain deferred to PR 15, and production executors remain
+deferred to PR 16.

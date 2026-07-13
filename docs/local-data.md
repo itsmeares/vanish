@@ -25,6 +25,30 @@ exports into its app directory.
 - Audit events for imports, plans, manual cleanup, local-data views, and wipes.
 - Manual-cleanup progress: safe action/target references, timestamps, position,
   and done/skipped outcomes so a session can resume after restart.
+- Durable no-op execution progress: an immutable cleanup-plan snapshot, execution
+  route and policy, append-only runtime events, and a derived list summary.
+
+## Durable Executions
+
+Durable simulation state lives under `executions/` in the app directory. Each
+execution uses a SHA-256-derived directory name rather than accepting a path from
+the plan or user input. Its files are:
+
+- `manifest.json`: immutable execution identity and cleanup-plan snapshot.
+- `journal.jsonl`: authoritative, append-only lifecycle and action records.
+- `summary.json`: a derived cache used for fast Local Data listing.
+- `writer.lock`: the cross-process exclusive-writer lock.
+
+Creation identity locks live in `executions/.identity-locks/`. On POSIX systems,
+Vanish creates execution directories with `0700` permissions and files with
+`0600` permissions. It rejects symlinked execution roots, session directories,
+journals, manifests, summaries, and lock files rather than following them.
+
+The Local Data > Executions screen classifies entries as resumable, waiting for
+a retry time, waiting for provider readiness, resolution required, terminal,
+corrupt, or active in another process. Resume is always explicit. An attempt
+whose result was not durably recorded can only be abandoned, never retried.
+Terminal and corrupt entries can be explicitly deleted from this screen.
 
 ## What Vanish Does Not Store
 
@@ -49,10 +73,11 @@ connection metadata may remain in local configuration.
 ## Wipe Behavior
 
 Local-data wipe clears Vanish-managed configuration, recent import/plan history,
-audit records, manual-cleanup progress, and any confirmed local-file fallback
-secrets from the active app directory. It does not delete user-owned export ZIPs
-or plan JSON files outside that directory. Operating-system credential-store
-secrets are outside the app directory and are not removed by local-data wipe.
+audit records, manual-cleanup progress, durable execution manifests, journals,
+summaries, locks, and any confirmed local-file fallback secrets from the active
+app directory. It does not delete user-owned export ZIPs or plan JSON files
+outside that directory. Operating-system credential-store secrets are outside
+the app directory and are not removed by local-data wipe.
 
 For development or tests, point Vanish at an isolated workspace:
 
