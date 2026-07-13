@@ -651,6 +651,15 @@ func (store *ExecutionStore) Delete(summary ExecutionSummary) error {
 		fingerprint = view.Manifest.Fingerprint
 	} else if manifest, manifestErr := loadExecutionManifest(filepath.Join(dir, manifestFileName)); manifestErr == nil && executionStoreKey(manifest.ExecutionID) == key {
 		fingerprint = manifest.Fingerprint
+	} else if retained, summaryErr := loadExecutionSummary(filepath.Join(dir, summaryFileName)); summaryErr == nil && executionStoreKey(retained.ExecutionID) == key {
+		fingerprint = retained.Fingerprint
+	} else if summary.storeKey == key && summary.ExecutionID != "" && executionStoreKey(summary.ExecutionID) == key && validFingerprint(summary.Fingerprint) {
+		fingerprint = summary.Fingerprint
+	} else {
+		return ErrExecutionCorrupt
+	}
+	if !validFingerprint(fingerprint) {
+		return ErrExecutionCorrupt
 	}
 	var identityLock *flock.Flock
 	if fingerprint != "" {

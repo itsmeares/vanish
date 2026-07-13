@@ -73,6 +73,75 @@ func TestDeletePreservesDuplicateExecutionGuard(t *testing.T) {
 	}
 }
 
+func TestDeleteCorruptExecutionRequiresTrustworthyFingerprint(t *testing.T) {
+	t.Run("retained summary preserves guard", func(t *testing.T) {
+		store := NewExecutionStore(t.TempDir())
+		executor := &fakeExecutor{}
+		runner := durableTestRunner(t, store, executor, DefaultRunPolicy(), applyTestTime())
+		execution, err := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		summaries, err := store.List()
+		if err != nil || len(summaries) != 1 {
+			t.Fatalf("summaries=%#v err=%v", summaries, err)
+		}
+		retained := summaries[0]
+		retained.Resumability = ResumabilityCorrupt
+		dir, err := store.executionDir(execution.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{manifestFileName, summaryFileName} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("corrupt"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := store.Delete(retained); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("corrupt execution survived deletion: %v", err)
+		}
+		guard, err := os.ReadFile(store.identityGuardPath(retained.Fingerprint))
+		if err != nil || string(guard) != identityGuardMarker {
+			t.Fatalf("identity guard=%q err=%v", guard, err)
+		}
+		callsBefore := len(executor.calls)
+		if _, err := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation); !errors.Is(err, ErrExecutionExists) || len(executor.calls) != callsBefore {
+			t.Fatalf("guarded Start err=%v calls=%v", err, executor.calls)
+		}
+	})
+
+	t.Run("missing fingerprint fails closed", func(t *testing.T) {
+		store := NewExecutionStore(t.TempDir())
+		runner := durableTestRunner(t, store, &fakeExecutor{}, DefaultRunPolicy(), applyTestTime())
+		execution, err := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir, err := store.executionDir(execution.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{manifestFileName, summaryFileName} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("corrupt"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		summaries, err := store.List()
+		if err != nil || len(summaries) != 1 || summaries[0].Resumability != ResumabilityCorrupt || summaries[0].Fingerprint != "" {
+			t.Fatalf("summaries=%#v err=%v", summaries, err)
+		}
+		if err := store.Delete(summaries[0]); !errors.Is(err, ErrExecutionCorrupt) {
+			t.Fatalf("Delete error=%v", err)
+		}
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("fail-closed deletion removed execution: %v", err)
+		}
+	})
+}
+
 func TestWorkspaceWipeCoordinatesWithDurableWriters(t *testing.T) {
 	root := t.TempDir()
 	w, err := workspace.Open(filepath.Join(root, "app"))

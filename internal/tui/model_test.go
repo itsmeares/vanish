@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,46 @@ func (provider unsafeMessageTestProvider) Executor() apply.Executor {
 
 type unsafeMessageTestExecutor struct {
 	message string
+}
+
+type blockingApplyTestProvider struct {
+	executor *blockingApplyTestExecutor
+}
+
+func (provider blockingApplyTestProvider) Platform() domain.PlatformName {
+	return domain.PlatformInstagram
+}
+
+func (provider blockingApplyTestProvider) Mode() apply.ExecutionMode {
+	return apply.ExecutionModeSimulation
+}
+
+func (provider blockingApplyTestProvider) ExecutorID() apply.ExecutorID {
+	return "blocking-apply-test"
+}
+
+func (provider blockingApplyTestProvider) Supports(domain.ActionType) bool {
+	return true
+}
+
+func (provider blockingApplyTestProvider) Prerequisites(domain.CleanupPlan, apply.RuntimeState) []apply.Prerequisite {
+	return nil
+}
+
+func (provider blockingApplyTestProvider) Executor() apply.Executor {
+	return provider.executor
+}
+
+type blockingApplyTestExecutor struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (executor *blockingApplyTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+	executor.once.Do(func() { close(executor.entered) })
+	<-executor.release
+	return apply.ProviderResult{Outcome: apply.OutcomeSucceeded}, nil
 }
 
 func (executor unsafeMessageTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
@@ -1435,6 +1476,78 @@ func TestDurableExecutionsLoadLazilyFromLocalData(t *testing.T) {
 	actions := next.executionActions()
 	if !strings.Contains(view, "Delete execution") || len(actions) != 2 || actions[0].ID != executionActionDelete {
 		t.Fatalf("terminal execution actions are unsafe:\n%s", view)
+	}
+}
+
+func TestApplyExistingActiveExecutionOpensLockedDetail(t *testing.T) {
+	root := t.TempDir()
+	w, err := workspace.Open(filepath.Join(root, "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &blockingApplyTestExecutor{entered: make(chan struct{}), release: make(chan struct{})}
+	registry, err := apply.NewProviderRegistry(blockingApplyTestProvider{executor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := apply.Runner{
+		Providers: registry,
+		Policy:    apply.DefaultRunPolicy(),
+		Store:     apply.NewExecutionStore(w.Dir()),
+		Now:       func() time.Time { return time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC) },
+	}
+	type startResult struct {
+		execution apply.Execution
+		err       error
+	}
+	firstDone := make(chan startResult, 1)
+	go func() {
+		execution, err := runner.Start(context.Background(), fakeCleanupPlan(), apply.ExecutionModeSimulation)
+		firstDone <- startResult{execution: execution, err: err}
+	}()
+	var releaseOnce sync.Once
+	firstConsumed := false
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(executor.release) })
+		if !firstConsumed {
+			<-firstDone
+		}
+	})
+	select {
+	case <-executor.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("active execution did not enter executor")
+	}
+
+	existing, existingErr := runner.Start(context.Background(), fakeCleanupPlan(), apply.ExecutionModeSimulation)
+	if !errors.Is(existingErr, apply.ErrExecutionExists) || existing.Resumability != apply.ResumabilityLocked || existing.ID == "" {
+		t.Fatalf("existing execution=%#v err=%v", existing, existingErr)
+	}
+	m := NewModelWithWorkspace(w, nil)
+	m.width = 120
+	m.height = 40
+	m.current = screenApplyRunning
+	m.applyPlanSource = applySourceGenerated
+	updated, cmd := m.Update(applyRunFinishedMsg{source: applySourceGenerated, execution: existing, err: existingErr})
+	next := requireModel(t, updated)
+	if cmd == nil || next.current != screenApplyRunning {
+		t.Fatalf("Apply existing did not request detail load: screen=%v cmd=%v", next.current, cmd)
+	}
+	next = updateModel(t, next, cmd())
+	view := stripANSI(next.View().Content)
+	actions := next.executionActions()
+	if next.current != screenExecutionDetail || next.executionSelected.Resumability != apply.ResumabilityLocked || !strings.Contains(view, "State: In use") || len(actions) == 0 || actions[0].ID != executionActionResume || !actions[0].Disabled {
+		t.Fatalf("locked detail lost state/actions: selected=%#v actions=%#v\n%s", next.executionSelected, actions, view)
+	}
+	if !strings.Contains(actions[0].Reason, "another Vanish process") {
+		t.Fatalf("locked Resume reason=%q", actions[0].Reason)
+	}
+
+	releaseOnce.Do(func() { close(executor.release) })
+	first := <-firstDone
+	firstConsumed = true
+	if first.err != nil || first.execution.State != apply.ExecutionStateDone {
+		t.Fatalf("first execution=%#v err=%v", first.execution, first.err)
 	}
 }
 

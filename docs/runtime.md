@@ -90,7 +90,9 @@ resumed. Vanish never resumes automatically during startup.
 
 One writer lock protects each execution across processes. A separate identity
 lock serializes creation of matching manifests, and deletion retains a durable
-fingerprint guard. A shared workspace-use lease blocks local-data wipe while any
+fingerprint guard. Corrupt deletion uses a validated retained summary when the
+manifest is unreadable and fails closed if no trustworthy fingerprint remains.
+A shared workspace-use lease blocks local-data wipe while any
 durable writer is active; wipe holds the exclusive lease so no writer can start
 during removal. Locked executions remain readable in Local Data but Resume is
 disabled until the other process exits.

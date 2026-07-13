@@ -52,6 +52,8 @@ whose result was not durably recorded can only be abandoned, never retried.
 Terminal and corrupt entries can be explicitly deleted from this screen.
 Deleting a terminal execution retains its identity guard, so the same
 plan/route/policy fingerprint cannot silently start again after journal removal.
+Corrupt deletion requires a trustworthy manifest or retained summary fingerprint;
+otherwise the execution remains stored.
 
 ## What Vanish Does Not Store
 

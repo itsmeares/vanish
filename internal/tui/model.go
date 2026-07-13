@@ -762,7 +762,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.executionError = ""
 			m.applyResumeReturn = false
 			m.current = screenApplyRunning
-			return m, loadExecutionCmd(m.executionStore(), msg.execution.ID, apply.ExecutionSummary{})
+			return m, loadExecutionCmd(m.executionStore(), msg.execution.ID, apply.ExecutionSummary{
+				ExecutionID:  msg.execution.ID,
+				Resumability: msg.execution.Resumability,
+				BlockReason:  msg.execution.BlockReason,
+			})
 		}
 		if msg.err != nil && m.applyExecution.BlockReason == "" {
 			m.applyExecution.BlockReason = apply.RuntimeErrorMessage(msg.err)
