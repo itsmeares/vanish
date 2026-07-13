@@ -142,6 +142,118 @@ func TestDeleteCorruptExecutionRequiresTrustworthyFingerprint(t *testing.T) {
 	})
 }
 
+func TestDeleteExcludesWritersThroughDirectoryRemoval(t *testing.T) {
+	store := NewExecutionStore(t.TempDir())
+	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{
+		"action-1": {
+			{result: ProviderResult{Outcome: OutcomeAuthenticationRequired}},
+			{result: ProviderResult{Outcome: OutcomeSucceeded}},
+		},
+	}}
+	runner := durableTestRunner(t, store, executor, RunPolicy{MaxAttemptsPerAction: 2}, applyTestTime())
+	execution, err := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation)
+	if err != nil || execution.Resumability != ResumabilityWaitingProvider || len(executor.calls) != 1 {
+		t.Fatalf("execution=%#v err=%v calls=%v", execution, err, executor.calls)
+	}
+	dir, err := store.executionDir(execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, summaryFileName), []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := store.List()
+	if err != nil || len(summaries) != 1 || summaries[0].Resumability != ResumabilityCorrupt || summaries[0].Fingerprint == "" {
+		t.Fatalf("summaries=%#v err=%v", summaries, err)
+	}
+	summary := summaries[0]
+
+	activeWriter, _, err := store.OpenWriter(execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(summary); !errors.Is(err, ErrExecutionLocked) {
+		_ = activeWriter.Close()
+		t.Fatalf("Delete with active writer error=%v", err)
+	}
+	if _, err := os.Stat(store.identityGuardPath(summary.Fingerprint)); !errors.Is(err, os.ErrNotExist) {
+		_ = activeWriter.Close()
+		t.Fatalf("blocked deletion guard error=%v", err)
+	}
+	if err := activeWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeRemove := make(chan struct{})
+	allowRemove := make(chan struct{})
+	beforeParentSync := make(chan struct{})
+	allowParentSync := make(chan struct{})
+	deleteDone := make(chan error, 1)
+	store.hooks.beforeDeleteRemove = func() error {
+		close(beforeRemove)
+		<-allowRemove
+		return nil
+	}
+	store.hooks.beforeDirectorySync = func(path string) error {
+		if path == store.root {
+			close(beforeParentSync)
+			<-allowParentSync
+		}
+		return nil
+	}
+	go func() {
+		deleteDone <- store.Delete(summary)
+	}()
+	select {
+	case <-beforeRemove:
+	case err := <-deleteDone:
+		t.Fatalf("Delete finished before removal gate: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Delete did not reach removal gate")
+	}
+
+	assertBlocked := func(phase string) {
+		t.Helper()
+		if writer, _, err := store.OpenWriter(execution.ID); !errors.Is(err, ErrExecutionLocked) {
+			if writer != nil {
+				_ = writer.Close()
+			}
+			t.Errorf("OpenWriter %s error=%v", phase, err)
+		}
+		if _, err := runner.Resume(context.Background(), execution.ID); !errors.Is(err, ErrExecutionLocked) {
+			t.Errorf("Resume %s error=%v", phase, err)
+		}
+		if len(executor.calls) != 1 {
+			t.Errorf("executor calls %s=%v", phase, executor.calls)
+		}
+	}
+	assertBlocked("before removal")
+	close(allowRemove)
+	select {
+	case <-beforeParentSync:
+	case err := <-deleteDone:
+		t.Fatalf("Delete finished before parent sync gate: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Delete did not reach parent sync gate")
+	}
+	assertBlocked("during parent sync")
+	close(allowParentSync)
+	if err := <-deleteDone; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted directory error=%v", err)
+	}
+	guard, err := os.ReadFile(store.identityGuardPath(summary.Fingerprint))
+	if err != nil || string(guard) != identityGuardMarker {
+		t.Fatalf("identity guard=%q err=%v", guard, err)
+	}
+	if _, err := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation); !errors.Is(err, ErrExecutionExists) || len(executor.calls) != 1 {
+		t.Fatalf("guarded Start err=%v calls=%v", err, executor.calls)
+	}
+}
+
 func TestWorkspaceWipeCoordinatesWithDurableWriters(t *testing.T) {
 	root := t.TempDir()
 	w, err := workspace.Open(filepath.Join(root, "app"))

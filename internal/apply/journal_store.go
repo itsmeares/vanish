@@ -26,6 +26,7 @@ const (
 	journalFileName      = "journal.jsonl"
 	summaryFileName      = "summary.json"
 	writerLockFileName   = "writer.lock"
+	sessionLockSuffix    = ".session.lock"
 	identityGuardMarker  = "used\n"
 )
 
@@ -35,6 +36,7 @@ type executionStoreHooks struct {
 	beforeSummary       func() error
 	beforeDirectorySync func(string) error
 	beforeJournalRepair func() error
+	beforeDeleteRemove  func() error
 	onAppend            func(JournalEvent)
 }
 
@@ -195,6 +197,19 @@ func (store *ExecutionStore) OpenWriter(id ExecutionID) (*ExecutionWriter, Execu
 	if err != nil {
 		return nil, ExecutionView{}, err
 	}
+	if err := store.validateRoot(); err != nil {
+		return nil, ExecutionView{}, err
+	}
+	sessionLock, err := store.acquireSessionLock(executionStoreKey(id))
+	if err != nil {
+		return nil, ExecutionView{}, err
+	}
+	sessionLockHeld := true
+	defer func() {
+		if sessionLockHeld {
+			_ = sessionLock.Close()
+		}
+	}()
 	if err := rejectSymlink(dir); err != nil {
 		return nil, ExecutionView{}, err
 	}
@@ -232,6 +247,11 @@ func (store *ExecutionStore) OpenWriter(id ExecutionID) (*ExecutionWriter, Execu
 	writer.manifest = view.Manifest
 	writer.nextSequence = view.LastSequence + 1
 	writer.lastTimestamp = view.UpdatedAt.UTC()
+	if err := sessionLock.Close(); err != nil {
+		writer.Close()
+		return nil, ExecutionView{}, err
+	}
+	sessionLockHeld = false
 	handoffWorkspaceUse = true
 	return writer, view, nil
 }
@@ -616,6 +636,16 @@ func (store *ExecutionStore) Delete(summary ExecutionSummary) error {
 	if err := store.validateRoot(); err != nil {
 		return err
 	}
+	sessionLock, err := store.acquireSessionLock(key)
+	if err != nil {
+		return err
+	}
+	sessionLockHeld := true
+	defer func() {
+		if sessionLockHeld {
+			_ = sessionLock.Close()
+		}
+	}()
 	if err := rejectSymlink(dir); err != nil {
 		return err
 	}
@@ -682,17 +712,29 @@ func (store *ExecutionStore) Delete(summary ExecutionSummary) error {
 			return err
 		}
 	}
-	// Windows cannot remove a directory while its lock file is open. The
-	// terminal-state and identity-guard checks above occur under their locks;
-	// close the writer lock immediately before deleting the inactive directory.
+	// Windows cannot remove a directory while its writer lock file is open. The
+	// stable session lock lives outside the directory and remains held through
+	// removal and parent sync, so no new writer can enter this close/remove gap.
 	if err := lock.Close(); err != nil {
 		return err
 	}
 	writerLockHeld = false
+	if store.hooks.beforeDeleteRemove != nil {
+		if err := store.hooks.beforeDeleteRemove(); err != nil {
+			return err
+		}
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	return syncDirectory(store.root)
+	if err := store.syncDirectory(store.root); err != nil {
+		return err
+	}
+	if err := sessionLock.Close(); err != nil {
+		return err
+	}
+	sessionLockHeld = false
+	return nil
 }
 
 func (store *ExecutionStore) acquireWorkspaceUse() (*localdata.Lease, error) {
@@ -799,6 +841,41 @@ func (store *ExecutionStore) identityLockPath(fingerprint string) string {
 
 func (store *ExecutionStore) identityGuardPath(fingerprint string) string {
 	return filepath.Join(store.root, identityLocksDirName, fingerprint+".used")
+}
+
+func (store *ExecutionStore) sessionLockPath(key string) string {
+	return filepath.Join(store.root, identityLocksDirName, key+sessionLockSuffix)
+}
+
+func (store *ExecutionStore) acquireSessionLock(key string) (*flock.Flock, error) {
+	if store == nil {
+		return nil, ErrExecutionStoreUnavailable
+	}
+	if !validStoreKey(key) {
+		return nil, ErrExecutionCorrupt
+	}
+	lockDir := filepath.Join(store.root, identityLocksDirName)
+	if err := rejectSymlink(lockDir); err != nil {
+		return nil, err
+	}
+	path := store.sessionLockPath(key)
+	if err := ensureWithin(store.root, path); err != nil {
+		return nil, err
+	}
+	if err := rejectExistingSymlink(path); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path, flock.SetPermissions(0o600))
+	locked, err := lock.TryLock()
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	if !locked {
+		_ = lock.Close()
+		return nil, ErrExecutionLocked
+	}
+	return lock, nil
 }
 
 func executionStoreKey(id ExecutionID) string {

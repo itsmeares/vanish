@@ -88,10 +88,13 @@ deadlines and authentication prerequisites are rechecked before new executor
 calls. Completed, failed, cancelled, and abandoned terminal executions cannot be
 resumed. Vanish never resumes automatically during startup.
 
-One writer lock protects each execution across processes. A separate identity
-lock serializes creation of matching manifests, and deletion retains a durable
-fingerprint guard. Corrupt deletion uses a validated retained summary when the
-manifest is unreadable and fails closed if no trustworthy fingerprint remains.
+One writer lock protects each execution across processes. A stable session lock
+outside the removable execution directory excludes new writer acquisition for
+the full deletion sequence, including validation, guard creation, removal, and
+parent sync. A separate identity lock serializes creation of matching manifests,
+and deletion retains a durable fingerprint guard. Corrupt deletion uses a
+validated retained summary when the manifest is unreadable and fails closed if
+no trustworthy fingerprint remains.
 A shared workspace-use lease blocks local-data wipe while any
 durable writer is active; wipe holds the exclusive lease so no writer can start
 during removal. Locked executions remain readable in Local Data but Resume is
