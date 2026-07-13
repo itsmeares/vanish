@@ -146,9 +146,9 @@ func TestJournalRepairFailurePreventsExecutorCalls(t *testing.T) {
 func TestFirstJournalCreationSyncsExecutionDirectory(t *testing.T) {
 	t.Run("sync once", func(t *testing.T) {
 		store := NewExecutionStore(t.TempDir())
-		syncCalls := 0
-		store.hooks.beforeDirectorySync = func(string) error {
-			syncCalls++
+		var syncPaths []string
+		store.hooks.beforeDirectorySync = func(path string) error {
+			syncPaths = append(syncPaths, path)
 			return nil
 		}
 		id, err := NewExecutionID()
@@ -163,21 +163,30 @@ func TestFirstJournalCreationSyncsExecutionDirectory(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if syncCalls != 1 {
-			t.Fatalf("first creation sync calls=%d", syncCalls)
+		defer writer.Close()
+		executionDir, err := store.executionDir(manifest.ExecutionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(syncPaths) != 2 || syncPaths[0] != store.root || syncPaths[1] != executionDir {
+			t.Fatalf("creation sync paths=%v", syncPaths)
 		}
 		if _, err := writer.Append(JournalEvent{Timestamp: applyTestTime(), Kind: JournalExecutionResumed}, summary); err != nil {
 			t.Fatal(err)
 		}
-		if syncCalls != 1 {
-			t.Fatalf("ordinary append synced directory: calls=%d", syncCalls)
+		if len(syncPaths) != 2 {
+			t.Fatalf("ordinary append synced directory: paths=%v", syncPaths)
 		}
-		_ = writer.Close()
 	})
 
 	t.Run("sync failure stops before executor", func(t *testing.T) {
 		store := NewExecutionStore(t.TempDir())
-		store.hooks.beforeDirectorySync = func(string) error { return errors.New("synthetic directory sync failure") }
+		store.hooks.beforeDirectorySync = func(path string) error {
+			if path == store.root {
+				return nil
+			}
+			return errors.New("synthetic directory sync failure")
+		}
 		executor := &fakeExecutor{}
 		runner := durableTestRunner(t, store, executor, DefaultRunPolicy(), applyTestTime())
 		if _, err := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation); err == nil || len(executor.calls) != 0 {

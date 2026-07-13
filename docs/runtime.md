@@ -58,19 +58,23 @@ Durability ordering is part of the safety contract:
 4. Terminal, halt, stop, resume, and abandon transitions are appended in order.
 
 Manifest and summary replacement use a synced temporary file and atomic rename.
+New execution directories are synced into the execution-store directory.
 Journal appends are synced before returning. When `journal.jsonl` is first
-created, its execution directory is also synced where supported.
+created, its execution directory is also synced where supported. Appends clamp
+wall-clock rollback to the writer's last logical timestamp.
 
 ## Replay and Safe Resume
 
 Replay validates the manifest, identity fingerprint, event schema, sequence,
-timestamps, route, action order, attempt numbers, outcomes, statuses, and
+timestamp presence, route, action order, attempt numbers, outcomes, statuses, and
 terminal transitions. It builds an action index once, so validation is linear in
 the number of actions plus journal events. A malformed newline-terminated record
 is corruption. Read-only replay may ignore one unterminated final record with a
 visible recovery warning. Before appending, a locked writer truncates only that
 partial tail to the last complete record boundary, syncs the repair, and replays
-the journal. Terminated and interior corruption is never repaired.
+the journal. Terminated and interior corruption is never repaired. Sequence
+remains authoritative when ordinary wall-clock rollback makes a later record
+carry an earlier timestamp.
 
 If an attempt-start record exists without a durable result, the action's outcome
 is unknown. Vanish never retries that action and never infers success or failure.
@@ -85,8 +89,11 @@ calls. Completed, failed, cancelled, and abandoned terminal executions cannot be
 resumed. Vanish never resumes automatically during startup.
 
 One writer lock protects each execution across processes. A separate identity
-lock serializes creation of matching manifests. Locked executions remain
-readable in Local Data but Resume is disabled until the other process exits.
+lock serializes creation of matching manifests, and deletion retains a durable
+fingerprint guard. A shared workspace-use lease blocks local-data wipe while any
+durable writer is active; wipe holds the exclusive lease so no writer can start
+during removal. Locked executions remain readable in Local Data but Resume is
+disabled until the other process exits.
 
 ## Safety and Deferred Work
 

@@ -105,6 +105,7 @@ type AttemptRecord struct {
 	StartedAt time.Time
 	ResultAt  time.Time
 	Result    ActionResult
+	sequence  int64
 }
 
 type UnresolvedAttempt struct {

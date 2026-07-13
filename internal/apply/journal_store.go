@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/itsmeares/vanish/internal/localdata"
 )
 
 const (
@@ -25,6 +26,7 @@ const (
 	journalFileName      = "journal.jsonl"
 	summaryFileName      = "summary.json"
 	writerLockFileName   = "writer.lock"
+	identityGuardMarker  = "used\n"
 )
 
 type executionStoreHooks struct {
@@ -37,16 +39,19 @@ type executionStoreHooks struct {
 }
 
 type ExecutionStore struct {
-	root  string
-	hooks executionStoreHooks
+	root         string
+	workspaceDir string
+	hooks        executionStoreHooks
 }
 
 type ExecutionWriter struct {
-	store        *ExecutionStore
-	manifest     ExecutionManifest
-	lock         *flock.Flock
-	nextSequence int64
-	closed       bool
+	store         *ExecutionStore
+	manifest      ExecutionManifest
+	lock          *flock.Flock
+	workspaceUse  *localdata.Lease
+	nextSequence  int64
+	lastTimestamp time.Time
+	closed        bool
 }
 
 func NewExecutionStore(workspaceDir string) *ExecutionStore {
@@ -54,7 +59,7 @@ func NewExecutionStore(workspaceDir string) *ExecutionStore {
 	if workspaceDir == "" || workspaceDir == "." {
 		return nil
 	}
-	return &ExecutionStore{root: filepath.Join(workspaceDir, executionsDirName)}
+	return &ExecutionStore{root: filepath.Join(workspaceDir, executionsDirName), workspaceDir: workspaceDir}
 }
 
 func (store *ExecutionStore) Root() string {
@@ -71,6 +76,16 @@ func (store *ExecutionStore) Create(manifest ExecutionManifest, now time.Time) (
 	if err := validateExecutionManifest(manifest); err != nil {
 		return nil, ExecutionSummary{}, err
 	}
+	workspaceUse, err := store.acquireWorkspaceUse()
+	if err != nil {
+		return nil, ExecutionSummary{}, err
+	}
+	handoffWorkspaceUse := false
+	defer func() {
+		if !handoffWorkspaceUse {
+			_ = workspaceUse.Close()
+		}
+	}()
 	if err := store.ensureRoots(); err != nil {
 		return nil, ExecutionSummary{}, err
 	}
@@ -95,6 +110,13 @@ func (store *ExecutionStore) Create(manifest ExecutionManifest, now time.Time) (
 	} else if ok {
 		return nil, existing, ExistingExecutionError{Summary: existing}
 	}
+	guarded, err := identityGuardPresent(store.identityGuardPath(manifest.Fingerprint))
+	if err != nil {
+		return nil, ExecutionSummary{}, err
+	}
+	if guarded {
+		return nil, ExecutionSummary{}, ErrExecutionExists
+	}
 
 	dir, err := store.executionDir(manifest.ExecutionID)
 	if err != nil {
@@ -106,6 +128,11 @@ func (store *ExecutionStore) Create(manifest ExecutionManifest, now time.Time) (
 		return nil, ExecutionSummary{}, err
 	}
 	if err := ensurePrivateDir(dir); err != nil {
+		return nil, ExecutionSummary{}, err
+	}
+	if err := store.syncDirectory(store.root); err != nil {
+		_ = os.Remove(dir)
+		_ = syncDirectory(store.root)
 		return nil, ExecutionSummary{}, err
 	}
 	writerLockPath := filepath.Join(dir, writerLockFileName)
@@ -121,7 +148,10 @@ func (store *ExecutionStore) Create(manifest ExecutionManifest, now time.Time) (
 		}
 		return nil, ExecutionSummary{}, ErrExecutionLocked
 	}
-	writer := &ExecutionWriter{store: store, manifest: manifest, lock: writerLock, nextSequence: 1}
+	writer := &ExecutionWriter{
+		store: store, manifest: manifest, lock: writerLock, workspaceUse: workspaceUse,
+		nextSequence: 1, lastTimestamp: manifest.CreatedAt.UTC(),
+	}
 	if store.hooks.beforeManifest != nil {
 		if err := store.hooks.beforeManifest(); err != nil {
 			writer.Close()
@@ -143,6 +173,7 @@ func (store *ExecutionStore) Create(manifest ExecutionManifest, now time.Time) (
 		return nil, ExecutionSummary{}, err
 	}
 	summary.LastSequence = committed.Sequence
+	handoffWorkspaceUse = true
 	return writer, summary, nil
 }
 
@@ -150,6 +181,16 @@ func (store *ExecutionStore) OpenWriter(id ExecutionID) (*ExecutionWriter, Execu
 	if store == nil {
 		return nil, ExecutionView{}, ErrExecutionStoreUnavailable
 	}
+	workspaceUse, err := store.acquireWorkspaceUse()
+	if err != nil {
+		return nil, ExecutionView{}, err
+	}
+	handoffWorkspaceUse := false
+	defer func() {
+		if !handoffWorkspaceUse {
+			_ = workspaceUse.Close()
+		}
+	}()
 	dir, err := store.executionDir(id)
 	if err != nil {
 		return nil, ExecutionView{}, err
@@ -171,7 +212,7 @@ func (store *ExecutionStore) OpenWriter(id ExecutionID) (*ExecutionWriter, Execu
 		_ = writerLock.Close()
 		return nil, ExecutionView{}, ErrExecutionLocked
 	}
-	writer := &ExecutionWriter{store: store, lock: writerLock}
+	writer := &ExecutionWriter{store: store, lock: writerLock, workspaceUse: workspaceUse}
 	view, err := store.Replay(id)
 	if err != nil {
 		writer.Close()
@@ -190,6 +231,8 @@ func (store *ExecutionStore) OpenWriter(id ExecutionID) (*ExecutionWriter, Execu
 	}
 	writer.manifest = view.Manifest
 	writer.nextSequence = view.LastSequence + 1
+	writer.lastTimestamp = view.UpdatedAt.UTC()
+	handoffWorkspaceUse = true
 	return writer, view, nil
 }
 
@@ -209,6 +252,9 @@ func (writer *ExecutionWriter) Append(event JournalEvent, summary ExecutionSumma
 		event.Timestamp = time.Now().UTC()
 	} else {
 		event.Timestamp = event.Timestamp.UTC()
+	}
+	if !writer.lastTimestamp.IsZero() && event.Timestamp.Before(writer.lastTimestamp) {
+		event.Timestamp = writer.lastTimestamp
 	}
 	dir, err := writer.store.executionDir(writer.manifest.ExecutionID)
 	if err != nil {
@@ -264,6 +310,7 @@ func (writer *ExecutionWriter) Append(event JournalEvent, summary ExecutionSumma
 		}
 	}
 	writer.nextSequence++
+	writer.lastTimestamp = event.Timestamp
 	if writer.store.hooks.onAppend != nil {
 		writer.store.hooks.onAppend(event)
 	}
@@ -352,10 +399,20 @@ func (writer *ExecutionWriter) Close() error {
 		return nil
 	}
 	writer.closed = true
-	if writer.lock == nil {
-		return nil
+	var lockErr error
+	if writer.lock != nil {
+		lockErr = writer.lock.Close()
+		writer.lock = nil
 	}
-	return writer.lock.Close()
+	var workspaceErr error
+	if writer.workspaceUse != nil {
+		workspaceErr = writer.workspaceUse.Close()
+		writer.workspaceUse = nil
+	}
+	if lockErr != nil {
+		return lockErr
+	}
+	return workspaceErr
 }
 
 func (store *ExecutionStore) List() ([]ExecutionSummary, error) {
@@ -409,23 +466,7 @@ func (store *ExecutionStore) List() ([]ExecutionSummary, error) {
 		if info, statErr := os.Stat(journalPath); statErr != nil || info.Size() != summary.JournalBytes {
 			summary.RecoveryWarning = "Execution needs recovery before its state can be confirmed."
 		}
-		writerLockPath := filepath.Join(dir, writerLockFileName)
-		if err := rejectExistingSymlink(writerLockPath); err != nil {
-			summary.Resumability = ResumabilityCorrupt
-			summary.BlockReason = "Execution data is unreadable."
-			summaries = append(summaries, summary)
-			continue
-		}
-		lock := flock.New(writerLockPath, flock.SetPermissions(0o600))
-		locked, lockErr := lock.TryLock()
-		if lockErr == nil && locked {
-			_ = lock.Close()
-		} else if lockErr == nil {
-			_ = lock.Close()
-			summary.Resumability = ResumabilityLocked
-			summary.BlockReason = "Execution is active in another Vanish process."
-		} else {
-			_ = lock.Close()
+		if err := classifyExecutionWriterLock(dir, &summary); err != nil {
 			summary.Resumability = ResumabilityCorrupt
 			summary.BlockReason = "Execution data is unreadable."
 		}
@@ -474,9 +515,32 @@ func (store *ExecutionStore) FindByFingerprint(fingerprint string) (ExecutionSum
 			match.Resumability = ResumabilityCorrupt
 			match.BlockReason = "Execution data is unreadable."
 		}
+		if err := classifyExecutionWriterLock(dir, &match); err != nil {
+			return ExecutionSummary{}, false, ErrExecutionCorrupt
+		}
 		found = true
 	}
 	return match, found, nil
+}
+
+func classifyExecutionWriterLock(dir string, summary *ExecutionSummary) error {
+	writerLockPath := filepath.Join(dir, writerLockFileName)
+	if err := rejectExistingSymlink(writerLockPath); err != nil {
+		return err
+	}
+	lock := flock.New(writerLockPath, flock.SetPermissions(0o600))
+	locked, err := lock.TryLock()
+	if err != nil {
+		_ = lock.Close()
+		return err
+	}
+	if locked {
+		return lock.Close()
+	}
+	_ = lock.Close()
+	summary.Resumability = ResumabilityLocked
+	summary.BlockReason = "Execution is active in another Vanish process."
+	return nil
 }
 
 func (store *ExecutionStore) RefreshSummary(view ExecutionView) error {
@@ -536,6 +600,11 @@ func (store *ExecutionStore) Delete(summary ExecutionSummary) error {
 	if store == nil {
 		return ErrExecutionStoreUnavailable
 	}
+	workspaceUse, err := store.acquireWorkspaceUse()
+	if err != nil {
+		return err
+	}
+	defer workspaceUse.Close()
 	key := summary.storeKey
 	if key == "" && summary.ExecutionID != "" {
 		key = executionStoreKey(summary.ExecutionID)
@@ -564,31 +633,122 @@ func (store *ExecutionStore) Delete(summary ExecutionSummary) error {
 		_ = lock.Close()
 		return ErrExecutionLocked
 	}
+	writerLockHeld := true
+	defer func() {
+		if writerLockHeld {
+			_ = lock.Close()
+		}
+	}()
+	fingerprint := ""
 	if summary.Resumability != ResumabilityCorrupt && summary.ExecutionID != "" {
 		view, replayErr := store.Replay(summary.ExecutionID)
 		if replayErr == nil && view.Resumability != ResumabilityTerminal {
-			_ = lock.Close()
 			return ErrExecutionMustAbandon
 		}
 		if replayErr != nil {
-			_ = lock.Close()
 			return replayErr
+		}
+		fingerprint = view.Manifest.Fingerprint
+	} else if manifest, manifestErr := loadExecutionManifest(filepath.Join(dir, manifestFileName)); manifestErr == nil && executionStoreKey(manifest.ExecutionID) == key {
+		fingerprint = manifest.Fingerprint
+	}
+	var identityLock *flock.Flock
+	if fingerprint != "" {
+		identityLockPath := store.identityLockPath(fingerprint)
+		if err := rejectExistingSymlink(identityLockPath); err != nil {
+			return err
+		}
+		identityLock = flock.New(identityLockPath, flock.SetPermissions(0o600))
+		identityLocked, lockErr := identityLock.TryLock()
+		if lockErr != nil {
+			_ = identityLock.Close()
+			return lockErr
+		}
+		if !identityLocked {
+			_ = identityLock.Close()
+			return ErrExecutionLocked
+		}
+		defer identityLock.Close()
+		if err := store.persistIdentityGuard(store.identityGuardPath(fingerprint)); err != nil {
+			return err
 		}
 	}
 	// Windows cannot remove a directory while its lock file is open. The
-	// terminal-state check above occurs under the exclusive writer lock; close
-	// it immediately before deleting the now-inactive directory.
+	// terminal-state and identity-guard checks above occur under their locks;
+	// close the writer lock immediately before deleting the inactive directory.
 	if err := lock.Close(); err != nil {
 		return err
 	}
+	writerLockHeld = false
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	// Identity lock files are intentionally retained. Reusing the same stable
-	// lock path serializes any later recreation of this execution identity and
-	// avoids unlinking a lock another process may already have opened. A full
-	// local-data wipe removes the entire executions root, including these files.
 	return syncDirectory(store.root)
+}
+
+func (store *ExecutionStore) acquireWorkspaceUse() (*localdata.Lease, error) {
+	lease, err := localdata.TryUse(store.workspaceDir)
+	if errors.Is(err, localdata.ErrActive) {
+		return nil, ErrExecutionLocked
+	}
+	return lease, err
+}
+
+func identityGuardPresent(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, ErrExecutionCorrupt
+	}
+	if info.Size() == 0 {
+		return false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	if string(data) != identityGuardMarker {
+		return false, ErrExecutionCorrupt
+	}
+	return true, nil
+}
+
+func (store *ExecutionStore) persistIdentityGuard(path string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return ErrExecutionCorrupt
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	written, writeErr := file.Write([]byte(identityGuardMarker))
+	if writeErr == nil && written != len(identityGuardMarker) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+	return store.syncDirectory(filepath.Dir(path))
 }
 
 func (store *ExecutionStore) ensureRoots() error {
@@ -626,6 +786,10 @@ func (store *ExecutionStore) executionDir(id ExecutionID) (string, error) {
 
 func (store *ExecutionStore) identityLockPath(fingerprint string) string {
 	return filepath.Join(store.root, identityLocksDirName, fingerprint+".lock")
+}
+
+func (store *ExecutionStore) identityGuardPath(fingerprint string) string {
+	return filepath.Join(store.root, identityLocksDirName, fingerprint+".used")
 }
 
 func executionStoreKey(id ExecutionID) string {

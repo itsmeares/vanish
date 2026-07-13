@@ -87,7 +87,7 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 				return ExecutionView{}, ErrExecutionCorrupt
 			}
 			event, decodeErr := decodeJournalEvent(line)
-			if decodeErr != nil || event.ExecutionID != manifest.ExecutionID || event.Fingerprint != manifest.Fingerprint || event.Sequence != expectedSequence || event.Timestamp.IsZero() || (expectedSequence > 1 && event.Timestamp.Before(view.UpdatedAt)) {
+			if decodeErr != nil || event.ExecutionID != manifest.ExecutionID || event.Fingerprint != manifest.Fingerprint || event.Sequence != expectedSequence || event.Timestamp.IsZero() {
 				return ExecutionView{}, ErrExecutionCorrupt
 			}
 			if terminal {
@@ -98,7 +98,9 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			}
 			expectedSequence++
 			view.LastSequence = event.Sequence
-			view.UpdatedAt = event.Timestamp.UTC()
+			if event.Timestamp.After(view.UpdatedAt) {
+				view.UpdatedAt = event.Timestamp.UTC()
+			}
 			lastKind = event.Kind
 			completeAt += int64(len(line) + 1)
 		}
@@ -187,12 +189,6 @@ func applyJournalEvent(
 			if (previous.Outcome == OutcomeRateLimited || previous.Outcome == OutcomeAuthenticationRequired || previous.RetryAfter > 0) && lastKind != JournalExecutionResumed {
 				return ErrExecutionCorrupt
 			}
-			if previous.RetryAfter > 0 {
-				previousHistory := view.AttemptHistory[event.ActionID]
-				if len(previousHistory) == 0 || event.Timestamp.Before(previousHistory[len(previousHistory)-1].ResultAt.Add(previous.RetryAfter)) {
-					return ErrExecutionCorrupt
-				}
-			}
 		}
 		transitionResultCount(&view.Counts, action.Status, domain.ActionStatusRunning)
 		action.Status = domain.ActionStatusRunning
@@ -241,7 +237,11 @@ func applyJournalEvent(
 		index := actionIndex[event.ActionID]
 		transitionResultCount(&view.Counts, view.Plan.Actions[index].Status, event.Status)
 		view.Plan.Actions[index].Status = event.Status
-		view.AttemptHistory[event.ActionID] = append(view.AttemptHistory[event.ActionID], AttemptRecord{StartedAt: startedEvent.Timestamp, ResultAt: event.Timestamp, Result: result})
+		resultAt := event.Timestamp.UTC()
+		if resultAt.Before(view.UpdatedAt) {
+			resultAt = view.UpdatedAt
+		}
+		view.AttemptHistory[event.ActionID] = append(view.AttemptHistory[event.ActionID], AttemptRecord{StartedAt: startedEvent.Timestamp, ResultAt: resultAt, Result: result, sequence: event.Sequence})
 		lastResult[event.ActionID] = result
 		*lastOutcome = result.Outcome
 		*inFlight = nil
@@ -323,16 +323,18 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 	}
 	var gatedResult ActionResult
 	var gatedAt time.Time
+	var gatedSequence int64
 	for actionID, result := range lastResult {
 		if !safeResumeOutcome(result.Outcome) {
 			continue
 		}
 		history := view.AttemptHistory[actionID]
-		if len(history) == 0 || (!gatedAt.IsZero() && !history[len(history)-1].ResultAt.After(gatedAt)) {
+		if len(history) == 0 || history[len(history)-1].sequence <= gatedSequence {
 			continue
 		}
 		gatedResult = result
 		gatedAt = history[len(history)-1].ResultAt
+		gatedSequence = history[len(history)-1].sequence
 	}
 	if gatedResult.Outcome == OutcomeAuthenticationRequired {
 		view.Resumability = ResumabilityWaitingProvider

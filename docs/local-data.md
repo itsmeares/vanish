@@ -39,8 +39,9 @@ the plan or user input. Its files are:
 - `summary.json`: a derived cache used for fast Local Data listing.
 - `writer.lock`: the cross-process exclusive-writer lock.
 
-Creation identity locks live in `executions/.identity-locks/`. On POSIX systems,
-Vanish creates execution directories with `0700` permissions and files with
+Creation identity locks and retained fingerprint guards live in
+`executions/.identity-locks/`. On POSIX systems, Vanish creates execution
+directories with `0700` permissions and files with
 `0600` permissions. It rejects symlinked execution roots, session directories,
 journals, manifests, summaries, and lock files rather than following them.
 
@@ -49,6 +50,8 @@ a retry time, waiting for provider readiness, resolution required, terminal,
 corrupt, or active in another process. Resume is always explicit. An attempt
 whose result was not durably recorded can only be abandoned, never retried.
 Terminal and corrupt entries can be explicitly deleted from this screen.
+Deleting a terminal execution retains its identity guard, so the same
+plan/route/policy fingerprint cannot silently start again after journal removal.
 
 ## What Vanish Does Not Store
 
@@ -75,7 +78,9 @@ connection metadata may remain in local configuration.
 Local-data wipe clears Vanish-managed configuration, recent import/plan history,
 audit records, manual-cleanup progress, durable execution manifests, journals,
 summaries, locks, and any confirmed local-file fallback secrets from the active
-app directory. It does not delete user-owned export ZIPs or plan JSON files
+app directory. Wipe fails safely while a durable execution writer is active and
+prevents new writers for the duration of the wipe. It does not delete user-owned
+export ZIPs or plan JSON files
 outside that directory. Operating-system credential-store secrets are outside
 the app directory and are not removed by local-data wipe.
 

@@ -50,6 +50,9 @@ func (runner Runner) Start(ctx context.Context, plan domain.CleanupPlan, mode Ex
 			execution.ID = existing.Summary.ExecutionID
 			execution.Resumability = existing.Summary.Resumability
 			execution.BlockReason = RuntimeErrorMessage(err)
+			if existing.Summary.Resumability == ResumabilityLocked && existing.Summary.BlockReason != "" {
+				execution.BlockReason = existing.Summary.BlockReason
+			}
 		}
 		return execution, err
 	}
