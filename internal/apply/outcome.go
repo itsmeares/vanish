@@ -105,12 +105,12 @@ func (policy RunPolicy) normalized() RunPolicy {
 }
 
 type Executor interface {
-	Execute(context.Context, domain.CleanupAction) (ProviderResult, error)
+	Execute(context.Context, ActionRequest) (ProviderResult, error)
 }
 
 type NoopExecutor struct{}
 
-func (NoopExecutor) Execute(ctx context.Context, _ domain.CleanupAction) (ProviderResult, error) {
+func (NoopExecutor) Execute(ctx context.Context, _ ActionRequest) (ProviderResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ProviderResult{}, err
 	}

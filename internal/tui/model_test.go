@@ -94,13 +94,13 @@ type blockingApplyTestExecutor struct {
 	once    sync.Once
 }
 
-func (executor *blockingApplyTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+func (executor *blockingApplyTestExecutor) Execute(context.Context, apply.ActionRequest) (apply.ProviderResult, error) {
 	executor.once.Do(func() { close(executor.entered) })
 	<-executor.release
 	return apply.ProviderResult{Outcome: apply.OutcomeSucceeded}, nil
 }
 
-func (executor unsafeMessageTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+func (executor unsafeMessageTestExecutor) Execute(context.Context, apply.ActionRequest) (apply.ProviderResult, error) {
 	return apply.ProviderResult{
 		Outcome:      apply.OutcomePermanentFailure,
 		Message:      apply.ProviderMessage(executor.message),

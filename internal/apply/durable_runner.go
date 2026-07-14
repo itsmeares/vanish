@@ -201,7 +201,10 @@ func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter
 				}
 				return runner.finishDurable(writer, &execution, JournalExecutionCancelled, ExecutionStateCancelled, "")
 			}
-			providerResult, executeErr := executor.Execute(ctx, *action)
+			providerResult, executeErr := executor.Execute(ctx, ActionRequest{
+				Action:         *action,
+				IdempotencyKey: actionIdempotencyKey(writer.manifest.ExecutionID, action.ID),
+			})
 			result := normalizeProviderResult(ctx, *action, attempt, providerResult, executeErr)
 			if err := runner.persistDurableResult(writer, &execution, action, result, policy); err != nil {
 				_ = started

@@ -227,6 +227,12 @@ func (runner Runner) runInMemory(ctx context.Context, plan domain.CleanupPlan, m
 		Preview: preview,
 		State:   ExecutionStatePending,
 	}
+	executionID, err := NewExecutionID()
+	if err != nil {
+		execution.State = ExecutionStateFailed
+		return execution
+	}
+	execution.ID = executionID
 	if !preview.CanApply {
 		execution.State = ExecutionStateFailed
 		execution.Counts = CountsForPlan(plan)
@@ -285,7 +291,10 @@ actionLoop:
 				break actionLoop
 			}
 			action.Status = domain.ActionStatusRunning
-			providerResult, executeErr := executor.Execute(ctx, *action)
+			providerResult, executeErr := executor.Execute(ctx, ActionRequest{
+				Action:         *action,
+				IdempotencyKey: actionIdempotencyKey(execution.ID, action.ID),
+			})
 			result := normalizeProviderResult(ctx, *action, attempt, providerResult, executeErr)
 			action.Status = result.Status
 			execution.Results = append(execution.Results, result)
