@@ -41,6 +41,12 @@ func TestBuiltInSimulationProvidersPreserveNoopPlans(t *testing.T) {
 			t.Fatalf("Reddit event used wrong executor: %#v", event)
 		}
 	}
+	for _, platform := range []domain.PlatformName{domain.PlatformInstagram, domain.PlatformReddit} {
+		provider, resolveErr := registry.Resolve(platform, apply.ExecutionModeSimulation)
+		if resolveErr != nil || provider.Reconciler() != nil {
+			t.Fatalf("production simulation provider exposes reconciliation: platform=%s err=%v", platform, resolveErr)
+		}
+	}
 }
 
 func TestRedditSimulationReadinessUsesOnlyRedditConnection(t *testing.T) {

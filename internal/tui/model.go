@@ -255,7 +255,8 @@ var applyResultMenuItems = []string{
 }
 
 const (
-	executionActionResume = iota
+	executionActionReconcile = iota
+	executionActionResume
 	executionActionAbandon
 	executionActionDelete
 	executionActionBack
@@ -434,6 +435,7 @@ type Model struct {
 	executionConfirmCursor int
 	executionError         string
 	applyResumeReturn      bool
+	reconciliationBusy     bool
 	manualSession          manualcleanup.Session
 	manualSessionLoaded    bool
 	manualPlanSource       applyPlanSource
@@ -756,6 +758,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case applyRunFinishedMsg:
+		m.reconciliationBusy = false
 		m.applyExecution = msg.execution
 		m.applyPreview = msg.execution.Preview
 		if msg.err != nil && errors.Is(msg.err, apply.ErrExecutionExists) && msg.execution.ID != "" {
@@ -784,8 +787,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case executionLoadedMsg:
+		m.reconciliationBusy = false
 		m.executionSelected = msg.summary
-		m.executionError = ""
+		m.executionError = msg.notice
 		if msg.err != nil {
 			m.executionView = apply.ExecutionView{}
 			m.executionError = apply.RuntimeErrorMessage(msg.err)
@@ -805,6 +809,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case executionRunFinishedMsg:
+		m.reconciliationBusy = false
 		m.applyExecution = msg.execution
 		if msg.err != nil && m.applyExecution.BlockReason == "" {
 			m.applyExecution.BlockReason = apply.RuntimeErrorMessage(msg.err)
@@ -815,7 +820,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.current = screenApplyResult
 		return m, nil
 
+	case executionReconciledMsg:
+		if msg.execution.ID != "" {
+			m.recordApplyExecution(msg.execution)
+		}
+		notice := ""
+		if msg.err != nil {
+			notice = apply.RuntimeErrorMessage(msg.err)
+		}
+		id := msg.execution.ID
+		if id == "" {
+			id = m.executionSelected.ExecutionID
+		}
+		m.refreshExecutions()
+		m.current = screenApplyRunning
+		return m, loadExecutionWithNoticeCmd(m.executionStore(), id, m.executionSelected, notice)
+
 	case executionAbandonedMsg:
+		m.reconciliationBusy = false
 		if msg.err != nil {
 			m.executionError = apply.RuntimeErrorMessage(msg.err)
 			m.current = screenExecutionDetail
@@ -827,6 +849,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadExecutionCmd(m.executionStore(), msg.execution.ID, apply.ExecutionSummary{})
 
 	case executionDeletedMsg:
+		m.reconciliationBusy = false
 		if msg.err != nil {
 			m.executionError = apply.RuntimeErrorMessage(msg.err)
 			m.current = screenExecutionDetail
@@ -1477,6 +1500,7 @@ func (m Model) updateApplyConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch m.applyConfirmCursor {
 		case applyConfirmRun:
 			m.recordApplyConfirmed(m.applyPreview)
+			m.reconciliationBusy = false
 			m.current = screenApplyRunning
 			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.applyRunner()))
 		case applyConfirmCancel:
@@ -1534,6 +1558,7 @@ func (m Model) updateExecutionList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		summary := m.executionSummaries[clampCursor(m.executionCursor, len(m.executionSummaries))]
+		m.reconciliationBusy = false
 		m.current = screenApplyRunning
 		return m, loadExecutionCmd(m.executionStore(), summary.ExecutionID, summary)
 	}
@@ -1561,8 +1586,14 @@ func (m Model) updateExecutionDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch action.ID {
+		case executionActionReconcile:
+			m.executionError = ""
+			m.reconciliationBusy = true
+			m.current = screenApplyRunning
+			return m, tea.Batch(startSpinnerCmd(m.spinner), reconcileExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID))
 		case executionActionResume:
 			m.executionError = ""
+			m.reconciliationBusy = false
 			m.current = screenApplyRunning
 			return m, tea.Batch(startSpinnerCmd(m.spinner), resumeExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID))
 		case executionActionAbandon:
@@ -1593,6 +1624,7 @@ func (m Model) updateExecutionConfirm(msg tea.KeyPressMsg, abandon bool) (tea.Mo
 			return m, nil
 		}
 		m.current = screenApplyRunning
+		m.reconciliationBusy = false
 		if abandon {
 			return m, abandonExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID)
 		}
@@ -2918,6 +2950,13 @@ func (m Model) applyConfirmView() string {
 }
 
 func (m Model) applyRunningView() string {
+	if m.reconciliationBusy {
+		lines := []string{
+			m.styles.body.Render(fmt.Sprintf("%s Reconciling unresolved action...", m.spinner.View())),
+			m.styles.muted.Render("No action is executed during reconciliation."),
+		}
+		return m.centeredPaneFooter("Reconciling", "Unresolved action", lines, m.footer(footerBusy))
+	}
 	lines := []string{
 		m.styles.body.Render(fmt.Sprintf("%s Simulating no-op run...", m.spinner.View())),
 		m.styles.muted.Render("No platform content changes."),
@@ -3700,7 +3739,7 @@ func (m Model) executionActions() []executionAction {
 	case apply.ResumabilityTerminal:
 		return []executionAction{{ID: executionActionDelete, Label: "Delete execution"}, {ID: executionActionBack, Label: "Back"}}
 	case apply.ResumabilityResolution:
-		return []executionAction{{ID: executionActionAbandon, Label: "Abandon"}, {ID: executionActionBack, Label: "Back"}}
+		return []executionAction{{ID: executionActionReconcile, Label: "Reconcile"}, {ID: executionActionAbandon, Label: "Abandon"}, {ID: executionActionBack, Label: "Back"}}
 	}
 	resume := executionAction{ID: executionActionResume, Label: "Resume"}
 	if summary.Resumability == apply.ResumabilityLocked {
@@ -4997,9 +5036,15 @@ type executionLoadedMsg struct {
 	view    apply.ExecutionView
 	summary apply.ExecutionSummary
 	err     error
+	notice  string
 }
 
 type executionRunFinishedMsg struct {
+	execution apply.Execution
+	err       error
+}
+
+type executionReconciledMsg struct {
 	execution apply.Execution
 	err       error
 }
@@ -5176,15 +5221,19 @@ func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, runner apply.R
 }
 
 func loadExecutionCmd(store *apply.ExecutionStore, id apply.ExecutionID, summary apply.ExecutionSummary) tea.Cmd {
+	return loadExecutionWithNoticeCmd(store, id, summary, "")
+}
+
+func loadExecutionWithNoticeCmd(store *apply.ExecutionStore, id apply.ExecutionID, summary apply.ExecutionSummary, notice string) tea.Cmd {
 	return func() tea.Msg {
 		if store == nil {
-			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionStoreUnavailable}
+			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionStoreUnavailable, notice: notice}
 		}
 		if id == "" && summary.Resumability == apply.ResumabilityCorrupt {
-			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionCorrupt}
+			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionCorrupt, notice: notice}
 		}
 		view, err := store.Replay(id)
-		return executionLoadedMsg{view: view, summary: summary, err: err}
+		return executionLoadedMsg{view: view, summary: summary, err: err, notice: notice}
 	}
 }
 
@@ -5192,6 +5241,13 @@ func resumeExecutionCmd(runner apply.Runner, id apply.ExecutionID) tea.Cmd {
 	return func() tea.Msg {
 		execution, err := runner.Resume(context.Background(), id)
 		return executionRunFinishedMsg{execution: execution, err: err}
+	}
+}
+
+func reconcileExecutionCmd(runner apply.Runner, id apply.ExecutionID) tea.Cmd {
+	return func() tea.Msg {
+		execution, err := runner.Reconcile(context.Background(), id)
+		return executionReconciledMsg{execution: execution, err: err}
 	}
 }
 
@@ -6203,6 +6259,12 @@ func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	}
 	if event.HaltReason != "" {
 		fields["halt_reason"] = string(event.HaltReason)
+	}
+	if event.ReconciliationAttempt > 0 {
+		fields["reconciliation_attempt"] = event.ReconciliationAttempt
+	}
+	if event.ReconciliationOutcome != "" && event.ReconciliationOutcome.Known() {
+		fields["reconciliation_outcome"] = string(event.ReconciliationOutcome)
 	}
 	if event.ExecutionID != "" {
 		fields["execution_id"] = string(event.ExecutionID)

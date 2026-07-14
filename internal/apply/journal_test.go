@@ -258,9 +258,9 @@ type orderingExecutor struct {
 	calls []string
 }
 
-func (executor *orderingExecutor) Execute(_ context.Context, action domain.CleanupAction) (ProviderResult, error) {
+func (executor *orderingExecutor) Execute(_ context.Context, request ActionRequest) (ProviderResult, error) {
 	*executor.order = append(*executor.order, "executor")
-	executor.calls = append(executor.calls, action.ID)
+	executor.calls = append(executor.calls, request.Action.ID)
 	return ProviderResult{Outcome: OutcomeSucceeded, Message: ProviderMessageNoopCompleted}, nil
 }
 

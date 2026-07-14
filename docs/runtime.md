@@ -4,7 +4,9 @@ Vanish separates persisted action status from richer runtime outcomes. Cleanup
 plans remain format version 1 and store only the existing statuses: `pending`,
 `running`, `done`, `failed`, `skipped`, `stopped`, and `cancelled`. Outcomes,
 attempts, retry timing, and provider codes exist in runtime events, durable
-execution journals, and safe audit metadata. They never enter cleanup-plan JSON.
+execution journals, and safe audit metadata. Stable idempotency identities and
+reconciliation records are also runtime-owned. They never enter cleanup-plan
+JSON.
 
 ## Outcomes and Statuses
 
@@ -18,6 +20,22 @@ execution journals, and safe audit metadata. They never enter cleanup-plan JSON.
 `retryable_failure` is a provider safety declaration: the provider has decided
 that another attempt cannot repeat an ambiguous mutation. Vanish never infers
 retry safety from an unknown result or a generic error.
+
+## Stable Action Identity
+
+Every durable execution action receives an opaque `ActionIdempotencyKey`. Vanish
+derives it from the durable execution ID and action ID using a versioned,
+length-delimited SHA-256 identity. Retries, restart, replay, and explicit resume
+therefore deliver the same key for the same logical action. Different actions or
+different execution IDs produce different keys. The key is passed through the
+runtime `ActionRequest`; it is not stored in cleanup-plan JSON or audit output.
+
+Providers may expose a read-only reconciler. Its request contains the unresolved
+action, original attempt metadata, and the same idempotency key. Provider
+outcomes are closed: `already_applied`, `not_applied`, `conflicting_state`,
+`unknown`, and `temporarily_unavailable`. Missing reconcilers normalize to
+`unsupported`; provider errors normalize to `temporarily_unavailable`; invalid
+values normalize to `invalid`. Raw provider responses and errors are discarded.
 
 ## Bounded Retry and Halts
 
@@ -43,6 +61,10 @@ cleanup-plan format version `1`. Each execution gets a random ID and an immutabl
 manifest containing a deep copy of the plan, the simulation route, normalized
 run policy, creation time, and a deterministic fingerprint of that identity.
 An identical plan, route, and policy cannot silently create a second execution.
+Reconciliation adds validated event kinds without rewriting manifests or prior
+records. Existing version 1 histories replay with their original meaning; an
+old unresolved attempt remains unresolved until the user explicitly reconciles
+or abandons it.
 
 The append-only JSONL journal is authoritative. Its records use contiguous
 sequence numbers and contain only runtime-owned fields. A derived summary file
@@ -55,7 +77,11 @@ Durability ordering is part of the safety contract:
    available to run.
 2. `action_attempt_started` is appended and synced before each executor call.
 3. `action_result_recorded` is appended and synced before another executor call.
-4. Terminal, halt, stop, resume, and abandon transitions are appended in order.
+4. `action_reconciliation_started` is appended and synced before each provider
+   reconciliation call.
+5. `action_reconciliation_result_recorded` is appended and synced before a
+   resolved action can become resumable or terminal.
+6. Terminal, halt, stop, resume, and abandon transitions are appended in order.
 
 Manifest and summary replacement use a synced temporary file and atomic rename.
 New execution directories are synced into the execution-store directory.
@@ -67,8 +93,9 @@ wall-clock rollback to the writer's last logical timestamp.
 
 Replay validates the manifest, identity fingerprint, event schema, sequence,
 timestamp presence, route, action order, attempt numbers, outcomes, statuses, and
-terminal transitions. It builds an action index once, so validation is linear in
-the number of actions plus journal events. A malformed newline-terminated record
+terminal transitions. Reconciliation event order, attempts, identity, and closed
+outcomes use the same validation. Replay remains linear in the number of actions
+plus journal events. A malformed newline-terminated record
 is corruption. Read-only replay may ignore one unterminated final record with a
 visible recovery warning. Before appending, a locked writer truncates only that
 partial tail to the last complete record boundary, syncs the repair, and replays
@@ -78,9 +105,24 @@ carry an earlier timestamp.
 
 If an attempt-start record exists without a durable result, the action's outcome
 is unknown. Vanish never retries that action and never infers success or failure.
-The execution becomes `resolution_required`; the only forward action is explicit
-abandonment. Abandonment records that the execution ended without making a claim
-about the unknown platform result and does not invoke the provider.
+The execution becomes `resolution_required`. The user may explicitly Reconcile,
+Abandon, or go Back; startup never reconciles automatically.
+
+Reconciliation is available only for `resolution_required` work. Its start and
+closed result are durable journal events. `already_applied` marks the unresolved
+action done without calling the executor. `not_applied` marks the attempt failed
+and may expose the existing explicit Resume flow within the hard action-attempt
+ceiling, including under the default one-automatic-attempt policy;
+reconciliation never invokes Resume automatically. Evidence applies only to the
+exact unresolved attempt and cannot authorize or describe a later attempt.
+Executor results are valid only directly after their durable attempt-start; once
+reconciliation starts for that attempt, a later executor result is corruption.
+Cancellation after the durable reconciliation-start prevents provider entry and
+leaves the lifecycle visibly interrupted. Conflict, unknown, unavailable,
+unsupported, and invalid results remain blocked and cannot trigger executor
+entry. Repeating blocked or interrupted reconciliation reuses the same action
+key and increments only the reconciliation-attempt counter. Abandonment remains
+available and makes no claim about remote state.
 
 Otherwise, explicit resume continues from the first eligible action and never
 repeats a completed action. Attempt numbers continue from the journal. Retry
@@ -112,6 +154,8 @@ errors, target URLs, credentials, tokens, cookies, sessions, authorization
 values, and private content do not enter execution audit metadata.
 
 This runtime still uses no-op simulation executors and enables no platform
-mutation or new network behavior. Idempotency keys and remote-state
-reconciliation remain deferred to PR 15. Runtime simulator and fault scenarios
-remain deferred to PR 16. Real platform execution remains deferred.
+mutation or new network behavior. Built-in providers do not expose production
+reconcilers; reconciliation behavior is exercised through scripted test-only
+providers. Runtime simulator and fault scenarios remain deferred to PR 16. Real
+platform execution and real provider reconciliation integrations remain
+deferred.

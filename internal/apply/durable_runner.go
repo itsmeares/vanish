@@ -131,6 +131,121 @@ func (runner Runner) Resume(ctx context.Context, id ExecutionID) (Execution, err
 	return runner.executeDurable(ctx, writer, execution, executor, cloneAttemptCounts(view.LastAttempts))
 }
 
+func (runner Runner) Reconcile(ctx context.Context, id ExecutionID) (Execution, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if runner.Store == nil {
+		return Execution{}, ErrExecutionStoreUnavailable
+	}
+	writer, view, err := runner.Store.OpenWriter(id)
+	if err != nil {
+		return Execution{}, err
+	}
+	defer writer.Close()
+	if view.Resumability != ResumabilityResolution || view.Unresolved == nil {
+		return executionFromView(view), ErrExecutionReconciliationUnavailable
+	}
+	provider, err := runner.Providers.Resolve(view.Manifest.Platform, view.Manifest.Mode)
+	if err != nil || validateResumeIdentity(view, provider, runner.Policy) != nil {
+		return executionFromView(view), ErrExecutionIdentityMismatch
+	}
+	action, err := findAction(&view.Plan, view.Unresolved.ActionID)
+	if err != nil || action.Platform != view.Unresolved.Platform || action.Type != view.Unresolved.ActionType {
+		return executionFromView(view), ErrExecutionCorrupt
+	}
+
+	now := runner.now()
+	reconciliationAttempt := view.ReconciliationAttempts[action.ID] + 1
+	startedSummary := summaryForRuntime(view.Manifest, view.Counts, ExecutionStateRunning, ResumabilityResolution, "Reconciliation result is pending.", "", now)
+	started, err := writer.Append(JournalEvent{
+		Timestamp: now, Kind: JournalReconciliationStarted,
+		ActionID: action.ID, ActionType: action.Type, Platform: action.Platform,
+		Attempt: view.Unresolved.Attempt, ReconciliationAttempt: reconciliationAttempt,
+	}, startedSummary)
+	execution := executionFromView(view)
+	if started.Sequence != 0 {
+		execution.Events = append(execution.Events, reconciliationExecutionEvent(
+			EventReconciliationStarted, view.Manifest, *action, view.Unresolved.Attempt,
+			reconciliationAttempt, "", started.Sequence,
+		))
+	}
+	if err != nil {
+		if replayed, replayErr := runner.Store.Replay(id); replayErr == nil {
+			execution = mergeExecutionView(execution, replayed)
+		}
+		return execution, err
+	}
+	if err := ctx.Err(); err != nil {
+		if replayed, replayErr := runner.Store.Replay(id); replayErr == nil {
+			execution = mergeExecutionView(execution, replayed)
+		}
+		return execution, err
+	}
+
+	reconciler := provider.Reconciler()
+	var providerOutcome ReconciliationOutcome
+	var reconcileErr error
+	if reconciler != nil {
+		providerOutcome, reconcileErr = reconciler.Reconcile(ctx, ReconciliationRequest{
+			Action: *action, IdempotencyKey: actionIdempotencyKey(id, action.ID),
+			Attempt: view.Unresolved.Attempt, AttemptStartedAt: view.Unresolved.StartedAt,
+		})
+	}
+	outcome := normalizeReconciliationOutcome(reconciler, providerOutcome, reconcileErr)
+	resultCounts := view.Counts
+	resultState := ExecutionStateRunning
+	resultResumability := ResumabilityResolution
+	resultBlockReason := reconciliationBlockReason(outcome)
+	if outcome.resolvesAttempt() {
+		status := domain.ActionStatusDone
+		if outcome == ReconciliationNotApplied {
+			status = domain.ActionStatusFailed
+		}
+		transitionResultCount(&resultCounts, domain.ActionStatusRunning, status)
+		resultState = ExecutionStateHalted
+		resultResumability = ResumabilityResumable
+	}
+	resultSummary := summaryForRuntime(view.Manifest, resultCounts, resultState, resultResumability, resultBlockReason, "", runner.now())
+	recorded, appendErr := writer.Append(JournalEvent{
+		Timestamp: runner.now(), Kind: JournalReconciliationResult,
+		ActionID: action.ID, ActionType: action.Type, Platform: action.Platform,
+		Attempt: view.Unresolved.Attempt, ReconciliationAttempt: reconciliationAttempt,
+		ReconciliationOutcome: outcome,
+	}, resultSummary)
+	if recorded.Sequence != 0 {
+		execution.Events = append(execution.Events, reconciliationExecutionEvent(
+			EventReconciliationResult, view.Manifest, *action, view.Unresolved.Attempt,
+			reconciliationAttempt, outcome, recorded.Sequence,
+		))
+	}
+	if appendErr != nil {
+		if replayed, replayErr := runner.Store.Replay(id); replayErr == nil {
+			execution = mergeExecutionView(execution, replayed)
+		}
+		return execution, appendErr
+	}
+
+	replayed, err := runner.Store.Replay(id)
+	if err != nil {
+		return execution, err
+	}
+	execution = mergeExecutionView(execution, replayed)
+	if !outcome.resolvesAttempt() {
+		return execution, nil
+	}
+	if outcome == ReconciliationNotApplied && replayed.Manifest.Policy.StopAfterFinalFailure && !reconciliationAuthorizesRetry(replayed.LastReconciliation[action.ID], replayed.LastAttempts[action.ID]) {
+		return runner.finishDurable(writer, &execution, JournalExecutionFailed, ExecutionStateFailed, "")
+	}
+	if replayed.NeedsFinalization {
+		if replayed.Counts.Failed > 0 {
+			return runner.finishDurable(writer, &execution, JournalExecutionFailed, ExecutionStateFailed, "")
+		}
+		return runner.finishDurable(writer, &execution, JournalExecutionCompleted, stateForCounts(replayed.Counts), "")
+	}
+	return execution, nil
+}
+
 func (runner Runner) Abandon(id ExecutionID) (Execution, error) {
 	if runner.Store == nil {
 		return Execution{}, ErrExecutionStoreUnavailable
@@ -150,6 +265,10 @@ func (runner Runner) Abandon(id ExecutionID) (Execution, error) {
 
 func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter, execution Execution, executor Executor, attempts map[string]int) (Execution, error) {
 	policy := writer.manifest.Policy
+	lastReconciliations := make(map[string]ReconciliationRecord, len(execution.Reconciliations))
+	for _, reconciliation := range execution.Reconciliations {
+		lastReconciliations[reconciliation.ActionID] = reconciliation
+	}
 	// A durable cancelled result is authoritative even if the process stopped
 	// before it could append the execution-level cancellation record. Finalize
 	// untouched actions without invoking the executor again.
@@ -166,7 +285,8 @@ func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter
 		}
 		for {
 			attempt := attempts[action.ID] + 1
-			if attempt > policy.MaxAttemptsPerAction {
+			reconciliationRetry := reconciliationAuthorizesAttempt(lastReconciliations[action.ID], attempts[action.ID], attempt)
+			if attempt > policy.MaxAttemptsPerAction && !reconciliationRetry {
 				break
 			}
 			if err := ctx.Err(); err != nil {
@@ -201,7 +321,10 @@ func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter
 				}
 				return runner.finishDurable(writer, &execution, JournalExecutionCancelled, ExecutionStateCancelled, "")
 			}
-			providerResult, executeErr := executor.Execute(ctx, *action)
+			providerResult, executeErr := executor.Execute(ctx, ActionRequest{
+				Action:         *action,
+				IdempotencyKey: actionIdempotencyKey(writer.manifest.ExecutionID, action.ID),
+			})
 			result := normalizeProviderResult(ctx, *action, attempt, providerResult, executeErr)
 			if err := runner.persistDurableResult(writer, &execution, action, result, policy); err != nil {
 				_ = started
@@ -403,12 +526,19 @@ func shouldStopAfterDurableFailure(execution Execution, attempts map[string]int,
 	for _, result := range execution.Results {
 		lastResults[result.ActionID] = result
 	}
+	lastReconciliations := make(map[string]ReconciliationRecord, len(execution.Reconciliations))
+	for _, reconciliation := range execution.Reconciliations {
+		lastReconciliations[reconciliation.ActionID] = reconciliation
+	}
 	for _, action := range execution.Plan.Actions {
 		if action.Status != domain.ActionStatusFailed {
 			continue
 		}
 		result, ok := lastResults[action.ID]
-		if ok && safeResumeOutcome(result.Outcome) && attempts[action.ID] < policy.MaxAttemptsPerAction {
+		if ok && result.Attempt == attempts[action.ID] && safeResumeOutcome(result.Outcome) && attempts[action.ID] < policy.MaxAttemptsPerAction {
+			continue
+		}
+		if reconciliation, ok := lastReconciliations[action.ID]; ok && reconciliationAuthorizesRetry(reconciliation, attempts[action.ID]) {
 			continue
 		}
 		return true
@@ -431,6 +561,7 @@ func executionFromView(view ExecutionView) Execution {
 		for _, attempt := range view.AttemptHistory[action.ID] {
 			execution.Results = append(execution.Results, attempt.Result)
 		}
+		execution.Reconciliations = append(execution.Reconciliations, view.ReconciliationHistory[action.ID]...)
 	}
 	return execution
 }
@@ -444,7 +575,32 @@ func mergeExecutionView(execution Execution, view ExecutionView) Execution {
 	execution.Resumability = view.Resumability
 	execution.BlockReason = view.BlockReason
 	execution.RecoveryWarning = view.RecoveryWarning
+	execution.Reconciliations = reconciliationsFromView(view)
 	return execution
+}
+
+func reconciliationsFromView(view ExecutionView) []ReconciliationRecord {
+	var records []ReconciliationRecord
+	for _, action := range view.Manifest.Plan.Actions {
+		records = append(records, view.ReconciliationHistory[action.ID]...)
+	}
+	return records
+}
+
+func reconciliationExecutionEvent(eventType EventType, manifest ExecutionManifest, action domain.CleanupAction, attempt, reconciliationAttempt int, outcome ReconciliationOutcome, sequence int64) ExecutionEvent {
+	status := domain.ActionStatusRunning
+	if outcome == ReconciliationAlreadyApplied {
+		status = domain.ActionStatusDone
+	} else if outcome == ReconciliationNotApplied {
+		status = domain.ActionStatusFailed
+	}
+	return ExecutionEvent{
+		Type: eventType, PlanID: manifest.PlanID, Platform: manifest.Platform,
+		ActionID: action.ID, ActionType: action.Type, Status: status,
+		Mode: manifest.Mode, Executor: manifest.Executor, ExecutionID: manifest.ExecutionID,
+		Attempt: attempt, Sequence: sequence, ReconciliationOutcome: outcome,
+		ReconciliationAttempt: reconciliationAttempt,
+	}
 }
 
 func cloneAttemptCounts(input map[string]int) map[string]int {

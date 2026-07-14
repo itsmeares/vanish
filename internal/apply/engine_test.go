@@ -15,8 +15,9 @@ import (
 const testPlatform domain.PlatformName = "test-provider"
 
 type fakeExecutor struct {
-	results map[string]ProviderResult
-	calls   []string
+	results  map[string]ProviderResult
+	calls    []string
+	requests []ActionRequest
 }
 
 type scriptedStep struct {
@@ -26,8 +27,9 @@ type scriptedStep struct {
 }
 
 type scriptedCall struct {
-	actionID string
-	attempt  int
+	actionID       string
+	attempt        int
+	idempotencyKey ActionIdempotencyKey
 }
 
 type scriptedExecutor struct {
@@ -36,13 +38,14 @@ type scriptedExecutor struct {
 	calls     []scriptedCall
 }
 
-func (executor *scriptedExecutor) Execute(_ context.Context, action domain.CleanupAction) (ProviderResult, error) {
+func (executor *scriptedExecutor) Execute(_ context.Context, request ActionRequest) (ProviderResult, error) {
+	action := request.Action
 	if executor.positions == nil {
 		executor.positions = make(map[string]int)
 	}
 	position := executor.positions[action.ID]
 	executor.positions[action.ID] = position + 1
-	executor.calls = append(executor.calls, scriptedCall{actionID: action.ID, attempt: position + 1})
+	executor.calls = append(executor.calls, scriptedCall{actionID: action.ID, attempt: position + 1, idempotencyKey: request.IdempotencyKey})
 	steps := executor.scripts[action.ID]
 	if position >= len(steps) {
 		return ProviderResult{}, errors.New("script exhausted")
@@ -54,8 +57,10 @@ func (executor *scriptedExecutor) Execute(_ context.Context, action domain.Clean
 	return step.result, step.err
 }
 
-func (executor *fakeExecutor) Execute(_ context.Context, action domain.CleanupAction) (ProviderResult, error) {
+func (executor *fakeExecutor) Execute(_ context.Context, request ActionRequest) (ProviderResult, error) {
+	action := request.Action
 	executor.calls = append(executor.calls, action.ID)
+	executor.requests = append(executor.requests, request)
 	if result, ok := executor.results[action.ID]; ok {
 		return result, nil
 	}
@@ -70,6 +75,7 @@ type fakeProvider struct {
 	prerequisites   func(domain.CleanupPlan, RuntimeState) []Prerequisite
 	executor        Executor
 	executorFactory func() Executor
+	reconciler      Reconciler
 }
 
 func (provider fakeProvider) Platform() domain.PlatformName { return provider.platform }
@@ -90,6 +96,7 @@ func (provider fakeProvider) Executor() Executor {
 	}
 	return provider.executor
 }
+func (provider fakeProvider) Reconciler() Reconciler { return provider.reconciler }
 
 func TestPreviewRoutesSupportedPlanToProvider(t *testing.T) {
 	executor := &fakeExecutor{}
@@ -384,7 +391,7 @@ func TestGenericApplyPackageContainsNoProviderSpecificReadiness(t *testing.T) {
 func TestNoopExecutorHonorsCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := NoopExecutor{}.Execute(ctx, applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending))
+	_, err := NoopExecutor{}.Execute(ctx, ActionRequest{Action: applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending), IdempotencyKey: "test-key"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}

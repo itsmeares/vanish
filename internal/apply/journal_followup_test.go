@@ -371,7 +371,7 @@ type instanceTrackingExecutor struct {
 	outcome  ActionOutcome
 }
 
-func (executor *instanceTrackingExecutor) Execute(_ context.Context, _ domain.CleanupAction) (ProviderResult, error) {
+func (executor *instanceTrackingExecutor) Execute(_ context.Context, _ ActionRequest) (ProviderResult, error) {
 	*executor.calls = append(*executor.calls, executor.instance)
 	return ProviderResult{Outcome: executor.outcome}, nil
 }

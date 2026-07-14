@@ -978,7 +978,7 @@ func validResultCounts(counts ResultCounts) bool {
 
 func knownSummaryBlockReason(reason string) bool {
 	switch reason {
-	case "", "Action result is pending.", "A previous action has an unknown result.", "Reconnect the account before resuming.", "Retry time has not arrived.", "Execution paused. Resume is explicit.", "Execution was stopped.", "Execution was stopped with no remaining work.", "Execution completed.", "Execution was cancelled.", "Execution failed.", "Execution was abandoned.", "Execution ended.", "Execution data is unreadable.", "Execution is active in another Vanish process.":
+	case "", "Action result is pending.", "A previous action has an unknown result.", "Reconciliation result is pending.", "Reconciliation was interrupted. Try again or abandon.", "Reconciliation confirmed the action was already applied. Resume is explicit.", "Reconciliation confirmed the action was not applied. Resume is explicit.", "Provider state conflicts with this action. Reconciliation is still required.", "Provider could not determine the action state. Reconciliation is still required.", "Reconciliation is temporarily unavailable.", "This provider cannot reconcile the unresolved action.", "Provider returned an invalid reconciliation result.", "Reconnect the account before resuming.", "Retry time has not arrived.", "Execution paused. Resume is explicit.", "Execution was stopped.", "Execution was stopped with no remaining work.", "Execution completed.", "Execution was cancelled.", "Execution failed.", "Execution was abandoned.", "Execution ended.", "Execution data is unreadable.", "Execution is active in another Vanish process.":
 		return true
 	default:
 		return false

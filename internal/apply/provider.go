@@ -50,6 +50,7 @@ type Provider interface {
 	Supports(domain.ActionType) bool
 	Prerequisites(domain.CleanupPlan, RuntimeState) []Prerequisite
 	Executor() Executor
+	Reconciler() Reconciler
 }
 
 type providerRoute struct {

@@ -36,12 +36,15 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 		return ExecutionView{}, ErrExecutionIdentityMismatch
 	}
 	view := ExecutionView{
-		Manifest:       manifest,
-		Plan:           cloneExecutionPlan(manifest.Plan),
-		State:          ExecutionStatePending,
-		AttemptHistory: make(map[string][]AttemptRecord, len(manifest.Plan.Actions)),
-		LastAttempts:   make(map[string]int, len(manifest.Plan.Actions)),
-		UpdatedAt:      manifest.CreatedAt,
+		Manifest:               manifest,
+		Plan:                   cloneExecutionPlan(manifest.Plan),
+		State:                  ExecutionStatePending,
+		AttemptHistory:         make(map[string][]AttemptRecord, len(manifest.Plan.Actions)),
+		ReconciliationHistory:  make(map[string][]ReconciliationRecord, len(manifest.Plan.Actions)),
+		LastReconciliation:     make(map[string]ReconciliationRecord, len(manifest.Plan.Actions)),
+		ReconciliationAttempts: make(map[string]int, len(manifest.Plan.Actions)),
+		LastAttempts:           make(map[string]int, len(manifest.Plan.Actions)),
+		UpdatedAt:              manifest.CreatedAt,
 	}
 	view.Counts = CountsForPlan(view.Plan)
 	actionIndex := make(map[string]int, len(view.Plan.Actions))
@@ -65,6 +68,7 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 	lastActionIndex := -1
 	lastResult := make(map[string]ActionResult, len(view.Plan.Actions))
 	var inFlight *JournalEvent
+	var reconciliationInFlight *JournalEvent
 	var lastKind JournalEventKind
 	var lastOutcome ActionOutcome
 	var completeAt int64
@@ -93,7 +97,7 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			if terminal {
 				return ExecutionView{}, ErrExecutionCorrupt
 			}
-			if err := applyJournalEvent(&view, event, actionIndex, &started, &terminal, &lastActionIndex, lastResult, &inFlight, lastKind, &lastOutcome); err != nil {
+			if err := applyJournalEvent(&view, event, actionIndex, &started, &terminal, &lastActionIndex, lastResult, &inFlight, &reconciliationInFlight, lastKind, &lastOutcome); err != nil {
 				return ExecutionView{}, ErrExecutionCorrupt
 			}
 			expectedSequence++
@@ -124,6 +128,9 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			Platform:   inFlight.Platform,
 			Attempt:    inFlight.Attempt,
 			StartedAt:  inFlight.Timestamp,
+			ReconciliationStarted: reconciliationInFlight != nil &&
+				reconciliationInFlight.ActionID == inFlight.ActionID &&
+				reconciliationInFlight.Attempt == inFlight.Attempt,
 		}
 	}
 	classifyExecutionView(&view, lastResult, terminal, lastKind)
@@ -155,6 +162,7 @@ func applyJournalEvent(
 	lastActionIndex *int,
 	lastResult map[string]ActionResult,
 	inFlight **JournalEvent,
+	reconciliationInFlight **JournalEvent,
 	lastKind JournalEventKind,
 	lastOutcome *ActionOutcome,
 ) error {
@@ -166,11 +174,15 @@ func applyJournalEvent(
 		*started = true
 		view.State = ExecutionStateRunning
 	case JournalAttemptStarted:
-		if !*started || *inFlight != nil || view.State != ExecutionStateRunning || event.HaltReason != "" || event.Outcome != "" || event.Status != "" || event.RetryAfterMillis != 0 || event.ProviderCode != "" || event.MessageID != "" {
+		if !*started || *inFlight != nil || view.State != ExecutionStateRunning || event.HaltReason != "" || event.Outcome != "" || event.Status != "" || event.RetryAfterMillis != 0 || event.ProviderCode != "" || event.MessageID != "" || event.ReconciliationAttempt != 0 || event.ReconciliationOutcome != "" {
 			return ErrExecutionCorrupt
 		}
 		index, ok := actionIndex[event.ActionID]
-		if !ok || index < *lastActionIndex || event.Attempt != view.LastAttempts[event.ActionID]+1 || event.Attempt > view.Manifest.Policy.MaxAttemptsPerAction {
+		previousAttempt := view.LastAttempts[event.ActionID]
+		reconciliation, reconciled := view.LastReconciliation[event.ActionID]
+		reconciliationRetry := reconciled && reconciliationAuthorizesAttempt(reconciliation, previousAttempt, event.Attempt)
+		if !ok || index < *lastActionIndex || event.Attempt != previousAttempt+1 ||
+			(event.Attempt > view.Manifest.Policy.MaxAttemptsPerAction && !reconciliationRetry) {
 			return ErrExecutionCorrupt
 		}
 		action := &view.Plan.Actions[index]
@@ -183,10 +195,14 @@ func applyJournalEvent(
 			}
 		} else {
 			previous, ok := lastResult[event.ActionID]
-			if !ok || !safeResumeOutcome(previous.Outcome) || action.Status != domain.ActionStatusFailed {
+			resultRetry := ok && previous.Attempt == previousAttempt && safeResumeOutcome(previous.Outcome)
+			if !(resultRetry || reconciliationRetry) || action.Status != domain.ActionStatusFailed {
 				return ErrExecutionCorrupt
 			}
-			if (previous.Outcome == OutcomeRateLimited || previous.Outcome == OutcomeAuthenticationRequired || previous.RetryAfter > 0) && lastKind != JournalExecutionResumed {
+			if reconciliationRetry && lastKind != JournalExecutionResumed {
+				return ErrExecutionCorrupt
+			}
+			if resultRetry && (previous.Outcome == OutcomeRateLimited || previous.Outcome == OutcomeAuthenticationRequired || previous.RetryAfter > 0) && lastKind != JournalExecutionResumed {
 				return ErrExecutionCorrupt
 			}
 		}
@@ -198,7 +214,7 @@ func applyJournalEvent(
 		*inFlight = &copied
 		view.State = ExecutionStateRunning
 	case JournalResultRecorded:
-		if !*started || *inFlight == nil || event.HaltReason != "" {
+		if !*started || *inFlight == nil || lastKind != JournalAttemptStarted || event.HaltReason != "" || event.ReconciliationAttempt != 0 || event.ReconciliationOutcome != "" {
 			return ErrExecutionCorrupt
 		}
 		startedEvent := *inFlight
@@ -245,6 +261,52 @@ func applyJournalEvent(
 		lastResult[event.ActionID] = result
 		*lastOutcome = result.Outcome
 		*inFlight = nil
+		*reconciliationInFlight = nil
+	case JournalReconciliationStarted:
+		if !*started || *inFlight == nil || event.HaltReason != "" || event.Outcome != "" || event.Status != "" || event.RetryAfterMillis != 0 || event.ProviderCode != "" || event.MessageID != "" || event.ReconciliationOutcome != "" {
+			return ErrExecutionCorrupt
+		}
+		attempt := *inFlight
+		if event.ActionID != attempt.ActionID || event.ActionType != attempt.ActionType || event.Platform != attempt.Platform || event.Attempt != attempt.Attempt || event.ReconciliationAttempt != view.ReconciliationAttempts[event.ActionID]+1 {
+			return ErrExecutionCorrupt
+		}
+		view.ReconciliationAttempts[event.ActionID] = event.ReconciliationAttempt
+		copied := event
+		*reconciliationInFlight = &copied
+		view.State = ExecutionStateRunning
+	case JournalReconciliationResult:
+		if !*started || *inFlight == nil || *reconciliationInFlight == nil || event.HaltReason != "" || event.Outcome != "" || event.Status != "" || event.RetryAfterMillis != 0 || event.ProviderCode != "" || event.MessageID != "" || !event.ReconciliationOutcome.journalKnown() {
+			return ErrExecutionCorrupt
+		}
+		attempt := *inFlight
+		reconciliation := *reconciliationInFlight
+		if event.ActionID != attempt.ActionID || event.ActionType != attempt.ActionType || event.Platform != attempt.Platform || event.Attempt != attempt.Attempt || event.ReconciliationAttempt != reconciliation.ReconciliationAttempt {
+			return ErrExecutionCorrupt
+		}
+		resultAt := event.Timestamp.UTC()
+		if resultAt.Before(view.UpdatedAt) {
+			resultAt = view.UpdatedAt
+		}
+		record := ReconciliationRecord{
+			ActionID: event.ActionID, ActionType: event.ActionType, Platform: event.Platform,
+			Attempt: event.Attempt, ReconciliationAttempt: event.ReconciliationAttempt,
+			StartedAt: reconciliation.Timestamp.UTC(), ResultAt: resultAt,
+			Outcome: event.ReconciliationOutcome,
+		}
+		view.ReconciliationHistory[event.ActionID] = append(view.ReconciliationHistory[event.ActionID], record)
+		view.LastReconciliation[event.ActionID] = record
+		*reconciliationInFlight = nil
+		if event.ReconciliationOutcome.resolvesAttempt() {
+			index := actionIndex[event.ActionID]
+			status := domain.ActionStatusDone
+			if event.ReconciliationOutcome == ReconciliationNotApplied {
+				status = domain.ActionStatusFailed
+			}
+			transitionResultCount(&view.Counts, view.Plan.Actions[index].Status, status)
+			view.Plan.Actions[index].Status = status
+			*inFlight = nil
+			view.State = ExecutionStateHalted
+		}
 	case JournalExecutionResumed:
 		if !*started || *inFlight != nil || hasActionFields(event) || event.HaltReason != "" || lastKind == JournalExecutionResumed {
 			return ErrExecutionCorrupt
@@ -276,7 +338,7 @@ func applyJournalEvent(
 		view.TerminalKind = event.Kind
 		*terminal = true
 	case JournalExecutionFailed:
-		if !*started || *inFlight != nil || hasActionFields(event) || event.HaltReason != "" || (lastKind != JournalResultRecorded && lastKind != JournalExecutionResumed && lastKind != JournalExecutionStarted) {
+		if !*started || *inFlight != nil || hasActionFields(event) || event.HaltReason != "" || (lastKind != JournalResultRecorded && lastKind != JournalReconciliationResult && lastKind != JournalExecutionResumed && lastKind != JournalExecutionStarted) {
 			return ErrExecutionCorrupt
 		}
 		if view.Counts.Failed == 0 {
@@ -318,14 +380,20 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 	}
 	if view.Unresolved != nil {
 		view.Resumability = ResumabilityResolution
-		view.BlockReason = "A previous action has an unknown result."
+		if record, ok := view.LastReconciliation[view.Unresolved.ActionID]; ok && record.Attempt == view.Unresolved.Attempt {
+			view.BlockReason = reconciliationBlockReason(record.Outcome)
+		} else if view.Unresolved.ReconciliationStarted {
+			view.BlockReason = "Reconciliation was interrupted. Try again or abandon."
+		} else {
+			view.BlockReason = "A previous action has an unknown result."
+		}
 		return
 	}
 	var gatedResult ActionResult
 	var gatedAt time.Time
 	var gatedSequence int64
 	for actionID, result := range lastResult {
-		if !safeResumeOutcome(result.Outcome) {
+		if result.Attempt != view.LastAttempts[actionID] || !safeResumeOutcome(result.Outcome) {
 			continue
 		}
 		history := view.AttemptHistory[actionID]
@@ -349,15 +417,19 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 	var retryAttempt int
 	for index := range view.Plan.Actions {
 		action := view.Plan.Actions[index]
-		result, ok := lastResult[action.ID]
-		if ok && safeResumeOutcome(result.Outcome) && view.LastAttempts[action.ID] < view.Manifest.Policy.MaxAttemptsPerAction {
+		result, hasResult := lastResult[action.ID]
+		reconciliation, hasReconciliation := view.LastReconciliation[action.ID]
+		attempt := view.LastAttempts[action.ID]
+		resultRetry := hasResult && result.Attempt == attempt && safeResumeOutcome(result.Outcome) && attempt < view.Manifest.Policy.MaxAttemptsPerAction
+		reconciliationRetry := hasReconciliation && reconciliationAuthorizesRetry(reconciliation, attempt)
+		if resultRetry || reconciliationRetry {
 			retryAction = action.ID
 			retryAttempt = view.LastAttempts[action.ID] + 1
-			if result.RetryAfter > 0 {
+			if resultRetry && result.RetryAfter > 0 {
 				history := view.AttemptHistory[action.ID]
 				view.RetryNotBefore = history[len(history)-1].ResultAt.Add(result.RetryAfter)
 			}
-			if result.Outcome == OutcomeAuthenticationRequired {
+			if resultRetry && result.Outcome == OutcomeAuthenticationRequired {
 				view.Resumability = ResumabilityWaitingProvider
 				view.BlockReason = "Reconnect the account before resuming."
 			} else if !view.RetryNotBefore.IsZero() {
@@ -398,7 +470,7 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 
 func knownJournalKind(kind JournalEventKind) bool {
 	switch kind {
-	case JournalExecutionStarted, JournalAttemptStarted, JournalResultRecorded, JournalExecutionResumed, JournalExecutionHalted, JournalExecutionStopped, JournalExecutionCancelled, JournalExecutionFailed, JournalExecutionCompleted, JournalExecutionAbandoned:
+	case JournalExecutionStarted, JournalAttemptStarted, JournalResultRecorded, JournalReconciliationStarted, JournalReconciliationResult, JournalExecutionResumed, JournalExecutionHalted, JournalExecutionStopped, JournalExecutionCancelled, JournalExecutionFailed, JournalExecutionCompleted, JournalExecutionAbandoned:
 		return true
 	default:
 		return false
@@ -415,7 +487,7 @@ func safeResumeOutcome(outcome ActionOutcome) bool {
 }
 
 func hasActionFields(event JournalEvent) bool {
-	return strings.TrimSpace(event.ActionID) != "" || event.ActionType != "" || event.Platform != "" || event.Attempt != 0 || event.Outcome != "" || event.Status != "" || event.RetryAfterMillis != 0 || event.ProviderCode != "" || event.MessageID != ""
+	return strings.TrimSpace(event.ActionID) != "" || event.ActionType != "" || event.Platform != "" || event.Attempt != 0 || event.Outcome != "" || event.Status != "" || event.RetryAfterMillis != 0 || event.ProviderCode != "" || event.MessageID != "" || event.ReconciliationAttempt != 0 || event.ReconciliationOutcome != ""
 }
 
 func terminalReason(kind JournalEventKind) string {

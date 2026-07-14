@@ -48,7 +48,11 @@ journals, manifests, summaries, and lock files rather than following them.
 The Local Data > Executions screen classifies entries as resumable, waiting for
 a retry time, waiting for provider readiness, resolution required, terminal,
 corrupt, or active in another process. Resume is always explicit. An attempt
-whose result was not durably recorded can only be abandoned, never retried.
+whose result was not durably recorded can be explicitly reconciled or abandoned,
+but is never retried directly. Only a provider proof that it was not applied can
+make that action eligible for the existing bounded Resume flow. A proof that it
+was already applied marks it done without executor entry. Other reconciliation
+results stay blocked.
 Terminal and corrupt entries can be explicitly deleted from this screen.
 Deleting a terminal execution retains its identity guard, so the same
 plan/route/policy fingerprint cannot silently start again after journal removal.

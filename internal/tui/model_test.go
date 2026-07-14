@@ -55,6 +55,7 @@ func (provider unsafeMessageTestProvider) Prerequisites(domain.CleanupPlan, appl
 func (provider unsafeMessageTestProvider) Executor() apply.Executor {
 	return unsafeMessageTestExecutor{message: provider.message}
 }
+func (provider unsafeMessageTestProvider) Reconciler() apply.Reconciler { return nil }
 
 type unsafeMessageTestExecutor struct {
 	message string
@@ -87,6 +88,7 @@ func (provider blockingApplyTestProvider) Prerequisites(domain.CleanupPlan, appl
 func (provider blockingApplyTestProvider) Executor() apply.Executor {
 	return provider.executor
 }
+func (provider blockingApplyTestProvider) Reconciler() apply.Reconciler { return nil }
 
 type blockingApplyTestExecutor struct {
 	entered chan struct{}
@@ -94,13 +96,13 @@ type blockingApplyTestExecutor struct {
 	once    sync.Once
 }
 
-func (executor *blockingApplyTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+func (executor *blockingApplyTestExecutor) Execute(context.Context, apply.ActionRequest) (apply.ProviderResult, error) {
 	executor.once.Do(func() { close(executor.entered) })
 	<-executor.release
 	return apply.ProviderResult{Outcome: apply.OutcomeSucceeded}, nil
 }
 
-func (executor unsafeMessageTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+func (executor unsafeMessageTestExecutor) Execute(context.Context, apply.ActionRequest) (apply.ProviderResult, error) {
 	return apply.ProviderResult{
 		Outcome:      apply.OutcomePermanentFailure,
 		Message:      apply.ProviderMessage(executor.message),
@@ -735,6 +737,23 @@ func TestApplyEventAuditFieldsIncludeTypedOutcomeMetadata(t *testing.T) {
 	}
 	if _, ok := fields["pending_count"]; ok {
 		t.Fatalf("action event included misleading zero counts: %#v", fields)
+	}
+}
+
+func TestApplyEventAuditFieldsIncludeClosedReconciliationMetadata(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type: apply.EventReconciliationResult, PlanID: "plan-1", Platform: domain.PlatformReddit,
+		ActionID: "action-1", ActionType: domain.ActionRedditDeleteComment,
+		Mode: apply.ExecutionModeSimulation, Executor: reddit.SimulationExecutorID,
+		ReconciliationAttempt: 2, ReconciliationOutcome: apply.ReconciliationUnknown,
+	})
+	if fields["reconciliation_attempt"] != 2 || fields["reconciliation_outcome"] != "unknown" {
+		t.Fatalf("reconciliation audit fields=%#v", fields)
+	}
+	for _, forbidden := range []string{"idempotency_key", "message", "raw_response", "error", "authorization", "token"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("audit fields included forbidden %q: %#v", forbidden, fields)
+		}
 	}
 }
 
@@ -1573,7 +1592,7 @@ func TestExecutionClassificationsAndSafeActionsAreVisible(t *testing.T) {
 	}
 
 	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityResolution}
-	if actions := m.executionActions(); len(actions) != 2 || actions[0].ID != executionActionAbandon {
+	if actions := m.executionActions(); len(actions) != 3 || actions[0].ID != executionActionReconcile || actions[1].ID != executionActionAbandon || actions[2].ID != executionActionBack {
 		t.Fatalf("resolution actions=%#v", actions)
 	}
 	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityCorrupt}
@@ -1599,14 +1618,29 @@ func TestExecutionClassificationsAndSafeActionsAreVisible(t *testing.T) {
 	}
 }
 
-func TestResolutionFlowDefaultsToCancelAndOnlyOffersAbandon(t *testing.T) {
+func TestResolutionFlowOffersReconcileAbandonAndBack(t *testing.T) {
 	m := NewModel()
 	m.current = screenExecutionDetail
 	m.executionSelected = apply.ExecutionSummary{ExecutionID: "exec-test", Resumability: apply.ResumabilityResolution}
+	actions := m.executionActions()
+	if len(actions) != 3 || actions[0].Label != "Reconcile" || actions[1].Label != "Abandon" || actions[2].Label != "Back" {
+		t.Fatalf("resolution actions=%#v", actions)
+	}
 	detail := m.View().Content
 	if strings.Contains(detail, "Resume is always explicit") || strings.Contains(detail, "Completed actions are never run again") {
 		t.Fatalf("execution detail retained fixed safety pane:\n%s", detail)
 	}
+	updated, cmd := m.Update(keyPress("enter"))
+	reconciling := requireModel(t, updated)
+	if cmd == nil || reconciling.current != screenApplyRunning {
+		t.Fatalf("Reconcile did not start: screen=%v cmd=%v", reconciling.current, cmd)
+	}
+	busy := stripANSI(reconciling.View().Content)
+	if !strings.Contains(busy, "Reconciling unresolved action") || strings.Contains(busy, "Simulating no-op run") {
+		t.Fatalf("reconciliation busy copy mismatch:\n%s", busy)
+	}
+
+	m.executionActionCursor = 1
 	m = updateModel(t, m, keyPress("enter"))
 	if m.current != screenExecutionAbandonConfirm || m.executionConfirmCursor != 1 {
 		t.Fatalf("abandon confirmation did not default to cancel: screen=%v cursor=%d", m.current, m.executionConfirmCursor)

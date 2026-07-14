@@ -505,7 +505,7 @@ type blockingExecutor struct {
 	calls   int
 }
 
-func (executor *blockingExecutor) Execute(_ context.Context, _ domain.CleanupAction) (ProviderResult, error) {
+func (executor *blockingExecutor) Execute(_ context.Context, _ ActionRequest) (ProviderResult, error) {
 	executor.mu.Lock()
 	executor.calls++
 	executor.mu.Unlock()
