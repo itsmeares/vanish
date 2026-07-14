@@ -111,12 +111,18 @@ Abandon, or go Back; startup never reconciles automatically.
 Reconciliation is available only for `resolution_required` work. Its start and
 closed result are durable journal events. `already_applied` marks the unresolved
 action done without calling the executor. `not_applied` marks the attempt failed
-and may expose the existing explicit Resume flow when retry limits or later work
-permit it; reconciliation never invokes Resume automatically. Conflict, unknown,
-unavailable, unsupported, and invalid results remain blocked and cannot trigger
-executor entry. Repeating blocked or interrupted reconciliation reuses the same
-action key and increments only the reconciliation-attempt counter. Abandonment
-remains available and makes no claim about remote state.
+and may expose the existing explicit Resume flow within the hard action-attempt
+ceiling, including under the default one-automatic-attempt policy;
+reconciliation never invokes Resume automatically. Evidence applies only to the
+exact unresolved attempt and cannot authorize or describe a later attempt.
+Executor results are valid only directly after their durable attempt-start; once
+reconciliation starts for that attempt, a later executor result is corruption.
+Cancellation after the durable reconciliation-start prevents provider entry and
+leaves the lifecycle visibly interrupted. Conflict, unknown, unavailable,
+unsupported, and invalid results remain blocked and cannot trigger executor
+entry. Repeating blocked or interrupted reconciliation reuses the same action
+key and increments only the reconciliation-attempt counter. Abandonment remains
+available and makes no claim about remote state.
 
 Otherwise, explicit resume continues from the first eligible action and never
 repeats a completed action. Attempt numbers continue from the journal. Retry

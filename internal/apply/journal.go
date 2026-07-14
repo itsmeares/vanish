@@ -113,11 +113,12 @@ type AttemptRecord struct {
 }
 
 type UnresolvedAttempt struct {
-	ActionID   string
-	ActionType domain.ActionType
-	Platform   domain.PlatformName
-	Attempt    int
-	StartedAt  time.Time
+	ActionID              string
+	ActionType            domain.ActionType
+	Platform              domain.PlatformName
+	Attempt               int
+	StartedAt             time.Time
+	ReconciliationStarted bool
 }
 
 type ExecutionView struct {

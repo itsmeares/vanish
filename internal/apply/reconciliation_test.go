@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/itsmeares/vanish/internal/domain"
 )
 
 type reconciliationStep struct {
@@ -60,7 +62,7 @@ func TestReconciliationAppliedResolvesWithoutExecutor(t *testing.T) {
 
 func TestReconciliationNotAppliedRequiresExplicitBoundedResume(t *testing.T) {
 	reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationNotApplied}}}
-	_, runner, executor, first := unresolvedReconciliationExecution(t, RunPolicy{MaxAttemptsPerAction: 2}, reconciler)
+	_, runner, executor, first := unresolvedReconciliationExecution(t, DefaultRunPolicy(), reconciler)
 
 	resolved, err := runner.Reconcile(context.Background(), first.ID)
 	if err != nil || resolved.State != ExecutionStateHalted || resolved.Resumability != ResumabilityResumable || resolved.Counts.Failed != 1 || len(executor.calls) != 1 {
@@ -74,14 +76,127 @@ func TestReconciliationNotAppliedRequiresExplicitBoundedResume(t *testing.T) {
 		t.Fatalf("retry changed key: %#v", executor.requests)
 	}
 
-	t.Run("exhausted attempt remains final", func(t *testing.T) {
+	t.Run("hard attempt ceiling remains final", func(t *testing.T) {
 		reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationNotApplied}}}
-		_, runner, executor, first := unresolvedReconciliationExecution(t, DefaultRunPolicy(), reconciler)
+		store := NewExecutionStore(t.TempDir())
+		store.hooks.beforeAppend = func(event JournalEvent) error {
+			if event.Kind == JournalResultRecorded && event.Attempt == MaxAutomaticAttemptsPerAction {
+				return errors.New("synthetic unknown final executor result")
+			}
+			return nil
+		}
+		steps := make([]scriptedStep, MaxAutomaticAttemptsPerAction)
+		for index := range steps {
+			steps[index].result.Outcome = OutcomeRetryableFailure
+		}
+		steps[len(steps)-1].result.Outcome = OutcomeSucceeded
+		executor := &scriptedExecutor{scripts: map[string][]scriptedStep{"action-1": steps}}
+		runner := reconciliationTestRunner(t, store, executor, RunPolicy{MaxAttemptsPerAction: MaxAutomaticAttemptsPerAction}, reconciler)
+		first, startErr := runner.Start(context.Background(), singleActionPlan(), ExecutionModeSimulation)
+		if startErr == nil || len(executor.calls) != MaxAutomaticAttemptsPerAction {
+			t.Fatalf("Start execution=%#v err=%v calls=%v", first, startErr, executor.calls)
+		}
+		store.hooks = executionStoreHooks{}
 		resolved, err := runner.Reconcile(context.Background(), first.ID)
-		if err != nil || resolved.State != ExecutionStateFailed || resolved.Resumability != ResumabilityTerminal || len(executor.calls) != 1 {
+		if err != nil || resolved.State != ExecutionStateFailed || resolved.Resumability != ResumabilityTerminal || len(executor.calls) != MaxAutomaticAttemptsPerAction {
 			t.Fatalf("Reconcile execution=%#v err=%v calls=%v", resolved, err, executor.calls)
 		}
 	})
+}
+
+func TestReconciliationEvidenceIsScopedToExactUnresolvedAttempt(t *testing.T) {
+	reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationNotApplied}}}
+	store, runner, executor, first := unresolvedReconciliationExecution(t, RunPolicy{MaxAttemptsPerAction: 3}, reconciler)
+	if _, err := runner.Reconcile(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	store.hooks.beforeAppend = func(event JournalEvent) error {
+		if event.Kind == JournalResultRecorded && event.Attempt == 2 {
+			return errors.New("synthetic unknown second executor result")
+		}
+		return nil
+	}
+	if _, err := runner.Resume(context.Background(), first.ID); err == nil || len(executor.calls) != 2 {
+		t.Fatalf("Resume err=%v calls=%v", err, executor.calls)
+	}
+	store.hooks = executionStoreHooks{}
+	view, err := store.Replay(first.ID)
+	if err != nil || view.Resumability != ResumabilityResolution || view.Unresolved == nil || view.Unresolved.Attempt != 2 {
+		t.Fatalf("Replay view=%#v err=%v", view, err)
+	}
+	if view.BlockReason != "A previous action has an unknown result." || view.LastReconciliation["action-1"].Attempt != 1 {
+		t.Fatalf("stale reconciliation affected attempt 2: reason=%q reconciliation=%#v", view.BlockReason, view.LastReconciliation["action-1"])
+	}
+
+	writer, view, err := store.OpenWriter(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := summaryForRuntime(view.Manifest, view.Counts, ExecutionStateRunning, ResumabilityResumable, "", "", runner.now())
+	for _, event := range []JournalEvent{
+		{
+			Timestamp: runner.now(), Kind: JournalResultRecorded,
+			ActionID: "action-1", ActionType: view.Unresolved.ActionType, Platform: view.Unresolved.Platform, Attempt: 2,
+			Outcome: OutcomePermanentFailure, Status: domain.ActionStatusFailed,
+		},
+		{Timestamp: runner.now(), Kind: JournalExecutionResumed},
+		{
+			Timestamp: runner.now(), Kind: JournalAttemptStarted,
+			ActionID: "action-1", ActionType: view.Unresolved.ActionType, Platform: view.Unresolved.Platform, Attempt: 3,
+		},
+	} {
+		if _, err := writer.Append(event, summary); err != nil {
+			_ = writer.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Replay(first.ID); !errors.Is(err, ErrExecutionCorrupt) {
+		t.Fatalf("stale reconciliation validated attempt 3: err=%v", err)
+	}
+}
+
+func TestStaleReconciliationDoesNotRetryPermanentFailureBeforeProviderHalt(t *testing.T) {
+	store := NewExecutionStore(t.TempDir())
+	failed := false
+	store.hooks.beforeAppend = func(event JournalEvent) error {
+		if event.Kind == JournalResultRecorded && !failed {
+			failed = true
+			return errors.New("synthetic unknown first executor result")
+		}
+		return nil
+	}
+	plan := applyTestPlan(testPlatform, []domain.CleanupAction{
+		applyTestAction("action-1", testPlatform, domain.ActionUnlike, domain.ActionStatusPending),
+		applyTestAction("action-2", testPlatform, domain.ActionDeleteComment, domain.ActionStatusPending),
+	})
+	executor := &scriptedExecutor{scripts: map[string][]scriptedStep{
+		"action-1": {
+			{result: ProviderResult{Outcome: OutcomeSucceeded}},
+			{result: ProviderResult{Outcome: OutcomePermanentFailure}},
+		},
+		"action-2": {{result: ProviderResult{Outcome: OutcomeAuthenticationRequired}}},
+	}}
+	reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationNotApplied}}}
+	runner := reconciliationTestRunner(t, store, executor, RunPolicy{MaxAttemptsPerAction: 3}, reconciler)
+	first, err := runner.Start(context.Background(), plan, ExecutionModeSimulation)
+	if err == nil || len(executor.calls) != 1 {
+		t.Fatalf("Start execution=%#v err=%v calls=%v", first, err, executor.calls)
+	}
+	store.hooks = executionStoreHooks{}
+	if _, err := runner.Reconcile(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	halted, err := runner.Resume(context.Background(), first.ID)
+	if err != nil || halted.Resumability != ResumabilityWaitingProvider || len(executor.calls) != 3 {
+		t.Fatalf("Resume execution=%#v err=%v calls=%v", halted, err, executor.calls)
+	}
+	view, err := store.Replay(first.ID)
+	if err != nil || view.NextActionID != "action-2" || view.NextAttempt != 2 || view.Plan.Actions[0].Status != domain.ActionStatusFailed {
+		t.Fatalf("stale reconciliation selected retry: view=%#v err=%v", view, err)
+	}
 }
 
 func TestBlockedReconciliationOutcomesNeverEnableExecution(t *testing.T) {
@@ -221,6 +336,27 @@ func TestReconciliationDurabilityOrderingAndWriteFailures(t *testing.T) {
 	})
 }
 
+func TestReconcileHonorsCancellationAfterDurableStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationAlreadyApplied}}}
+	store, runner, executor, first := unresolvedReconciliationExecution(t, DefaultRunPolicy(), reconciler)
+	store.hooks.onAppend = func(event JournalEvent) {
+		if event.Kind == JournalReconciliationStarted {
+			cancel()
+		}
+	}
+	execution, err := runner.Reconcile(ctx, first.ID)
+	if !errors.Is(err, context.Canceled) || len(reconciler.requests) != 0 || len(executor.calls) != 1 {
+		t.Fatalf("Reconcile execution=%#v err=%v provider=%v executor=%v", execution, err, reconciler.requests, executor.calls)
+	}
+	store.hooks = executionStoreHooks{}
+	view, replayErr := store.Replay(first.ID)
+	if replayErr != nil || view.Resumability != ResumabilityResolution || view.Unresolved == nil || !view.Unresolved.ReconciliationStarted || len(view.ReconciliationHistory["action-1"]) != 0 {
+		t.Fatalf("Replay view=%#v err=%v", view, replayErr)
+	}
+}
+
 func TestReconcileRejectsNonResolutionWorkWithoutProviderCall(t *testing.T) {
 	reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationAlreadyApplied}}}
 	store := NewExecutionStore(t.TempDir())
@@ -261,6 +397,33 @@ func TestReplayRejectsReconciliationResultWithoutDurableStart(t *testing.T) {
 	}
 	if _, err := store.Replay(first.ID); !errors.Is(err, ErrExecutionCorrupt) {
 		t.Fatalf("malformed reconciliation replay err=%v", err)
+	}
+}
+
+func TestReplayRejectsExecutorResultAfterReconciliationLifecycle(t *testing.T) {
+	reconciler := &scriptedReconciler{steps: []reconciliationStep{{outcome: ReconciliationUnknown}}}
+	store, runner, _, first := unresolvedReconciliationExecution(t, DefaultRunPolicy(), reconciler)
+	if _, err := runner.Reconcile(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	writer, view, err := store.OpenWriter(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := JournalEvent{
+		Timestamp: runner.now(), Kind: JournalResultRecorded,
+		ActionID: view.Unresolved.ActionID, ActionType: view.Unresolved.ActionType,
+		Platform: view.Unresolved.Platform, Attempt: view.Unresolved.Attempt,
+		Outcome: OutcomeSucceeded, Status: domain.ActionStatusDone,
+	}
+	summary := summaryForRuntime(view.Manifest, view.Counts, ExecutionStateRunning, ResumabilityResolution, view.BlockReason, "", runner.now())
+	_, appendErr := writer.Append(result, summary)
+	closeErr := writer.Close()
+	if appendErr != nil || closeErr != nil {
+		t.Fatalf("append=%v close=%v", appendErr, closeErr)
+	}
+	if _, err := store.Replay(first.ID); !errors.Is(err, ErrExecutionCorrupt) {
+		t.Fatalf("result after reconciliation replay err=%v", err)
 	}
 }
 

@@ -87,8 +87,9 @@ type RunPolicy struct {
 	StopAfterFinalFailure bool `json:"stop_after_final_failure"`
 }
 
-// MaxAutomaticAttemptsPerAction is the hard runtime ceiling for tight,
-// automatic retry loops. Policies above this value are safely clamped.
+// MaxAutomaticAttemptsPerAction is the hard runtime ceiling for action
+// attempts. Policies above this value are safely clamped. A proven not-applied
+// attempt may expose one explicit retry at a time within this same ceiling.
 const MaxAutomaticAttemptsPerAction = 5
 
 func DefaultRunPolicy() RunPolicy {

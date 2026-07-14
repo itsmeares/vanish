@@ -79,6 +79,16 @@ func (outcome ReconciliationOutcome) resolvesAttempt() bool {
 	return outcome == ReconciliationAlreadyApplied || outcome == ReconciliationNotApplied
 }
 
+func reconciliationAuthorizesRetry(record ReconciliationRecord, attempt int) bool {
+	return record.Outcome == ReconciliationNotApplied &&
+		record.Attempt == attempt &&
+		attempt < MaxAutomaticAttemptsPerAction
+}
+
+func reconciliationAuthorizesAttempt(record ReconciliationRecord, previousAttempt, nextAttempt int) bool {
+	return nextAttempt == previousAttempt+1 && reconciliationAuthorizesRetry(record, previousAttempt)
+}
+
 func reconciliationBlockReason(outcome ReconciliationOutcome) string {
 	switch outcome {
 	case ReconciliationAlreadyApplied:

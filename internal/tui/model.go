@@ -435,6 +435,7 @@ type Model struct {
 	executionConfirmCursor int
 	executionError         string
 	applyResumeReturn      bool
+	reconciliationBusy     bool
 	manualSession          manualcleanup.Session
 	manualSessionLoaded    bool
 	manualPlanSource       applyPlanSource
@@ -757,6 +758,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case applyRunFinishedMsg:
+		m.reconciliationBusy = false
 		m.applyExecution = msg.execution
 		m.applyPreview = msg.execution.Preview
 		if msg.err != nil && errors.Is(msg.err, apply.ErrExecutionExists) && msg.execution.ID != "" {
@@ -785,6 +787,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case executionLoadedMsg:
+		m.reconciliationBusy = false
 		m.executionSelected = msg.summary
 		m.executionError = msg.notice
 		if msg.err != nil {
@@ -806,6 +809,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case executionRunFinishedMsg:
+		m.reconciliationBusy = false
 		m.applyExecution = msg.execution
 		if msg.err != nil && m.applyExecution.BlockReason == "" {
 			m.applyExecution.BlockReason = apply.RuntimeErrorMessage(msg.err)
@@ -833,6 +837,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadExecutionWithNoticeCmd(m.executionStore(), id, m.executionSelected, notice)
 
 	case executionAbandonedMsg:
+		m.reconciliationBusy = false
 		if msg.err != nil {
 			m.executionError = apply.RuntimeErrorMessage(msg.err)
 			m.current = screenExecutionDetail
@@ -844,6 +849,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadExecutionCmd(m.executionStore(), msg.execution.ID, apply.ExecutionSummary{})
 
 	case executionDeletedMsg:
+		m.reconciliationBusy = false
 		if msg.err != nil {
 			m.executionError = apply.RuntimeErrorMessage(msg.err)
 			m.current = screenExecutionDetail
@@ -1494,6 +1500,7 @@ func (m Model) updateApplyConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch m.applyConfirmCursor {
 		case applyConfirmRun:
 			m.recordApplyConfirmed(m.applyPreview)
+			m.reconciliationBusy = false
 			m.current = screenApplyRunning
 			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.applyRunner()))
 		case applyConfirmCancel:
@@ -1551,6 +1558,7 @@ func (m Model) updateExecutionList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		summary := m.executionSummaries[clampCursor(m.executionCursor, len(m.executionSummaries))]
+		m.reconciliationBusy = false
 		m.current = screenApplyRunning
 		return m, loadExecutionCmd(m.executionStore(), summary.ExecutionID, summary)
 	}
@@ -1580,10 +1588,12 @@ func (m Model) updateExecutionDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch action.ID {
 		case executionActionReconcile:
 			m.executionError = ""
+			m.reconciliationBusy = true
 			m.current = screenApplyRunning
 			return m, tea.Batch(startSpinnerCmd(m.spinner), reconcileExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID))
 		case executionActionResume:
 			m.executionError = ""
+			m.reconciliationBusy = false
 			m.current = screenApplyRunning
 			return m, tea.Batch(startSpinnerCmd(m.spinner), resumeExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID))
 		case executionActionAbandon:
@@ -1614,6 +1624,7 @@ func (m Model) updateExecutionConfirm(msg tea.KeyPressMsg, abandon bool) (tea.Mo
 			return m, nil
 		}
 		m.current = screenApplyRunning
+		m.reconciliationBusy = false
 		if abandon {
 			return m, abandonExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID)
 		}
@@ -2939,6 +2950,13 @@ func (m Model) applyConfirmView() string {
 }
 
 func (m Model) applyRunningView() string {
+	if m.reconciliationBusy {
+		lines := []string{
+			m.styles.body.Render(fmt.Sprintf("%s Reconciling unresolved action...", m.spinner.View())),
+			m.styles.muted.Render("No action is executed during reconciliation."),
+		}
+		return m.centeredPaneFooter("Reconciling", "Unresolved action", lines, m.footer(footerBusy))
+	}
 	lines := []string{
 		m.styles.body.Render(fmt.Sprintf("%s Simulating no-op run...", m.spinner.View())),
 		m.styles.muted.Render("No platform content changes."),

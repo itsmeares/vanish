@@ -176,6 +176,12 @@ func (runner Runner) Reconcile(ctx context.Context, id ExecutionID) (Execution, 
 		}
 		return execution, err
 	}
+	if err := ctx.Err(); err != nil {
+		if replayed, replayErr := runner.Store.Replay(id); replayErr == nil {
+			execution = mergeExecutionView(execution, replayed)
+		}
+		return execution, err
+	}
 
 	reconciler := provider.Reconciler()
 	var providerOutcome ReconciliationOutcome
@@ -228,7 +234,7 @@ func (runner Runner) Reconcile(ctx context.Context, id ExecutionID) (Execution, 
 	if !outcome.resolvesAttempt() {
 		return execution, nil
 	}
-	if outcome == ReconciliationNotApplied && replayed.Manifest.Policy.StopAfterFinalFailure && replayed.LastAttempts[action.ID] >= replayed.Manifest.Policy.MaxAttemptsPerAction {
+	if outcome == ReconciliationNotApplied && replayed.Manifest.Policy.StopAfterFinalFailure && !reconciliationAuthorizesRetry(replayed.LastReconciliation[action.ID], replayed.LastAttempts[action.ID]) {
 		return runner.finishDurable(writer, &execution, JournalExecutionFailed, ExecutionStateFailed, "")
 	}
 	if replayed.NeedsFinalization {
@@ -259,6 +265,10 @@ func (runner Runner) Abandon(id ExecutionID) (Execution, error) {
 
 func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter, execution Execution, executor Executor, attempts map[string]int) (Execution, error) {
 	policy := writer.manifest.Policy
+	lastReconciliations := make(map[string]ReconciliationRecord, len(execution.Reconciliations))
+	for _, reconciliation := range execution.Reconciliations {
+		lastReconciliations[reconciliation.ActionID] = reconciliation
+	}
 	// A durable cancelled result is authoritative even if the process stopped
 	// before it could append the execution-level cancellation record. Finalize
 	// untouched actions without invoking the executor again.
@@ -275,7 +285,8 @@ func (runner Runner) executeDurable(ctx context.Context, writer *ExecutionWriter
 		}
 		for {
 			attempt := attempts[action.ID] + 1
-			if attempt > policy.MaxAttemptsPerAction {
+			reconciliationRetry := reconciliationAuthorizesAttempt(lastReconciliations[action.ID], attempts[action.ID], attempt)
+			if attempt > policy.MaxAttemptsPerAction && !reconciliationRetry {
 				break
 			}
 			if err := ctx.Err(); err != nil {
@@ -524,10 +535,10 @@ func shouldStopAfterDurableFailure(execution Execution, attempts map[string]int,
 			continue
 		}
 		result, ok := lastResults[action.ID]
-		if ok && safeResumeOutcome(result.Outcome) && attempts[action.ID] < policy.MaxAttemptsPerAction {
+		if ok && result.Attempt == attempts[action.ID] && safeResumeOutcome(result.Outcome) && attempts[action.ID] < policy.MaxAttemptsPerAction {
 			continue
 		}
-		if reconciliation, ok := lastReconciliations[action.ID]; ok && reconciliation.Outcome == ReconciliationNotApplied && attempts[action.ID] < policy.MaxAttemptsPerAction {
+		if reconciliation, ok := lastReconciliations[action.ID]; ok && reconciliationAuthorizesRetry(reconciliation, attempts[action.ID]) {
 			continue
 		}
 		return true

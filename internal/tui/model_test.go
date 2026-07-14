@@ -1635,6 +1635,10 @@ func TestResolutionFlowOffersReconcileAbandonAndBack(t *testing.T) {
 	if cmd == nil || reconciling.current != screenApplyRunning {
 		t.Fatalf("Reconcile did not start: screen=%v cmd=%v", reconciling.current, cmd)
 	}
+	busy := stripANSI(reconciling.View().Content)
+	if !strings.Contains(busy, "Reconciling unresolved action") || strings.Contains(busy, "Simulating no-op run") {
+		t.Fatalf("reconciliation busy copy mismatch:\n%s", busy)
+	}
 
 	m.executionActionCursor = 1
 	m = updateModel(t, m, keyPress("enter"))

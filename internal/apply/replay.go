@@ -128,6 +128,9 @@ func (store *ExecutionStore) Replay(id ExecutionID) (ExecutionView, error) {
 			Platform:   inFlight.Platform,
 			Attempt:    inFlight.Attempt,
 			StartedAt:  inFlight.Timestamp,
+			ReconciliationStarted: reconciliationInFlight != nil &&
+				reconciliationInFlight.ActionID == inFlight.ActionID &&
+				reconciliationInFlight.Attempt == inFlight.Attempt,
 		}
 	}
 	classifyExecutionView(&view, lastResult, terminal, lastKind)
@@ -175,7 +178,11 @@ func applyJournalEvent(
 			return ErrExecutionCorrupt
 		}
 		index, ok := actionIndex[event.ActionID]
-		if !ok || index < *lastActionIndex || event.Attempt != view.LastAttempts[event.ActionID]+1 || event.Attempt > view.Manifest.Policy.MaxAttemptsPerAction {
+		previousAttempt := view.LastAttempts[event.ActionID]
+		reconciliation, reconciled := view.LastReconciliation[event.ActionID]
+		reconciliationRetry := reconciled && reconciliationAuthorizesAttempt(reconciliation, previousAttempt, event.Attempt)
+		if !ok || index < *lastActionIndex || event.Attempt != previousAttempt+1 ||
+			(event.Attempt > view.Manifest.Policy.MaxAttemptsPerAction && !reconciliationRetry) {
 			return ErrExecutionCorrupt
 		}
 		action := &view.Plan.Actions[index]
@@ -188,11 +195,14 @@ func applyJournalEvent(
 			}
 		} else {
 			previous, ok := lastResult[event.ActionID]
-			reconciliation, reconciled := view.LastReconciliation[event.ActionID]
-			if !((ok && safeResumeOutcome(previous.Outcome)) || (reconciled && reconciliation.Outcome == ReconciliationNotApplied)) || action.Status != domain.ActionStatusFailed {
+			resultRetry := ok && previous.Attempt == previousAttempt && safeResumeOutcome(previous.Outcome)
+			if !(resultRetry || reconciliationRetry) || action.Status != domain.ActionStatusFailed {
 				return ErrExecutionCorrupt
 			}
-			if ok && (previous.Outcome == OutcomeRateLimited || previous.Outcome == OutcomeAuthenticationRequired || previous.RetryAfter > 0) && lastKind != JournalExecutionResumed {
+			if reconciliationRetry && lastKind != JournalExecutionResumed {
+				return ErrExecutionCorrupt
+			}
+			if resultRetry && (previous.Outcome == OutcomeRateLimited || previous.Outcome == OutcomeAuthenticationRequired || previous.RetryAfter > 0) && lastKind != JournalExecutionResumed {
 				return ErrExecutionCorrupt
 			}
 		}
@@ -204,7 +214,7 @@ func applyJournalEvent(
 		*inFlight = &copied
 		view.State = ExecutionStateRunning
 	case JournalResultRecorded:
-		if !*started || *inFlight == nil || *reconciliationInFlight != nil || event.HaltReason != "" || event.ReconciliationAttempt != 0 || event.ReconciliationOutcome != "" {
+		if !*started || *inFlight == nil || lastKind != JournalAttemptStarted || event.HaltReason != "" || event.ReconciliationAttempt != 0 || event.ReconciliationOutcome != "" {
 			return ErrExecutionCorrupt
 		}
 		startedEvent := *inFlight
@@ -370,9 +380,9 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 	}
 	if view.Unresolved != nil {
 		view.Resumability = ResumabilityResolution
-		if record, ok := view.LastReconciliation[view.Unresolved.ActionID]; ok {
+		if record, ok := view.LastReconciliation[view.Unresolved.ActionID]; ok && record.Attempt == view.Unresolved.Attempt {
 			view.BlockReason = reconciliationBlockReason(record.Outcome)
-		} else if view.ReconciliationAttempts[view.Unresolved.ActionID] > 0 {
+		} else if view.Unresolved.ReconciliationStarted {
 			view.BlockReason = "Reconciliation was interrupted. Try again or abandon."
 		} else {
 			view.BlockReason = "A previous action has an unknown result."
@@ -383,7 +393,7 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 	var gatedAt time.Time
 	var gatedSequence int64
 	for actionID, result := range lastResult {
-		if !safeResumeOutcome(result.Outcome) {
+		if result.Attempt != view.LastAttempts[actionID] || !safeResumeOutcome(result.Outcome) {
 			continue
 		}
 		history := view.AttemptHistory[actionID]
@@ -409,14 +419,17 @@ func classifyExecutionView(view *ExecutionView, lastResult map[string]ActionResu
 		action := view.Plan.Actions[index]
 		result, hasResult := lastResult[action.ID]
 		reconciliation, hasReconciliation := view.LastReconciliation[action.ID]
-		if ((hasResult && safeResumeOutcome(result.Outcome)) || (hasReconciliation && reconciliation.Outcome == ReconciliationNotApplied)) && view.LastAttempts[action.ID] < view.Manifest.Policy.MaxAttemptsPerAction {
+		attempt := view.LastAttempts[action.ID]
+		resultRetry := hasResult && result.Attempt == attempt && safeResumeOutcome(result.Outcome) && attempt < view.Manifest.Policy.MaxAttemptsPerAction
+		reconciliationRetry := hasReconciliation && reconciliationAuthorizesRetry(reconciliation, attempt)
+		if resultRetry || reconciliationRetry {
 			retryAction = action.ID
 			retryAttempt = view.LastAttempts[action.ID] + 1
-			if hasResult && result.RetryAfter > 0 {
+			if resultRetry && result.RetryAfter > 0 {
 				history := view.AttemptHistory[action.ID]
 				view.RetryNotBefore = history[len(history)-1].ResultAt.Add(result.RetryAfter)
 			}
-			if hasResult && result.Outcome == OutcomeAuthenticationRequired {
+			if resultRetry && result.Outcome == OutcomeAuthenticationRequired {
 				view.Resumability = ResumabilityWaitingProvider
 				view.BlockReason = "Reconnect the account before resuming."
 			} else if !view.RetryNotBefore.IsZero() {
