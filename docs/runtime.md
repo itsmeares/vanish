@@ -142,6 +142,22 @@ durable writer is active; wipe holds the exclusive lease so no writer can start
 during removal. Locked executions remain readable in Local Data but Resume is
 disabled until the other process exits.
 
+## Deterministic Test Simulator
+
+The apply test suite includes a deterministic, test-only runtime simulator. It
+drives the real durable runner, store, replay, Resume, and Reconcile paths with
+scripted executor and reconciliation outcomes. A fixed controllable clock and
+isolated temporary workspace let scenarios cross fresh store and runner
+instances without sleeping, network access, or platform-specific behavior.
+
+Named one-shot faults cover the durable boundaries after attempt start, after
+executor return but before result persistence, after reconciliation start,
+before and after reconciliation-result persistence, and before and after a
+terminal event. Runtime-owned observations record journal order, attempts,
+idempotency keys, reconciliation requests, and executor entry for assertions.
+The simulator is compiled only with tests and adds no product command, screen,
+or production execution control.
+
 ## Safety and Deferred Work
 
 Provider results contain only an outcome, optional structured message ID,
@@ -156,6 +172,5 @@ values, and private content do not enter execution audit metadata.
 This runtime still uses no-op simulation executors and enables no platform
 mutation or new network behavior. Built-in providers do not expose production
 reconcilers; reconciliation behavior is exercised through scripted test-only
-providers. Runtime simulator and fault scenarios remain deferred to PR 16. Real
-platform execution and real provider reconciliation integrations remain
-deferred.
+providers. Real platform execution, production provider reconciliation,
+background execution, and automatic resume remain deferred.
