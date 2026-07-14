@@ -77,6 +77,10 @@ const (
 	screenApplyConfirm
 	screenApplyRunning
 	screenApplyResult
+	screenExecutionList
+	screenExecutionDetail
+	screenExecutionAbandonConfirm
+	screenExecutionDeleteConfirm
 	screenManualCleanupChoice
 	screenManualCleanupAction
 	screenManualCleanupResult
@@ -250,6 +254,22 @@ var applyResultMenuItems = []string{
 	"View actions",
 }
 
+const (
+	executionActionResume = iota
+	executionActionAbandon
+	executionActionDelete
+	executionActionBack
+)
+
+type executionAction struct {
+	ID       int
+	Label    string
+	Disabled bool
+	Reason   string
+}
+
+var executionConfirmMenuItems = []string{"Confirm", "Cancel"}
+
 var manualCleanupActionItems = []string{
 	"Open target",
 	"Mark as done",
@@ -269,6 +289,7 @@ const (
 const (
 	localDataRecentImports = iota
 	localDataRecentPlans
+	localDataExecutions
 	localDataAuditLog
 	localDataWipe
 	localDataBackHome
@@ -277,6 +298,7 @@ const (
 var localDataMenuItems = []string{
 	"Recent imports",
 	"Recent plans",
+	"Executions",
 	"Audit log",
 	"Wipe local data",
 	"Back home",
@@ -321,6 +343,9 @@ const (
 	hitApplyPreviewAction
 	hitApplyConfirmAction
 	hitApplyResultAction
+	hitExecutionRow
+	hitExecutionAction
+	hitExecutionConfirm
 	hitFilterRow
 	hitWarningRow
 	hitLocalDataAction
@@ -361,116 +386,125 @@ type importPickerEntry struct {
 // terminal dimensions, styles, and reusable Bubbles components. Bubble Tea
 // passes this value through Init, Update, and View as the app runs.
 type Model struct {
-	current              screen
-	width                int
-	height               int
-	styles               styles
-	keys                 keyMap
-	help                 help.Model
-	localWorkspace       *workspace.Workspace
-	planPathInput        textinput.Model
-	filterActorInput     textinput.Model
-	filterTargetInput    textinput.Model
-	filterOlderInput     textinput.Model
-	filterNewerInput     textinput.Model
-	spinner              spinner.Model
-	hoverTarget          hitTarget
-	hitBoxes             []hitBox
-	importPickerDir      string
-	importPickerEntries  []importPickerEntry
-	importPickerCursor   int
-	importPickerOffset   int
-	importPickerError    string
-	importReturnScreen   screen
-	importSource         string
-	importPlatform       domain.PlatformName
-	importResult         activityResult
-	importErr            error
-	itemFilter           domain.ActivityItemFilter
-	itemIndex            activityItemIndex
-	selection            domain.ActivitySelection
-	selectionCounts      domain.ActivitySelectionCounts
-	selectedItemIndexes  []int
-	selectedItemsDirty   bool
-	itemFocus            itemBrowserFocus
-	itemActionCursor     int
-	planResult           planBuildResult
-	loadedPlan           domain.CleanupPlan
-	loadedPlanSummary    domain.CleanupPlanSummary
-	applyPlanSource      applyPlanSource
-	applyPreview         apply.Preview
-	applyExecution       apply.Execution
-	manualSession        manualcleanup.Session
-	manualSessionLoaded  bool
-	manualPlanSource     applyPlanSource
-	manualPreviews       map[string]string
-	manualPreviewPlanID  string
-	manualEligibleCount  int
-	manualUnavailable    int
-	manualChoiceCursor   int
-	manualActionCursor   int
-	manualResultCursor   int
-	manualStatus         string
-	manualError          string
-	draftFilter          domain.ActivityItemFilter
-	draftOlderDate       string
-	draftNewerDate       string
-	filterError          string
-	selectionMessage     string
-	planExportStatus     string
-	planExportError      string
-	planLoadError        string
-	recentPlanError      string
-	localDataStatus      string
-	localDataWarning     string
-	localConfig          workspace.Config
-	recentImports        []workspace.RecentImport
-	recentPlans          []workspace.RecentPlan
-	auditEvents          []workspace.AuditEvent
-	auditMalformed       int
-	homeCursor           int
-	selectedPlatformID   platform.PlatformID
-	platformActionCursor int
-	instagramGuideCursor int
-	instagramGuideError  string
-	redditConnectCursor  int
-	redditFileFallback   bool
-	redditAuthState      string
-	redditAuthURL        string
-	redditSignInCancel   context.CancelFunc
-	redditStatus         string
-	redditError          string
-	redditBusyTitle      string
-	redditBusyDetail     string
-	resultCursor         int
-	itemCursor           int
-	itemOffset           int
-	filterCursor         int
-	filterEditing        int
-	selectionCursor      int
-	selectedCursor       int
-	selectedOffset       int
-	planPreviewCursor    int
-	planListOffset       int
-	loadedPlanCursor     int
-	loadedActionCursor   int
-	loadedActionOffset   int
-	applyPreviewCursor   int
-	applyConfirmCursor   int
-	applyResultCursor    int
-	warningCursor        int
-	warningOffset        int
-	localDataCursor      int
-	recentImportCursor   int
-	recentImportOffset   int
-	recentPlanCursor     int
-	recentPlanOffset     int
-	auditCursor          int
-	auditOffset          int
-	wipeLocalDataCursor  int
-	helpReturnScreen     screen
-	quitReturnScreen     screen
-	quitCursor           int
+	current                screen
+	width                  int
+	height                 int
+	styles                 styles
+	keys                   keyMap
+	help                   help.Model
+	localWorkspace         *workspace.Workspace
+	planPathInput          textinput.Model
+	filterActorInput       textinput.Model
+	filterTargetInput      textinput.Model
+	filterOlderInput       textinput.Model
+	filterNewerInput       textinput.Model
+	spinner                spinner.Model
+	hoverTarget            hitTarget
+	hitBoxes               []hitBox
+	importPickerDir        string
+	importPickerEntries    []importPickerEntry
+	importPickerCursor     int
+	importPickerOffset     int
+	importPickerError      string
+	importReturnScreen     screen
+	importSource           string
+	importPlatform         domain.PlatformName
+	importResult           activityResult
+	importErr              error
+	itemFilter             domain.ActivityItemFilter
+	itemIndex              activityItemIndex
+	selection              domain.ActivitySelection
+	selectionCounts        domain.ActivitySelectionCounts
+	selectedItemIndexes    []int
+	selectedItemsDirty     bool
+	itemFocus              itemBrowserFocus
+	itemActionCursor       int
+	planResult             planBuildResult
+	loadedPlan             domain.CleanupPlan
+	loadedPlanSummary      domain.CleanupPlanSummary
+	applyPlanSource        applyPlanSource
+	applyPreview           apply.Preview
+	applyExecution         apply.Execution
+	executionSummaries     []apply.ExecutionSummary
+	executionView          apply.ExecutionView
+	executionSelected      apply.ExecutionSummary
+	executionCursor        int
+	executionOffset        int
+	executionActionCursor  int
+	executionConfirmCursor int
+	executionError         string
+	applyResumeReturn      bool
+	manualSession          manualcleanup.Session
+	manualSessionLoaded    bool
+	manualPlanSource       applyPlanSource
+	manualPreviews         map[string]string
+	manualPreviewPlanID    string
+	manualEligibleCount    int
+	manualUnavailable      int
+	manualChoiceCursor     int
+	manualActionCursor     int
+	manualResultCursor     int
+	manualStatus           string
+	manualError            string
+	draftFilter            domain.ActivityItemFilter
+	draftOlderDate         string
+	draftNewerDate         string
+	filterError            string
+	selectionMessage       string
+	planExportStatus       string
+	planExportError        string
+	planLoadError          string
+	recentPlanError        string
+	localDataStatus        string
+	localDataWarning       string
+	localConfig            workspace.Config
+	recentImports          []workspace.RecentImport
+	recentPlans            []workspace.RecentPlan
+	auditEvents            []workspace.AuditEvent
+	auditMalformed         int
+	homeCursor             int
+	selectedPlatformID     platform.PlatformID
+	platformActionCursor   int
+	instagramGuideCursor   int
+	instagramGuideError    string
+	redditConnectCursor    int
+	redditFileFallback     bool
+	redditAuthState        string
+	redditAuthURL          string
+	redditSignInCancel     context.CancelFunc
+	redditStatus           string
+	redditError            string
+	redditBusyTitle        string
+	redditBusyDetail       string
+	resultCursor           int
+	itemCursor             int
+	itemOffset             int
+	filterCursor           int
+	filterEditing          int
+	selectionCursor        int
+	selectedCursor         int
+	selectedOffset         int
+	planPreviewCursor      int
+	planListOffset         int
+	loadedPlanCursor       int
+	loadedActionCursor     int
+	loadedActionOffset     int
+	applyPreviewCursor     int
+	applyConfirmCursor     int
+	applyResultCursor      int
+	warningCursor          int
+	warningOffset          int
+	localDataCursor        int
+	recentImportCursor     int
+	recentImportOffset     int
+	recentPlanCursor       int
+	recentPlanOffset       int
+	auditCursor            int
+	auditOffset            int
+	wipeLocalDataCursor    int
+	helpReturnScreen       screen
+	quitReturnScreen       screen
+	quitCursor             int
 }
 
 // NewModel builds the initial app state before Bubble Tea starts sending
@@ -545,6 +579,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recentImportOffset = ensureOffset(m.recentImportCursor, m.recentImportOffset, len(m.recentImports), m.localDataListHeight())
 		m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
 		m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
+		m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(m.executionSummaries), m.localDataListHeight())
 		m.importPickerOffset = ensureOffset(m.importPickerCursor, m.importPickerOffset, len(m.importPickerEntries), m.importPickerListHeight())
 
 	case importFinishedMsg:
@@ -723,6 +758,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case applyRunFinishedMsg:
 		m.applyExecution = msg.execution
 		m.applyPreview = msg.execution.Preview
+		if msg.err != nil && errors.Is(msg.err, apply.ErrExecutionExists) && msg.execution.ID != "" {
+			m.executionError = ""
+			m.applyResumeReturn = false
+			m.current = screenApplyRunning
+			return m, loadExecutionCmd(m.executionStore(), msg.execution.ID, apply.ExecutionSummary{
+				ExecutionID:  msg.execution.ID,
+				Resumability: msg.execution.Resumability,
+				BlockReason:  msg.execution.BlockReason,
+			})
+		}
+		if msg.err != nil && m.applyExecution.BlockReason == "" {
+			m.applyExecution.BlockReason = apply.RuntimeErrorMessage(msg.err)
+		}
 		if msg.source == applySourceLoaded {
 			m.loadedPlan = msg.execution.Plan
 			m.loadedPlanSummary = domain.SummarizeCleanupPlan(msg.execution.Plan)
@@ -731,7 +779,62 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recordApplyExecution(msg.execution)
 		m.applyResultCursor = 0
+		m.applyResumeReturn = false
 		m.current = screenApplyResult
+		return m, nil
+
+	case executionLoadedMsg:
+		m.executionSelected = msg.summary
+		m.executionError = ""
+		if msg.err != nil {
+			m.executionView = apply.ExecutionView{}
+			m.executionError = apply.RuntimeErrorMessage(msg.err)
+			if errors.Is(msg.err, apply.ErrExecutionCorrupt) {
+				m.executionSelected.Resumability = apply.ResumabilityCorrupt
+			}
+		} else {
+			m.executionView = msg.view
+			m.executionSelected = executionSummaryFromView(msg.view)
+			if msg.summary.Resumability == apply.ResumabilityLocked {
+				m.executionSelected.Resumability = apply.ResumabilityLocked
+				m.executionSelected.BlockReason = msg.summary.BlockReason
+			}
+		}
+		m.executionActionCursor = 0
+		m.current = screenExecutionDetail
+		return m, nil
+
+	case executionRunFinishedMsg:
+		m.applyExecution = msg.execution
+		if msg.err != nil && m.applyExecution.BlockReason == "" {
+			m.applyExecution.BlockReason = apply.RuntimeErrorMessage(msg.err)
+		}
+		m.recordApplyExecution(msg.execution)
+		m.applyResultCursor = 0
+		m.applyResumeReturn = true
+		m.current = screenApplyResult
+		return m, nil
+
+	case executionAbandonedMsg:
+		if msg.err != nil {
+			m.executionError = apply.RuntimeErrorMessage(msg.err)
+			m.current = screenExecutionDetail
+			return m, nil
+		}
+		m.recordApplyExecution(msg.execution)
+		m.refreshExecutions()
+		m.executionError = ""
+		return m, loadExecutionCmd(m.executionStore(), msg.execution.ID, apply.ExecutionSummary{})
+
+	case executionDeletedMsg:
+		if msg.err != nil {
+			m.executionError = apply.RuntimeErrorMessage(msg.err)
+			m.current = screenExecutionDetail
+			return m, nil
+		}
+		m.executionError = ""
+		m.refreshExecutions()
+		m.current = screenExecutionList
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -804,6 +907,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case screenApplyResult:
 			return m.updateApplyResult(msg)
+		case screenExecutionList:
+			return m.updateExecutionList(msg)
+		case screenExecutionDetail:
+			return m.updateExecutionDetail(msg)
+		case screenExecutionAbandonConfirm:
+			return m.updateExecutionConfirm(msg, true)
+		case screenExecutionDeleteConfirm:
+			return m.updateExecutionConfirm(msg, false)
 		case screenManualCleanupChoice:
 			return m.updateManualCleanupChoice(msg)
 		case screenManualCleanupAction:
@@ -1367,7 +1478,7 @@ func (m Model) updateApplyConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case applyConfirmRun:
 			m.recordApplyConfirmed(m.applyPreview)
 			m.current = screenApplyRunning
-			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.applyRuntimeState()))
+			return m, tea.Batch(startSpinnerCmd(m.spinner), runApplyCmd(m.currentApplyPlan(), m.applyPlanSource, m.applyRunner()))
 		case applyConfirmCancel:
 			m.current = screenApplyPreview
 		}
@@ -1382,11 +1493,21 @@ func (m Model) updateApplyResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.down):
 		m.applyResultCursor = moveCursor(m.applyResultCursor, len(applyResultMenuItems), 1)
 	case key.Matches(msg, m.keys.back):
-		m.returnToApplySource()
+		if m.applyResumeReturn {
+			m.refreshExecutions()
+			m.current = screenExecutionList
+		} else {
+			m.returnToApplySource()
+		}
 	case key.Matches(msg, m.keys.selectItem):
 		switch m.applyResultCursor {
 		case applyResultBack:
-			m.returnToApplySource()
+			if m.applyResumeReturn {
+				m.refreshExecutions()
+				m.current = screenExecutionList
+			} else {
+				m.returnToApplySource()
+			}
 		case applyResultViewActions:
 			if m.applyPlanSource == applySourceLoaded {
 				m.loadedActionCursor = clampCursor(m.loadedActionCursor, len(m.loadedPlan.Actions))
@@ -1396,6 +1517,86 @@ func (m Model) updateApplyResult(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.current = screenPlanPreview
 			}
 		}
+	}
+	return m, nil
+}
+
+func (m Model) updateExecutionList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.executionCursor = moveCursor(m.executionCursor, len(m.executionSummaries), -1)
+	case key.Matches(msg, m.keys.down):
+		m.executionCursor = moveCursor(m.executionCursor, len(m.executionSummaries), 1)
+	case key.Matches(msg, m.keys.back):
+		m.openLocalDataOverview()
+	case key.Matches(msg, m.keys.selectItem):
+		if len(m.executionSummaries) == 0 {
+			return m, nil
+		}
+		summary := m.executionSummaries[clampCursor(m.executionCursor, len(m.executionSummaries))]
+		m.current = screenApplyRunning
+		return m, loadExecutionCmd(m.executionStore(), summary.ExecutionID, summary)
+	}
+	m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(m.executionSummaries), m.localDataListHeight())
+	return m, nil
+}
+
+func (m Model) updateExecutionDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	actions := m.executionActions()
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.executionActionCursor = moveCursor(m.executionActionCursor, len(actions), -1)
+	case key.Matches(msg, m.keys.down):
+		m.executionActionCursor = moveCursor(m.executionActionCursor, len(actions), 1)
+	case key.Matches(msg, m.keys.back):
+		m.refreshExecutions()
+		m.current = screenExecutionList
+	case key.Matches(msg, m.keys.selectItem):
+		if len(actions) == 0 {
+			return m, nil
+		}
+		action := actions[clampCursor(m.executionActionCursor, len(actions))]
+		if action.Disabled {
+			m.executionError = action.Reason
+			return m, nil
+		}
+		switch action.ID {
+		case executionActionResume:
+			m.executionError = ""
+			m.current = screenApplyRunning
+			return m, tea.Batch(startSpinnerCmd(m.spinner), resumeExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID))
+		case executionActionAbandon:
+			m.executionConfirmCursor = 1
+			m.current = screenExecutionAbandonConfirm
+		case executionActionDelete:
+			m.executionConfirmCursor = 1
+			m.current = screenExecutionDeleteConfirm
+		case executionActionBack:
+			m.refreshExecutions()
+			m.current = screenExecutionList
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateExecutionConfirm(msg tea.KeyPressMsg, abandon bool) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.up):
+		m.executionConfirmCursor = moveCursor(m.executionConfirmCursor, len(executionConfirmMenuItems), -1)
+	case key.Matches(msg, m.keys.down):
+		m.executionConfirmCursor = moveCursor(m.executionConfirmCursor, len(executionConfirmMenuItems), 1)
+	case key.Matches(msg, m.keys.back):
+		m.current = screenExecutionDetail
+	case key.Matches(msg, m.keys.selectItem):
+		if m.executionConfirmCursor != 0 {
+			m.current = screenExecutionDetail
+			return m, nil
+		}
+		m.current = screenApplyRunning
+		if abandon {
+			return m, abandonExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID)
+		}
+		return m, deleteExecutionCmd(m.executionStore(), m.executionSelected)
 	}
 	return m, nil
 }
@@ -1447,6 +1648,11 @@ func (m Model) updateLocalDataOverview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 			m.recentPlanCursor = clampCursor(m.recentPlanCursor, len(m.recentPlans))
 			m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
 			m.current = screenRecentPlans
+		case localDataExecutions:
+			m.refreshExecutions()
+			m.executionCursor = clampCursor(m.executionCursor, len(m.executionSummaries))
+			m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(m.executionSummaries), m.localDataListHeight())
+			m.current = screenExecutionList
 		case localDataAuditLog:
 			m.refreshLocalData()
 			m.auditCursor = clampCursor(m.auditCursor, len(m.auditEvents))
@@ -1660,6 +1866,27 @@ func (m Model) updateMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.applyResultCursor = target.Index
 			return m.updateApplyResult(selectKeyPress())
 		}
+	case screenExecutionList:
+		if target.Kind == hitExecutionRow {
+			m.executionCursor = target.Index
+			m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(m.executionSummaries), m.localDataListHeight())
+			return m.updateExecutionList(selectKeyPress())
+		}
+	case screenExecutionDetail:
+		if target.Kind == hitExecutionAction {
+			m.executionActionCursor = target.Index
+			return m.updateExecutionDetail(selectKeyPress())
+		}
+	case screenExecutionAbandonConfirm:
+		if target.Kind == hitExecutionConfirm {
+			m.executionConfirmCursor = target.Index
+			return m.updateExecutionConfirm(selectKeyPress(), true)
+		}
+	case screenExecutionDeleteConfirm:
+		if target.Kind == hitExecutionConfirm {
+			m.executionConfirmCursor = target.Index
+			return m.updateExecutionConfirm(selectKeyPress(), false)
+		}
 	case screenManualCleanupChoice:
 		if target.Kind == hitPlatformAction {
 			m.manualChoiceCursor = target.Index
@@ -1759,6 +1986,9 @@ func (m Model) updateMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.recentPlanError = ""
 		m.recentPlanCursor = moveCursor(m.recentPlanCursor, len(m.recentPlans), delta)
 		m.recentPlanOffset = ensureOffset(m.recentPlanCursor, m.recentPlanOffset, len(m.recentPlans), m.localDataListHeight())
+	case screenExecutionList:
+		m.executionCursor = moveCursor(m.executionCursor, len(m.executionSummaries), delta)
+		m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(m.executionSummaries), m.localDataListHeight())
 	case screenAuditLog:
 		m.auditCursor = moveCursor(m.auditCursor, len(m.auditEvents), delta)
 		m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
@@ -1909,6 +2139,14 @@ func (m Model) renderContent() string {
 		content = m.applyRunningView()
 	case screenApplyResult:
 		content = m.applyResultView()
+	case screenExecutionList:
+		content = m.executionListView()
+	case screenExecutionDetail:
+		content = m.executionDetailView()
+	case screenExecutionAbandonConfirm:
+		content = m.executionConfirmView(true)
+	case screenExecutionDeleteConfirm:
+		content = m.executionConfirmView(false)
 	case screenManualCleanupChoice:
 		content = m.manualCleanupChoiceView()
 	case screenManualCleanupAction:
@@ -2709,6 +2947,12 @@ func (m Model) applyResultView() string {
 	if detailRows := applyOutcomeDetailRows(execution); len(detailRows) > 0 {
 		lines = append(lines, m.section("Outcome", m.keyValueRows(detailRows))...)
 	}
+	if strings.TrimSpace(execution.BlockReason) != "" {
+		lines = append(lines, m.notice("warning", execution.BlockReason))
+	}
+	if strings.TrimSpace(execution.RecoveryWarning) != "" {
+		lines = append(lines, m.notice("warning", execution.RecoveryWarning))
+	}
 	lines = append(lines, "")
 	lines = append(lines, m.menuRows(applyResultMenuItems, m.applyResultCursor, spec.detailWidth, hitApplyResultAction)...)
 
@@ -2725,6 +2969,75 @@ func (m Model) applyResultView() string {
 	}
 	body := m.twoPane(spec, "Apply Result", "No-op simulation", lines, "Action Results", "Safe summary", resultLines)
 	return m.appShell("Apply Result", body, m.footer(footerActionMenu))
+}
+
+func (m Model) executionListView() string {
+	spec := layoutSpec(m.width, m.height)
+	visibleRows := m.localDataListHeight()
+	cursor := clampCursor(m.executionCursor, len(m.executionSummaries))
+	offset := ensureOffset(cursor, m.executionOffset, len(m.executionSummaries), visibleRows)
+	listWidth, detailWidth := twoPaneWidths(spec, "Executions")
+	listLines := []string{m.styles.muted.Render(fmt.Sprintf("%d durable executions", len(m.executionSummaries))), ""}
+	if strings.TrimSpace(m.executionError) != "" {
+		listLines = append(listLines, m.notice("error", m.executionError), "")
+	}
+	if len(m.executionSummaries) == 0 {
+		listLines = append(listLines, m.emptyState("No durable executions yet."))
+	} else {
+		listLines = append(listLines, m.windowedTableRows(len(m.executionSummaries), cursor, offset, visibleRows, listWidth, hitExecutionRow, func(index int) string {
+			return executionSummaryRow(m.executionSummaries[index])
+		})...)
+	}
+	detailLines := []string{}
+	if len(m.executionSummaries) == 0 {
+		detailLines = append(detailLines, m.emptyState("No execution selected."))
+	} else {
+		detailLines = append(detailLines, m.detailRows(executionSummaryDetails(m.executionSummaries[cursor]), detailWidth)...)
+	}
+	body := m.twoPane(spec, "Executions", "Newest first", listLines, "Details", "Enter opens selected", detailLines)
+	return m.appShell("Executions", body, m.footer("up/down move · enter/click open · esc back · ? help · ctrl+q quit"))
+}
+
+func (m Model) executionDetailView() string {
+	spec := layoutSpec(m.width, m.height)
+	actions := m.executionActions()
+	labels := make([]string, len(actions))
+	disabled := make(map[int]bool, len(actions))
+	for index, action := range actions {
+		labels[index] = action.Label
+		disabled[index] = action.Disabled
+	}
+	lines := m.dashboardSections(spec.detailWidth,
+		m.section("Execution", m.keyValueRows(executionSummaryKeyValues(m.executionSelected))),
+		m.section("Progress", m.keyValueRows(executionCountKeyValues(m.executionSelected.Counts))),
+	)
+	if strings.TrimSpace(m.executionSelected.BlockReason) != "" {
+		lines = append(lines, m.notice("warning", m.executionSelected.BlockReason))
+	}
+	if strings.TrimSpace(m.executionSelected.RecoveryWarning) != "" {
+		lines = append(lines, m.notice("warning", m.executionSelected.RecoveryWarning))
+	}
+	if strings.TrimSpace(m.executionError) != "" {
+		lines = append(lines, m.notice("error", m.executionError))
+	}
+	lines = append(lines, "")
+	lines = append(lines, m.menuRowsWithDisabled(labels, disabled, m.executionActionCursor, spec.detailWidth, hitExecutionAction)...)
+	if len(actions) > 0 && actions[clampCursor(m.executionActionCursor, len(actions))].Disabled {
+		lines = append(lines, "", m.notice("warning", actions[clampCursor(m.executionActionCursor, len(actions))].Reason))
+	}
+	return m.singlePaneFooter("Execution", "Durable local progress", lines, m.footer(footerActionMenu))
+}
+
+func (m Model) executionConfirmView(abandon bool) string {
+	title := "Delete Execution?"
+	message := "Delete this terminal execution from local storage?"
+	if abandon {
+		title = "Abandon Execution?"
+		message = "Abandon this execution without invoking any provider action?"
+	}
+	lines := []string{m.notice("warning", message), ""}
+	lines = append(lines, m.menuRows(executionConfirmMenuItems, m.executionConfirmCursor, layoutSpec(m.width, m.height).contentWidth, hitExecutionConfirm)...)
+	return m.singlePaneFooter(title, "Defaults to Cancel", lines, m.footer(footerConfirm))
 }
 
 func (m Model) filtersView() string {
@@ -2964,6 +3277,7 @@ func (m Model) localDataOverviewView() string {
 		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
 		m.styles.body.Render(fmt.Sprintf("Recent imports: %d", len(m.recentImports))),
 		m.styles.body.Render(fmt.Sprintf("Recent plans: %d", len(m.recentPlans))),
+		m.styles.body.Render(fmt.Sprintf("Executions: %d", len(m.executionSummaries))),
 		m.styles.body.Render(fmt.Sprintf("Audit events: %d", len(m.auditEvents))),
 	}
 	if m.auditMalformed > 0 {
@@ -3078,7 +3392,7 @@ func (m Model) auditLogView() string {
 func (m Model) wipeLocalDataConfirmView() string {
 	spec := layoutSpec(m.width, m.height)
 	lines := []string{
-		m.notice("warning", "This clears Vanish-managed config, recent history, and audit records."),
+		m.notice("warning", "This clears Vanish-managed config, history, audit records, and saved execution progress."),
 		m.styles.body.Render("It does not delete Instagram export ZIPs or cleanup plan JSON files outside the app directory."),
 		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
 		"",
@@ -3316,6 +3630,7 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 
 func (m *Model) openLocalDataOverview() {
 	m.refreshLocalData()
+	m.refreshExecutions()
 	m.localDataCursor = clampCursor(m.localDataCursor, len(localDataMenuItems))
 	m.current = screenLocalDataOverview
 }
@@ -3347,6 +3662,87 @@ func (m Model) applyRunner() apply.Runner {
 	return apply.Runner{
 		Providers: builtInSimulationProviders,
 		State:     m.applyRuntimeState(),
+		Policy:    apply.DefaultRunPolicy(),
+		Store:     m.executionStore(),
+	}
+}
+
+func (m Model) executionStore() *apply.ExecutionStore {
+	if m.localWorkspace == nil {
+		return nil
+	}
+	return apply.NewExecutionStore(m.localWorkspace.Dir())
+}
+
+func (m *Model) refreshExecutions() {
+	store := m.executionStore()
+	if store == nil {
+		m.executionSummaries = nil
+		m.executionError = "Durable execution storage is unavailable."
+		return
+	}
+	summaries, err := store.List()
+	if err != nil {
+		m.executionSummaries = nil
+		m.executionError = apply.RuntimeErrorMessage(err)
+		return
+	}
+	m.executionSummaries = summaries
+	m.executionCursor = clampCursor(m.executionCursor, len(summaries))
+	m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(summaries), m.localDataListHeight())
+}
+
+func (m Model) executionActions() []executionAction {
+	summary := m.executionSelected
+	switch summary.Resumability {
+	case apply.ResumabilityCorrupt:
+		return []executionAction{{ID: executionActionDelete, Label: "Delete execution"}, {ID: executionActionBack, Label: "Back"}}
+	case apply.ResumabilityTerminal:
+		return []executionAction{{ID: executionActionDelete, Label: "Delete execution"}, {ID: executionActionBack, Label: "Back"}}
+	case apply.ResumabilityResolution:
+		return []executionAction{{ID: executionActionAbandon, Label: "Abandon"}, {ID: executionActionBack, Label: "Back"}}
+	}
+	resume := executionAction{ID: executionActionResume, Label: "Resume"}
+	if summary.Resumability == apply.ResumabilityLocked {
+		resume.Disabled = true
+		resume.Reason = "Execution is active in another Vanish process."
+	} else if summary.Resumability == apply.ResumabilityWaitingRetry && !m.executionView.RetryNotBefore.IsZero() && time.Now().UTC().Before(m.executionView.RetryNotBefore) {
+		resume.Disabled = true
+		resume.Reason = "Retry time has not arrived."
+	} else if summary.Resumability == apply.ResumabilityWaitingProvider {
+		provider, err := builtInSimulationProviders.Resolve(m.executionView.Manifest.Platform, m.executionView.Manifest.Mode)
+		if err != nil {
+			resume.Disabled = true
+			resume.Reason = "Execution provider is unavailable."
+		} else {
+			for _, prerequisite := range provider.Prerequisites(m.executionView.Plan, m.applyRuntimeState()) {
+				if prerequisite.Blocking {
+					resume.Disabled = true
+					resume.Reason = prerequisite.Message
+					break
+				}
+			}
+		}
+	}
+	return []executionAction{resume, {ID: executionActionAbandon, Label: "Abandon"}, {ID: executionActionBack, Label: "Back"}}
+}
+
+func executionSummaryFromView(view apply.ExecutionView) apply.ExecutionSummary {
+	return apply.ExecutionSummary{
+		FormatVersion:   apply.ExecutionJournalFormatVersion,
+		ExecutionID:     view.Manifest.ExecutionID,
+		Fingerprint:     view.Manifest.Fingerprint,
+		CreatedAt:       view.Manifest.CreatedAt,
+		UpdatedAt:       view.UpdatedAt,
+		SourceLabel:     view.Manifest.Summary.SourceLabel,
+		Platform:        view.Manifest.Platform,
+		Mode:            view.Manifest.Mode,
+		State:           view.State,
+		Resumability:    view.Resumability,
+		BlockReason:     view.BlockReason,
+		Counts:          view.Counts,
+		LastSequence:    view.LastSequence,
+		RecoveryWarning: view.RecoveryWarning,
 	}
 }
 
@@ -4158,6 +4554,12 @@ func (m *Model) wipeLocalData() {
 	m.recentPlans = nil
 	m.auditEvents = nil
 	m.auditMalformed = 0
+	m.executionSummaries = nil
+	m.executionView = apply.ExecutionView{}
+	m.executionSelected = apply.ExecutionSummary{}
+	m.executionCursor = 0
+	m.executionOffset = 0
+	m.executionError = ""
 	m.manualSession = manualcleanup.Session{}
 	m.manualSessionLoaded = false
 	m.manualPreviews = nil
@@ -4588,7 +4990,26 @@ type loadPlanFinishedMsg struct {
 type applyRunFinishedMsg struct {
 	source    applyPlanSource
 	execution apply.Execution
+	err       error
 }
+
+type executionLoadedMsg struct {
+	view    apply.ExecutionView
+	summary apply.ExecutionSummary
+	err     error
+}
+
+type executionRunFinishedMsg struct {
+	execution apply.Execution
+	err       error
+}
+
+type executionAbandonedMsg struct {
+	execution apply.Execution
+	err       error
+}
+
+type executionDeletedMsg struct{ err error }
 
 func activityResultFromAny(value any) activityResult {
 	switch typed := value.(type) {
@@ -4743,16 +5164,50 @@ func loadPlanJSONCmd(planPath string, fromRecent bool) tea.Cmd {
 	}
 }
 
-func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, state apply.RuntimeState) tea.Cmd {
+func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, runner apply.Runner) tea.Cmd {
 	return func() tea.Msg {
-		runner := apply.Runner{
-			Providers: builtInSimulationProviders,
-			State:     state,
-		}
+		execution, err := runner.Start(context.Background(), plan, apply.ExecutionModeSimulation)
 		return applyRunFinishedMsg{
 			source:    source,
-			execution: runner.Run(context.Background(), plan, apply.ExecutionModeSimulation),
+			execution: execution,
+			err:       err,
 		}
+	}
+}
+
+func loadExecutionCmd(store *apply.ExecutionStore, id apply.ExecutionID, summary apply.ExecutionSummary) tea.Cmd {
+	return func() tea.Msg {
+		if store == nil {
+			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionStoreUnavailable}
+		}
+		if id == "" && summary.Resumability == apply.ResumabilityCorrupt {
+			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionCorrupt}
+		}
+		view, err := store.Replay(id)
+		return executionLoadedMsg{view: view, summary: summary, err: err}
+	}
+}
+
+func resumeExecutionCmd(runner apply.Runner, id apply.ExecutionID) tea.Cmd {
+	return func() tea.Msg {
+		execution, err := runner.Resume(context.Background(), id)
+		return executionRunFinishedMsg{execution: execution, err: err}
+	}
+}
+
+func abandonExecutionCmd(runner apply.Runner, id apply.ExecutionID) tea.Cmd {
+	return func() tea.Msg {
+		execution, err := runner.Abandon(id)
+		return executionAbandonedMsg{execution: execution, err: err}
+	}
+}
+
+func deleteExecutionCmd(store *apply.ExecutionStore, summary apply.ExecutionSummary) tea.Cmd {
+	return func() tea.Msg {
+		if store == nil {
+			return executionDeletedMsg{err: apply.ErrExecutionStoreUnavailable}
+		}
+		return executionDeletedMsg{err: store.Delete(summary)}
 	}
 }
 
@@ -5570,6 +6025,61 @@ func recentPlanDetailLines(entry workspace.RecentPlan) []string {
 	return lines
 }
 
+func executionSummaryRow(summary apply.ExecutionSummary) string {
+	label := emptyFallback(strings.TrimSpace(summary.SourceLabel), "Execution")
+	return fmt.Sprintf("%-18s  %-10s  %s", truncateEnd(label, 18), summary.Platform, executionStateLabel(summary))
+}
+
+func executionSummaryDetails(summary apply.ExecutionSummary) []string {
+	values := executionSummaryKeyValues(summary)
+	values = append(values, executionCountKeyValues(summary.Counts)...)
+	lines := make([]string, 0, len(values)+2)
+	for _, value := range values {
+		lines = append(lines, fmt.Sprintf("%s: %s", value.Key, value.Value))
+	}
+	if summary.RecoveryWarning != "" {
+		lines = append(lines, "Warning: "+summary.RecoveryWarning)
+	}
+	return lines
+}
+
+func executionSummaryKeyValues(summary apply.ExecutionSummary) []keyValue {
+	return []keyValue{
+		{Key: "Platform", Value: emptyFallback(string(summary.Platform), "-")},
+		{Key: "Plan", Value: emptyFallback(summary.SourceLabel, "-")},
+		{Key: "State", Value: executionStateLabel(summary)},
+		{Key: "Updated", Value: formatPlanTime(summary.UpdatedAt)},
+	}
+}
+
+func executionCountKeyValues(counts apply.ResultCounts) []keyValue {
+	return []keyValue{
+		{Key: "Done", Value: compactCount(counts.Done)},
+		{Key: "Failed", Value: compactCount(counts.Failed)},
+		{Key: "Skipped", Value: compactCount(counts.Skipped)},
+		{Key: "Pending", Value: compactCount(counts.Pending)},
+	}
+}
+
+func executionStateLabel(summary apply.ExecutionSummary) string {
+	switch summary.Resumability {
+	case apply.ResumabilityResolution:
+		return "Resolution required"
+	case apply.ResumabilityWaitingRetry:
+		return "Waiting"
+	case apply.ResumabilityWaitingProvider:
+		return "Reconnect required"
+	case apply.ResumabilityCorrupt:
+		return "Corrupt"
+	case apply.ResumabilityLocked:
+		return "In use"
+	case apply.ResumabilityTerminal:
+		return strings.Title(string(summary.State))
+	default:
+		return "Resumable"
+	}
+}
+
 func auditEventRow(event workspace.AuditEvent) string {
 	return fmt.Sprintf("%s | %s", formatPlanTime(event.Timestamp), emptyFallback(event.Type, "-"))
 }
@@ -5693,6 +6203,12 @@ func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	}
 	if event.HaltReason != "" {
 		fields["halt_reason"] = string(event.HaltReason)
+	}
+	if event.ExecutionID != "" {
+		fields["execution_id"] = string(event.ExecutionID)
+	}
+	if event.Sequence > 0 {
+		fields["execution_sequence"] = event.Sequence
 	}
 	if event.Type == apply.EventExecutionStarted || event.Type == apply.EventExecutionFinished {
 		fields["pending_count"] = event.Counts.Pending
@@ -6445,6 +6961,12 @@ func (m Model) hitBoxesForContent(content string) []hitBox {
 		boxes = append(boxes, rowHitBoxes(content, hitApplyConfirmAction, 0, applyConfirmMenuItems)...)
 	case screenApplyResult:
 		boxes = append(boxes, rowHitBoxes(content, hitApplyResultAction, 0, applyResultMenuItems)...)
+	case screenExecutionList:
+		boxes = append(boxes, rowHitBoxes(content, hitExecutionRow, m.executionOffset, executionSummaryRows(m.executionSummaries))...)
+	case screenExecutionDetail:
+		boxes = append(boxes, rowHitBoxes(content, hitExecutionAction, 0, executionActionLabels(m.executionActions()))...)
+	case screenExecutionAbandonConfirm, screenExecutionDeleteConfirm:
+		boxes = append(boxes, rowHitBoxes(content, hitExecutionConfirm, 0, executionConfirmMenuItems)...)
 	case screenManualCleanupChoice:
 		boxes = append(boxes, rowHitBoxes(content, hitPlatformAction, 0, m.manualChoiceItems())...)
 	case screenManualCleanupAction:
@@ -6730,6 +7252,22 @@ func recentPlanRows(entries []workspace.RecentPlan) []string {
 		rows = append(rows, recentPlanRow(entry))
 	}
 	return rows
+}
+
+func executionSummaryRows(entries []apply.ExecutionSummary) []string {
+	rows := make([]string, len(entries))
+	for index, entry := range entries {
+		rows[index] = executionSummaryRow(entry)
+	}
+	return rows
+}
+
+func executionActionLabels(actions []executionAction) []string {
+	labels := make([]string, len(actions))
+	for index, action := range actions {
+		labels[index] = action.Label
+	}
+	return labels
 }
 
 func auditEventRows(events []workspace.AuditEvent) []string {

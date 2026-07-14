@@ -21,6 +21,7 @@ const (
 	ExecutionStateStopped   ExecutionState = "stopped"
 	ExecutionStateCancelled ExecutionState = "cancelled"
 	ExecutionStateHalted    ExecutionState = "halted"
+	ExecutionStateAbandoned ExecutionState = "abandoned"
 )
 
 type EventType string
@@ -34,6 +35,8 @@ const (
 	EventExecutionStopped   EventType = "apply_execution_stopped"
 	EventExecutionCancelled EventType = "apply_execution_cancelled"
 	EventExecutionFinished  EventType = "apply_execution_finished"
+	EventExecutionResumed   EventType = "apply_execution_resumed"
+	EventExecutionAbandoned EventType = "apply_execution_abandoned"
 )
 
 type Prerequisite struct {
@@ -76,13 +79,13 @@ type PlanActionEdit struct {
 }
 
 type ResultCounts struct {
-	Pending   int
-	Running   int
-	Done      int
-	Failed    int
-	Skipped   int
-	Stopped   int
-	Cancelled int
+	Pending   int `json:"pending"`
+	Running   int `json:"running"`
+	Done      int `json:"done"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"`
+	Stopped   int `json:"stopped"`
+	Cancelled int `json:"cancelled"`
 }
 
 type ExecutionEvent struct {
@@ -103,22 +106,30 @@ type ExecutionEvent struct {
 	RetryAfter   time.Duration
 	ProviderCode ProviderCode
 	HaltReason   ActionOutcome
+	ExecutionID  ExecutionID
+	Sequence     int64
 }
 
 type Execution struct {
-	Plan       domain.CleanupPlan
-	Preview    Preview
-	State      ExecutionState
-	Results    []ActionResult
-	Events     []ExecutionEvent
-	Counts     ResultCounts
-	HaltReason ActionOutcome
+	ID              ExecutionID
+	Plan            domain.CleanupPlan
+	Preview         Preview
+	State           ExecutionState
+	Results         []ActionResult
+	Events          []ExecutionEvent
+	Counts          ResultCounts
+	HaltReason      ActionOutcome
+	Resumability    Resumability
+	BlockReason     string
+	RecoveryWarning string
 }
 
 type Runner struct {
 	Providers ProviderRegistry
 	State     RuntimeState
 	Policy    RunPolicy
+	Store     *ExecutionStore
+	Now       func() time.Time
 }
 
 func (runner Runner) Preview(plan domain.CleanupPlan, mode ExecutionMode) Preview {
@@ -203,7 +214,9 @@ func (runner Runner) Preview(plan domain.CleanupPlan, mode ExecutionMode) Previe
 	return preview
 }
 
-func (runner Runner) Run(ctx context.Context, plan domain.CleanupPlan, mode ExecutionMode) Execution {
+// runInMemory keeps legacy runner tests focused. Product and external callers
+// have only the durable Start and Resume entrypoints.
+func (runner Runner) runInMemory(ctx context.Context, plan domain.CleanupPlan, mode ExecutionMode) Execution {
 	if ctx == nil {
 		ctx = context.Background()
 	}

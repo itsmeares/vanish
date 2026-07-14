@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/itsmeares/vanish/internal/localdata"
 )
 
 const (
@@ -24,6 +26,8 @@ const (
 	MaxRecentPlans        = 20
 	DefaultPlanExportPath = "vanish-plan.json"
 )
+
+var ErrWorkspaceActive = errors.New("durable execution is active in another process")
 
 // Workspace owns Vanish's local metadata directory. It must not own imported
 // exports or generated cleanup plan files.
@@ -313,6 +317,14 @@ func (w *Workspace) Wipe() error {
 	if !isSafeWipeDir(dir) {
 		return errors.New("workspace dir is not safe to wipe")
 	}
+	lease, err := localdata.TryWipe(dir)
+	if err != nil {
+		if errors.Is(err, localdata.ErrActive) {
+			return ErrWorkspaceActive
+		}
+		return err
+	}
+	defer lease.Close()
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}

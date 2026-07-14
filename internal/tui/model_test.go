@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,46 @@ func (provider unsafeMessageTestProvider) Executor() apply.Executor {
 
 type unsafeMessageTestExecutor struct {
 	message string
+}
+
+type blockingApplyTestProvider struct {
+	executor *blockingApplyTestExecutor
+}
+
+func (provider blockingApplyTestProvider) Platform() domain.PlatformName {
+	return domain.PlatformInstagram
+}
+
+func (provider blockingApplyTestProvider) Mode() apply.ExecutionMode {
+	return apply.ExecutionModeSimulation
+}
+
+func (provider blockingApplyTestProvider) ExecutorID() apply.ExecutorID {
+	return "blocking-apply-test"
+}
+
+func (provider blockingApplyTestProvider) Supports(domain.ActionType) bool {
+	return true
+}
+
+func (provider blockingApplyTestProvider) Prerequisites(domain.CleanupPlan, apply.RuntimeState) []apply.Prerequisite {
+	return nil
+}
+
+func (provider blockingApplyTestProvider) Executor() apply.Executor {
+	return provider.executor
+}
+
+type blockingApplyTestExecutor struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (executor *blockingApplyTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
+	executor.once.Do(func() { close(executor.entered) })
+	<-executor.release
+	return apply.ProviderResult{Outcome: apply.OutcomeSucceeded}, nil
 }
 
 func (executor unsafeMessageTestExecutor) Execute(context.Context, domain.CleanupAction) (apply.ProviderResult, error) {
@@ -805,7 +846,10 @@ func TestApplyResultViewNeverShowsUnsafeProviderMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := fakeCleanupPlan()
-	execution := (apply.Runner{Providers: registry}).Run(context.Background(), plan, apply.ExecutionModeSimulation)
+	execution, err := (apply.Runner{Providers: registry, Policy: apply.DefaultRunPolicy(), Store: apply.NewExecutionStore(t.TempDir())}).Start(context.Background(), plan, apply.ExecutionModeSimulation)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if execution.State != apply.ExecutionStateFailed || len(execution.Results) == 0 {
 		t.Fatalf("unexpected execution: %#v", execution)
 	}
@@ -1386,6 +1430,222 @@ func TestWipeLocalDataDefaultsToCancelAndPreservesExternalPlan(t *testing.T) {
 	}
 	if !strings.Contains(next.View().Content, "Local data wiped") {
 		t.Fatalf("expected wipe status, got:\n%s", next.View().Content)
+	}
+}
+
+func TestDurableExecutionsLoadLazilyFromLocalData(t *testing.T) {
+	root := t.TempDir()
+	w, err := workspace.Open(filepath.Join(root, "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := apply.Runner{
+		Providers: builtInSimulationProviders,
+		Policy:    apply.DefaultRunPolicy(),
+		Store:     apply.NewExecutionStore(w.Dir()),
+		Now:       func() time.Time { return time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC) },
+	}
+	execution, err := runner.Start(context.Background(), fakeCleanupPlan(), apply.ExecutionModeSimulation)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := NewModelWithWorkspace(w, nil)
+	if next.current != screenHome || len(next.executionSummaries) != 0 || next.applyExecution.ID != "" {
+		t.Fatalf("startup inspected or resumed execution: screen=%v summaries=%d execution=%q", next.current, len(next.executionSummaries), next.applyExecution.ID)
+	}
+	next = openLocalDataOverview(t, next)
+	if len(next.executionSummaries) != 1 || next.executionSummaries[0].ExecutionID != execution.ID {
+		t.Fatalf("local data did not list execution: %#v", next.executionSummaries)
+	}
+	next.localDataCursor = localDataExecutions
+	next = updateModel(t, next, keyPress("enter"))
+	if next.current != screenExecutionList || !strings.Contains(next.View().Content, "Done") {
+		t.Fatalf("execution list missing terminal classification: screen=%v\n%s", next.current, next.View().Content)
+	}
+	updated, cmd := next.Update(keyPress("enter"))
+	next = requireModel(t, updated)
+	if cmd == nil || next.current != screenApplyRunning {
+		t.Fatalf("execution selection did not load detail: screen=%v cmd=%v", next.current, cmd)
+	}
+	next = updateModel(t, next, cmd())
+	if next.current != screenExecutionDetail || next.executionSelected.ExecutionID != execution.ID {
+		t.Fatalf("execution detail did not load: screen=%v selected=%#v", next.current, next.executionSelected)
+	}
+	view := next.View().Content
+	actions := next.executionActions()
+	if !strings.Contains(view, "Delete execution") || len(actions) != 2 || actions[0].ID != executionActionDelete {
+		t.Fatalf("terminal execution actions are unsafe:\n%s", view)
+	}
+}
+
+func TestApplyExistingActiveExecutionOpensLockedDetail(t *testing.T) {
+	root := t.TempDir()
+	w, err := workspace.Open(filepath.Join(root, "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &blockingApplyTestExecutor{entered: make(chan struct{}), release: make(chan struct{})}
+	registry, err := apply.NewProviderRegistry(blockingApplyTestProvider{executor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := apply.Runner{
+		Providers: registry,
+		Policy:    apply.DefaultRunPolicy(),
+		Store:     apply.NewExecutionStore(w.Dir()),
+		Now:       func() time.Time { return time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC) },
+	}
+	type startResult struct {
+		execution apply.Execution
+		err       error
+	}
+	firstDone := make(chan startResult, 1)
+	go func() {
+		execution, err := runner.Start(context.Background(), fakeCleanupPlan(), apply.ExecutionModeSimulation)
+		firstDone <- startResult{execution: execution, err: err}
+	}()
+	var releaseOnce sync.Once
+	firstConsumed := false
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(executor.release) })
+		if !firstConsumed {
+			<-firstDone
+		}
+	})
+	select {
+	case <-executor.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("active execution did not enter executor")
+	}
+
+	existing, existingErr := runner.Start(context.Background(), fakeCleanupPlan(), apply.ExecutionModeSimulation)
+	if !errors.Is(existingErr, apply.ErrExecutionExists) || existing.Resumability != apply.ResumabilityLocked || existing.ID == "" {
+		t.Fatalf("existing execution=%#v err=%v", existing, existingErr)
+	}
+	m := NewModelWithWorkspace(w, nil)
+	m.width = 120
+	m.height = 40
+	m.current = screenApplyRunning
+	m.applyPlanSource = applySourceGenerated
+	updated, cmd := m.Update(applyRunFinishedMsg{source: applySourceGenerated, execution: existing, err: existingErr})
+	next := requireModel(t, updated)
+	if cmd == nil || next.current != screenApplyRunning {
+		t.Fatalf("Apply existing did not request detail load: screen=%v cmd=%v", next.current, cmd)
+	}
+	next = updateModel(t, next, cmd())
+	view := stripANSI(next.View().Content)
+	actions := next.executionActions()
+	if next.current != screenExecutionDetail || next.executionSelected.Resumability != apply.ResumabilityLocked || !strings.Contains(view, "State: In use") || len(actions) == 0 || actions[0].ID != executionActionResume || !actions[0].Disabled {
+		t.Fatalf("locked detail lost state/actions: selected=%#v actions=%#v\n%s", next.executionSelected, actions, view)
+	}
+	if !strings.Contains(actions[0].Reason, "another Vanish process") {
+		t.Fatalf("locked Resume reason=%q", actions[0].Reason)
+	}
+
+	releaseOnce.Do(func() { close(executor.release) })
+	first := <-firstDone
+	firstConsumed = true
+	if first.err != nil || first.execution.State != apply.ExecutionStateDone {
+		t.Fatalf("first execution=%#v err=%v", first.execution, first.err)
+	}
+}
+
+func TestExecutionClassificationsAndSafeActionsAreVisible(t *testing.T) {
+	now := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
+	m := NewModel()
+	m.current = screenExecutionList
+	m.width = 132
+	m.height = 36
+	m.executionSummaries = []apply.ExecutionSummary{
+		{SourceLabel: "resumable", Platform: domain.PlatformInstagram, UpdatedAt: now, Resumability: apply.ResumabilityResumable},
+		{SourceLabel: "retry", Platform: domain.PlatformInstagram, UpdatedAt: now.Add(-time.Minute), Resumability: apply.ResumabilityWaitingRetry},
+		{SourceLabel: "auth", Platform: domain.PlatformReddit, UpdatedAt: now.Add(-2 * time.Minute), Resumability: apply.ResumabilityWaitingProvider},
+		{SourceLabel: "unknown", Platform: domain.PlatformInstagram, UpdatedAt: now.Add(-3 * time.Minute), Resumability: apply.ResumabilityResolution},
+		{SourceLabel: "locked", Platform: domain.PlatformInstagram, UpdatedAt: now.Add(-4 * time.Minute), Resumability: apply.ResumabilityLocked},
+		{SourceLabel: "broken", Platform: domain.PlatformInstagram, UpdatedAt: now.Add(-5 * time.Minute), Resumability: apply.ResumabilityCorrupt},
+	}
+	view := m.View().Content
+	for _, label := range []string{"Resumable", "Waiting", "Reconnect required", "Resolution required", "In use", "Corrupt"} {
+		if !strings.Contains(view, label) {
+			t.Fatalf("classification %q missing:\n%s", label, view)
+		}
+	}
+
+	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityResolution}
+	if actions := m.executionActions(); len(actions) != 2 || actions[0].ID != executionActionAbandon {
+		t.Fatalf("resolution actions=%#v", actions)
+	}
+	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityCorrupt}
+	if actions := m.executionActions(); len(actions) != 2 || actions[0].ID != executionActionDelete {
+		t.Fatalf("corrupt actions=%#v", actions)
+	}
+	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityLocked}
+	if actions := m.executionActions(); len(actions) == 0 || actions[0].ID != executionActionResume || !actions[0].Disabled || !strings.Contains(actions[0].Reason, "another Vanish process") {
+		t.Fatalf("locked actions=%#v", actions)
+	}
+	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityWaitingRetry}
+	m.executionView.RetryNotBefore = time.Now().UTC().Add(time.Hour)
+	if actions := m.executionActions(); len(actions) == 0 || !actions[0].Disabled || actions[0].Reason != "Retry time has not arrived." {
+		t.Fatalf("retry actions=%#v", actions)
+	}
+	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityWaitingProvider}
+	m.executionView = apply.ExecutionView{
+		Manifest: apply.ExecutionManifest{Platform: domain.PlatformReddit, Mode: apply.ExecutionModeSimulation},
+		Plan:     redditApplyTestPlan(),
+	}
+	if actions := m.executionActions(); len(actions) == 0 || !actions[0].Disabled || !strings.Contains(actions[0].Reason, "Connect Reddit") {
+		t.Fatalf("provider actions=%#v", actions)
+	}
+}
+
+func TestResolutionFlowDefaultsToCancelAndOnlyOffersAbandon(t *testing.T) {
+	m := NewModel()
+	m.current = screenExecutionDetail
+	m.executionSelected = apply.ExecutionSummary{ExecutionID: "exec-test", Resumability: apply.ResumabilityResolution}
+	detail := m.View().Content
+	if strings.Contains(detail, "Resume is always explicit") || strings.Contains(detail, "Completed actions are never run again") {
+		t.Fatalf("execution detail retained fixed safety pane:\n%s", detail)
+	}
+	m = updateModel(t, m, keyPress("enter"))
+	if m.current != screenExecutionAbandonConfirm || m.executionConfirmCursor != 1 {
+		t.Fatalf("abandon confirmation did not default to cancel: screen=%v cursor=%d", m.current, m.executionConfirmCursor)
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "without invoking any provider action") || strings.Contains(view, "does not claim any platform action succeeded or failed") {
+		t.Fatalf("abandon confirmation copy mismatch:\n%s", view)
+	}
+	m = updateModel(t, m, keyPress("enter"))
+	if m.current != screenExecutionDetail {
+		t.Fatalf("default cancel did not return to detail: %v", m.current)
+	}
+}
+
+func TestWipeLocalDataRemovesDurableExecutionFiles(t *testing.T) {
+	root := t.TempDir()
+	w, err := workspace.Open(filepath.Join(root, "app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := apply.NewExecutionStore(w.Dir())
+	runner := apply.Runner{Providers: builtInSimulationProviders, Policy: apply.DefaultRunPolicy(), Store: store}
+	if _, err := runner.Start(context.Background(), fakeCleanupPlan(), apply.ExecutionModeSimulation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.Root()); err != nil {
+		t.Fatalf("execution store was not created: %v", err)
+	}
+
+	m := openLocalDataOverview(t, NewModelWithWorkspace(w, nil))
+	m.localDataCursor = localDataWipe
+	m = updateModel(t, m, keyPress("enter"))
+	m = updateModel(t, m, keyPress("up"))
+	m = updateModel(t, m, keyPress("enter"))
+	if _, err := os.Stat(store.Root()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("execution store survived wipe: %v", err)
+	}
+	if len(m.executionSummaries) != 0 {
+		t.Fatalf("execution summaries survived wipe: %#v", m.executionSummaries)
 	}
 }
 
@@ -2533,7 +2793,7 @@ func TestApplyPreviewConfirmationAndNoopResultForGeneratedPlan(t *testing.T) {
 	if next.current != screenApplyRunning {
 		t.Fatalf("expected apply running, got %v", next.current)
 	}
-	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.applyRuntimeState())())
+	next = updateModel(t, next, runApplyCmd(next.currentApplyPlan(), next.applyPlanSource, next.applyRunner())())
 
 	if next.current != screenApplyResult || next.applyExecution.State != apply.ExecutionStateDone {
 		t.Fatalf("expected apply result, screen=%v execution=%#v", next.current, next.applyExecution)

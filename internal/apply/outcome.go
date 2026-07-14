@@ -39,6 +39,15 @@ type ProviderMessage string
 
 const ProviderMessageNoopCompleted ProviderMessage = "noop_completed"
 
+func (message ProviderMessage) Known() bool {
+	switch message {
+	case "", ProviderMessageNoopCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
 // ProviderCode is a closed runtime-owned diagnostic identifier. Providers may
 // return a value, but only known identifiers survive normalization.
 type ProviderCode string
@@ -63,6 +72,7 @@ type ActionResult struct {
 	Attempt      int
 	RetryAfter   time.Duration
 	ProviderCode ProviderCode
+	MessageID    ProviderMessage
 	Message      string
 }
 
@@ -73,8 +83,8 @@ func (result ActionResult) Retryable() bool {
 // RunPolicy bounds automatic attempts and controls ordinary final failures.
 // Provider halts, explicit stops, and cancellation always stop execution.
 type RunPolicy struct {
-	MaxAttemptsPerAction  int
-	StopAfterFinalFailure bool
+	MaxAttemptsPerAction  int  `json:"max_attempts_per_action"`
+	StopAfterFinalFailure bool `json:"stop_after_final_failure"`
 }
 
 // MaxAutomaticAttemptsPerAction is the hard runtime ceiling for tight,
@@ -146,6 +156,7 @@ func normalizedActionResult(action domain.CleanupAction, attempt int, providerRe
 		Attempt:      attempt,
 		RetryAfter:   providerResult.RetryAfter,
 		ProviderCode: providerResult.ProviderCode,
+		MessageID:    providerResult.Message,
 		Message:      message,
 	}
 }
