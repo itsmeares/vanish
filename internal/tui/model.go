@@ -255,7 +255,8 @@ var applyResultMenuItems = []string{
 }
 
 const (
-	executionActionResume = iota
+	executionActionReconcile = iota
+	executionActionResume
 	executionActionAbandon
 	executionActionDelete
 	executionActionBack
@@ -785,7 +786,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case executionLoadedMsg:
 		m.executionSelected = msg.summary
-		m.executionError = ""
+		m.executionError = msg.notice
 		if msg.err != nil {
 			m.executionView = apply.ExecutionView{}
 			m.executionError = apply.RuntimeErrorMessage(msg.err)
@@ -814,6 +815,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyResumeReturn = true
 		m.current = screenApplyResult
 		return m, nil
+
+	case executionReconciledMsg:
+		if msg.execution.ID != "" {
+			m.recordApplyExecution(msg.execution)
+		}
+		notice := ""
+		if msg.err != nil {
+			notice = apply.RuntimeErrorMessage(msg.err)
+		}
+		id := msg.execution.ID
+		if id == "" {
+			id = m.executionSelected.ExecutionID
+		}
+		m.refreshExecutions()
+		m.current = screenApplyRunning
+		return m, loadExecutionWithNoticeCmd(m.executionStore(), id, m.executionSelected, notice)
 
 	case executionAbandonedMsg:
 		if msg.err != nil {
@@ -1561,6 +1578,10 @@ func (m Model) updateExecutionDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch action.ID {
+		case executionActionReconcile:
+			m.executionError = ""
+			m.current = screenApplyRunning
+			return m, tea.Batch(startSpinnerCmd(m.spinner), reconcileExecutionCmd(m.applyRunner(), m.executionSelected.ExecutionID))
 		case executionActionResume:
 			m.executionError = ""
 			m.current = screenApplyRunning
@@ -3700,7 +3721,7 @@ func (m Model) executionActions() []executionAction {
 	case apply.ResumabilityTerminal:
 		return []executionAction{{ID: executionActionDelete, Label: "Delete execution"}, {ID: executionActionBack, Label: "Back"}}
 	case apply.ResumabilityResolution:
-		return []executionAction{{ID: executionActionAbandon, Label: "Abandon"}, {ID: executionActionBack, Label: "Back"}}
+		return []executionAction{{ID: executionActionReconcile, Label: "Reconcile"}, {ID: executionActionAbandon, Label: "Abandon"}, {ID: executionActionBack, Label: "Back"}}
 	}
 	resume := executionAction{ID: executionActionResume, Label: "Resume"}
 	if summary.Resumability == apply.ResumabilityLocked {
@@ -4997,9 +5018,15 @@ type executionLoadedMsg struct {
 	view    apply.ExecutionView
 	summary apply.ExecutionSummary
 	err     error
+	notice  string
 }
 
 type executionRunFinishedMsg struct {
+	execution apply.Execution
+	err       error
+}
+
+type executionReconciledMsg struct {
 	execution apply.Execution
 	err       error
 }
@@ -5176,15 +5203,19 @@ func runApplyCmd(plan domain.CleanupPlan, source applyPlanSource, runner apply.R
 }
 
 func loadExecutionCmd(store *apply.ExecutionStore, id apply.ExecutionID, summary apply.ExecutionSummary) tea.Cmd {
+	return loadExecutionWithNoticeCmd(store, id, summary, "")
+}
+
+func loadExecutionWithNoticeCmd(store *apply.ExecutionStore, id apply.ExecutionID, summary apply.ExecutionSummary, notice string) tea.Cmd {
 	return func() tea.Msg {
 		if store == nil {
-			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionStoreUnavailable}
+			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionStoreUnavailable, notice: notice}
 		}
 		if id == "" && summary.Resumability == apply.ResumabilityCorrupt {
-			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionCorrupt}
+			return executionLoadedMsg{summary: summary, err: apply.ErrExecutionCorrupt, notice: notice}
 		}
 		view, err := store.Replay(id)
-		return executionLoadedMsg{view: view, summary: summary, err: err}
+		return executionLoadedMsg{view: view, summary: summary, err: err, notice: notice}
 	}
 }
 
@@ -5192,6 +5223,13 @@ func resumeExecutionCmd(runner apply.Runner, id apply.ExecutionID) tea.Cmd {
 	return func() tea.Msg {
 		execution, err := runner.Resume(context.Background(), id)
 		return executionRunFinishedMsg{execution: execution, err: err}
+	}
+}
+
+func reconcileExecutionCmd(runner apply.Runner, id apply.ExecutionID) tea.Cmd {
+	return func() tea.Msg {
+		execution, err := runner.Reconcile(context.Background(), id)
+		return executionReconciledMsg{execution: execution, err: err}
 	}
 }
 
@@ -6203,6 +6241,12 @@ func applyEventAuditFields(event apply.ExecutionEvent) map[string]any {
 	}
 	if event.HaltReason != "" {
 		fields["halt_reason"] = string(event.HaltReason)
+	}
+	if event.ReconciliationAttempt > 0 {
+		fields["reconciliation_attempt"] = event.ReconciliationAttempt
+	}
+	if event.ReconciliationOutcome != "" && event.ReconciliationOutcome.Known() {
+		fields["reconciliation_outcome"] = string(event.ReconciliationOutcome)
 	}
 	if event.ExecutionID != "" {
 		fields["execution_id"] = string(event.ExecutionID)

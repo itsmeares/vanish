@@ -740,6 +740,23 @@ func TestApplyEventAuditFieldsIncludeTypedOutcomeMetadata(t *testing.T) {
 	}
 }
 
+func TestApplyEventAuditFieldsIncludeClosedReconciliationMetadata(t *testing.T) {
+	fields := applyEventAuditFields(apply.ExecutionEvent{
+		Type: apply.EventReconciliationResult, PlanID: "plan-1", Platform: domain.PlatformReddit,
+		ActionID: "action-1", ActionType: domain.ActionRedditDeleteComment,
+		Mode: apply.ExecutionModeSimulation, Executor: reddit.SimulationExecutorID,
+		ReconciliationAttempt: 2, ReconciliationOutcome: apply.ReconciliationUnknown,
+	})
+	if fields["reconciliation_attempt"] != 2 || fields["reconciliation_outcome"] != "unknown" {
+		t.Fatalf("reconciliation audit fields=%#v", fields)
+	}
+	for _, forbidden := range []string{"idempotency_key", "message", "raw_response", "error", "authorization", "token"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("audit fields included forbidden %q: %#v", forbidden, fields)
+		}
+	}
+}
+
 func TestApplyEventAuditFieldsOmitEmptyOptionalValues(t *testing.T) {
 	fields := applyEventAuditFields(apply.ExecutionEvent{Type: apply.EventExecutionFinished, PlanID: "plan-1", Platform: domain.PlatformInstagram})
 	for _, optional := range []string{"execution_mode", "executor", "outcome", "attempt", "retryable", "retry_after_ms", "provider_code", "halt_reason"} {
@@ -1575,7 +1592,7 @@ func TestExecutionClassificationsAndSafeActionsAreVisible(t *testing.T) {
 	}
 
 	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityResolution}
-	if actions := m.executionActions(); len(actions) != 2 || actions[0].ID != executionActionAbandon {
+	if actions := m.executionActions(); len(actions) != 3 || actions[0].ID != executionActionReconcile || actions[1].ID != executionActionAbandon || actions[2].ID != executionActionBack {
 		t.Fatalf("resolution actions=%#v", actions)
 	}
 	m.executionSelected = apply.ExecutionSummary{Resumability: apply.ResumabilityCorrupt}
@@ -1601,14 +1618,25 @@ func TestExecutionClassificationsAndSafeActionsAreVisible(t *testing.T) {
 	}
 }
 
-func TestResolutionFlowDefaultsToCancelAndOnlyOffersAbandon(t *testing.T) {
+func TestResolutionFlowOffersReconcileAbandonAndBack(t *testing.T) {
 	m := NewModel()
 	m.current = screenExecutionDetail
 	m.executionSelected = apply.ExecutionSummary{ExecutionID: "exec-test", Resumability: apply.ResumabilityResolution}
+	actions := m.executionActions()
+	if len(actions) != 3 || actions[0].Label != "Reconcile" || actions[1].Label != "Abandon" || actions[2].Label != "Back" {
+		t.Fatalf("resolution actions=%#v", actions)
+	}
 	detail := m.View().Content
 	if strings.Contains(detail, "Resume is always explicit") || strings.Contains(detail, "Completed actions are never run again") {
 		t.Fatalf("execution detail retained fixed safety pane:\n%s", detail)
 	}
+	updated, cmd := m.Update(keyPress("enter"))
+	reconciling := requireModel(t, updated)
+	if cmd == nil || reconciling.current != screenApplyRunning {
+		t.Fatalf("Reconcile did not start: screen=%v cmd=%v", reconciling.current, cmd)
+	}
+
+	m.executionActionCursor = 1
 	m = updateModel(t, m, keyPress("enter"))
 	if m.current != screenExecutionAbandonConfirm || m.executionConfirmCursor != 1 {
 		t.Fatalf("abandon confirmation did not default to cancel: screen=%v cursor=%d", m.current, m.executionConfirmCursor)

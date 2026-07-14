@@ -70,6 +70,11 @@ func (outcome ReconciliationOutcome) journalKnown() bool {
 	return outcome.providerKnown() || outcome == ReconciliationUnsupported || outcome == ReconciliationInvalid
 }
 
+// Known reports whether outcome is safe to expose through runtime-owned events.
+func (outcome ReconciliationOutcome) Known() bool {
+	return outcome.journalKnown()
+}
+
 func (outcome ReconciliationOutcome) resolvesAttempt() bool {
 	return outcome == ReconciliationAlreadyApplied || outcome == ReconciliationNotApplied
 }
