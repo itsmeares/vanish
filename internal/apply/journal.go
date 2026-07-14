@@ -20,16 +20,18 @@ type ExecutionID string
 type JournalEventKind string
 
 const (
-	JournalExecutionStarted   JournalEventKind = "execution_started"
-	JournalAttemptStarted     JournalEventKind = "action_attempt_started"
-	JournalResultRecorded     JournalEventKind = "action_result_recorded"
-	JournalExecutionResumed   JournalEventKind = "execution_resumed"
-	JournalExecutionHalted    JournalEventKind = "execution_halted"
-	JournalExecutionStopped   JournalEventKind = "execution_stopped"
-	JournalExecutionCancelled JournalEventKind = "execution_cancelled"
-	JournalExecutionFailed    JournalEventKind = "execution_failed"
-	JournalExecutionCompleted JournalEventKind = "execution_completed"
-	JournalExecutionAbandoned JournalEventKind = "execution_abandoned"
+	JournalExecutionStarted      JournalEventKind = "execution_started"
+	JournalAttemptStarted        JournalEventKind = "action_attempt_started"
+	JournalResultRecorded        JournalEventKind = "action_result_recorded"
+	JournalReconciliationStarted JournalEventKind = "action_reconciliation_started"
+	JournalReconciliationResult  JournalEventKind = "action_reconciliation_result_recorded"
+	JournalExecutionResumed      JournalEventKind = "execution_resumed"
+	JournalExecutionHalted       JournalEventKind = "execution_halted"
+	JournalExecutionStopped      JournalEventKind = "execution_stopped"
+	JournalExecutionCancelled    JournalEventKind = "execution_cancelled"
+	JournalExecutionFailed       JournalEventKind = "execution_failed"
+	JournalExecutionCompleted    JournalEventKind = "execution_completed"
+	JournalExecutionAbandoned    JournalEventKind = "execution_abandoned"
 )
 
 type Resumability string
@@ -65,21 +67,23 @@ type ExecutionManifest struct {
 }
 
 type JournalEvent struct {
-	ExecutionID      ExecutionID         `json:"execution_id"`
-	Fingerprint      string              `json:"fingerprint"`
-	Sequence         int64               `json:"sequence"`
-	Timestamp        time.Time           `json:"timestamp"`
-	Kind             JournalEventKind    `json:"kind"`
-	ActionID         string              `json:"action_id,omitempty"`
-	ActionType       domain.ActionType   `json:"action_type,omitempty"`
-	Platform         domain.PlatformName `json:"platform,omitempty"`
-	Attempt          int                 `json:"attempt,omitempty"`
-	Outcome          ActionOutcome       `json:"outcome,omitempty"`
-	Status           domain.ActionStatus `json:"status,omitempty"`
-	RetryAfterMillis int64               `json:"retry_after_ms,omitempty"`
-	ProviderCode     ProviderCode        `json:"provider_code,omitempty"`
-	MessageID        ProviderMessage     `json:"message_id,omitempty"`
-	HaltReason       ActionOutcome       `json:"halt_reason,omitempty"`
+	ExecutionID           ExecutionID           `json:"execution_id"`
+	Fingerprint           string                `json:"fingerprint"`
+	Sequence              int64                 `json:"sequence"`
+	Timestamp             time.Time             `json:"timestamp"`
+	Kind                  JournalEventKind      `json:"kind"`
+	ActionID              string                `json:"action_id,omitempty"`
+	ActionType            domain.ActionType     `json:"action_type,omitempty"`
+	Platform              domain.PlatformName   `json:"platform,omitempty"`
+	Attempt               int                   `json:"attempt,omitempty"`
+	Outcome               ActionOutcome         `json:"outcome,omitempty"`
+	Status                domain.ActionStatus   `json:"status,omitempty"`
+	RetryAfterMillis      int64                 `json:"retry_after_ms,omitempty"`
+	ProviderCode          ProviderCode          `json:"provider_code,omitempty"`
+	MessageID             ProviderMessage       `json:"message_id,omitempty"`
+	HaltReason            ActionOutcome         `json:"halt_reason,omitempty"`
+	ReconciliationAttempt int                   `json:"reconciliation_attempt,omitempty"`
+	ReconciliationOutcome ReconciliationOutcome `json:"reconciliation_outcome,omitempty"`
 }
 
 type ExecutionSummary struct {
@@ -117,38 +121,42 @@ type UnresolvedAttempt struct {
 }
 
 type ExecutionView struct {
-	Manifest           ExecutionManifest
-	Plan               domain.CleanupPlan
-	State              ExecutionState
-	HaltReason         ActionOutcome
-	Counts             ResultCounts
-	AttemptHistory     map[string][]AttemptRecord
-	LastAttempts       map[string]int
-	NextActionID       string
-	NextAttempt        int
-	RetryNotBefore     time.Time
-	Resumability       Resumability
-	BlockReason        string
-	RecoveryWarning    string
-	Unresolved         *UnresolvedAttempt
-	NeedsFinalization  bool
-	LastSequence       int64
-	UpdatedAt          time.Time
-	TerminalKind       JournalEventKind
-	journalCompleteAt  int64
-	ignoredPartialTail bool
+	Manifest               ExecutionManifest
+	Plan                   domain.CleanupPlan
+	State                  ExecutionState
+	HaltReason             ActionOutcome
+	Counts                 ResultCounts
+	AttemptHistory         map[string][]AttemptRecord
+	ReconciliationHistory  map[string][]ReconciliationRecord
+	LastReconciliation     map[string]ReconciliationRecord
+	ReconciliationAttempts map[string]int
+	LastAttempts           map[string]int
+	NextActionID           string
+	NextAttempt            int
+	RetryNotBefore         time.Time
+	Resumability           Resumability
+	BlockReason            string
+	RecoveryWarning        string
+	Unresolved             *UnresolvedAttempt
+	NeedsFinalization      bool
+	LastSequence           int64
+	UpdatedAt              time.Time
+	TerminalKind           JournalEventKind
+	journalCompleteAt      int64
+	ignoredPartialTail     bool
 }
 
 var (
-	ErrExecutionStoreUnavailable   = errors.New("durable execution storage is unavailable")
-	ErrExecutionExists             = errors.New("a matching execution already exists")
-	ErrExecutionLocked             = errors.New("execution is active in another process")
-	ErrExecutionCorrupt            = errors.New("execution journal is corrupt")
-	ErrExecutionResolutionRequired = errors.New("execution requires resolution")
-	ErrExecutionTerminal           = errors.New("execution is terminal")
-	ErrExecutionNotReady           = errors.New("execution is not ready to resume")
-	ErrExecutionMustAbandon        = errors.New("execution must be abandoned before deletion")
-	ErrExecutionIdentityMismatch   = errors.New("execution identity does not match")
+	ErrExecutionStoreUnavailable          = errors.New("durable execution storage is unavailable")
+	ErrExecutionExists                    = errors.New("a matching execution already exists")
+	ErrExecutionLocked                    = errors.New("execution is active in another process")
+	ErrExecutionCorrupt                   = errors.New("execution journal is corrupt")
+	ErrExecutionResolutionRequired        = errors.New("execution requires resolution")
+	ErrExecutionTerminal                  = errors.New("execution is terminal")
+	ErrExecutionNotReady                  = errors.New("execution is not ready to resume")
+	ErrExecutionMustAbandon               = errors.New("execution must be abandoned before deletion")
+	ErrExecutionIdentityMismatch          = errors.New("execution identity does not match")
+	ErrExecutionReconciliationUnavailable = errors.New("execution is not available for reconciliation")
 )
 
 type ExistingExecutionError struct {
@@ -275,6 +283,8 @@ func RuntimeErrorMessage(err error) string {
 		return "Execution data is unreadable. Resume is unavailable."
 	case errors.Is(err, ErrExecutionNotReady):
 		return "Execution is not ready to resume."
+	case errors.Is(err, ErrExecutionReconciliationUnavailable):
+		return "Only unresolved actions can be reconciled."
 	case errors.Is(err, ErrExecutionTerminal):
 		return "This execution has already ended."
 	case errors.Is(err, ErrExecutionExists):

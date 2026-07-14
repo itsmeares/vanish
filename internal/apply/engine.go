@@ -27,16 +27,18 @@ const (
 type EventType string
 
 const (
-	EventPreviewed          EventType = "apply_previewed"
-	EventConfirmed          EventType = "apply_confirmed"
-	EventExecutionStarted   EventType = "apply_execution_started"
-	EventActionResult       EventType = "apply_action_result"
-	EventActionSkipped      EventType = "apply_action_skipped"
-	EventExecutionStopped   EventType = "apply_execution_stopped"
-	EventExecutionCancelled EventType = "apply_execution_cancelled"
-	EventExecutionFinished  EventType = "apply_execution_finished"
-	EventExecutionResumed   EventType = "apply_execution_resumed"
-	EventExecutionAbandoned EventType = "apply_execution_abandoned"
+	EventPreviewed             EventType = "apply_previewed"
+	EventConfirmed             EventType = "apply_confirmed"
+	EventExecutionStarted      EventType = "apply_execution_started"
+	EventActionResult          EventType = "apply_action_result"
+	EventActionSkipped         EventType = "apply_action_skipped"
+	EventExecutionStopped      EventType = "apply_execution_stopped"
+	EventExecutionCancelled    EventType = "apply_execution_cancelled"
+	EventExecutionFinished     EventType = "apply_execution_finished"
+	EventExecutionResumed      EventType = "apply_execution_resumed"
+	EventExecutionAbandoned    EventType = "apply_execution_abandoned"
+	EventReconciliationStarted EventType = "apply_action_reconciliation_started"
+	EventReconciliationResult  EventType = "apply_action_reconciliation_result"
 )
 
 type Prerequisite struct {
@@ -89,25 +91,27 @@ type ResultCounts struct {
 }
 
 type ExecutionEvent struct {
-	Type         EventType
-	PlanID       string
-	Platform     domain.PlatformName
-	ActionID     string
-	ActionType   domain.ActionType
-	Status       domain.ActionStatus
-	State        ExecutionState
-	Message      string
-	Counts       ResultCounts
-	Mode         ExecutionMode
-	Executor     ExecutorID
-	Outcome      ActionOutcome
-	Attempt      int
-	Retryable    bool
-	RetryAfter   time.Duration
-	ProviderCode ProviderCode
-	HaltReason   ActionOutcome
-	ExecutionID  ExecutionID
-	Sequence     int64
+	Type                  EventType
+	PlanID                string
+	Platform              domain.PlatformName
+	ActionID              string
+	ActionType            domain.ActionType
+	Status                domain.ActionStatus
+	State                 ExecutionState
+	Message               string
+	Counts                ResultCounts
+	Mode                  ExecutionMode
+	Executor              ExecutorID
+	Outcome               ActionOutcome
+	Attempt               int
+	Retryable             bool
+	RetryAfter            time.Duration
+	ProviderCode          ProviderCode
+	HaltReason            ActionOutcome
+	ExecutionID           ExecutionID
+	Sequence              int64
+	ReconciliationOutcome ReconciliationOutcome
+	ReconciliationAttempt int
 }
 
 type Execution struct {
@@ -122,6 +126,7 @@ type Execution struct {
 	Resumability    Resumability
 	BlockReason     string
 	RecoveryWarning string
+	Reconciliations []ReconciliationRecord
 }
 
 type Runner struct {

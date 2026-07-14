@@ -15,8 +15,9 @@ import (
 const testPlatform domain.PlatformName = "test-provider"
 
 type fakeExecutor struct {
-	results map[string]ProviderResult
-	calls   []string
+	results  map[string]ProviderResult
+	calls    []string
+	requests []ActionRequest
 }
 
 type scriptedStep struct {
@@ -59,6 +60,7 @@ func (executor *scriptedExecutor) Execute(_ context.Context, request ActionReque
 func (executor *fakeExecutor) Execute(_ context.Context, request ActionRequest) (ProviderResult, error) {
 	action := request.Action
 	executor.calls = append(executor.calls, action.ID)
+	executor.requests = append(executor.requests, request)
 	if result, ok := executor.results[action.ID]; ok {
 		return result, nil
 	}
@@ -73,6 +75,7 @@ type fakeProvider struct {
 	prerequisites   func(domain.CleanupPlan, RuntimeState) []Prerequisite
 	executor        Executor
 	executorFactory func() Executor
+	reconciler      Reconciler
 }
 
 func (provider fakeProvider) Platform() domain.PlatformName { return provider.platform }
@@ -93,6 +96,7 @@ func (provider fakeProvider) Executor() Executor {
 	}
 	return provider.executor
 }
+func (provider fakeProvider) Reconciler() Reconciler { return provider.reconciler }
 
 func TestPreviewRoutesSupportedPlanToProvider(t *testing.T) {
 	executor := &fakeExecutor{}

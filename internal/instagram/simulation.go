@@ -41,3 +41,7 @@ func (simulationProvider) Prerequisites(domain.CleanupPlan, apply.RuntimeState) 
 func (simulationProvider) Executor() apply.Executor {
 	return apply.NoopExecutor{}
 }
+
+func (simulationProvider) Reconciler() apply.Reconciler {
+	return nil
+}

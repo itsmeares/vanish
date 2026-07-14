@@ -55,6 +55,7 @@ func (provider unsafeMessageTestProvider) Prerequisites(domain.CleanupPlan, appl
 func (provider unsafeMessageTestProvider) Executor() apply.Executor {
 	return unsafeMessageTestExecutor{message: provider.message}
 }
+func (provider unsafeMessageTestProvider) Reconciler() apply.Reconciler { return nil }
 
 type unsafeMessageTestExecutor struct {
 	message string
@@ -87,6 +88,7 @@ func (provider blockingApplyTestProvider) Prerequisites(domain.CleanupPlan, appl
 func (provider blockingApplyTestProvider) Executor() apply.Executor {
 	return provider.executor
 }
+func (provider blockingApplyTestProvider) Reconciler() apply.Reconciler { return nil }
 
 type blockingApplyTestExecutor struct {
 	entered chan struct{}
