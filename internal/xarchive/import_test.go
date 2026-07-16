@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -287,6 +288,154 @@ func TestArchiveNamesCanonicalizeRepeatedSeparatorsAndRejectCollisions(t *testin
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("expected canonical collision rejection, got %v", err)
 	}
+}
+
+func TestPreflightRejectsSupportedPathCollisionsAfterRootNormalization(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+	}{
+		{"account", []string{"root-a/data/account.js", "root-b/data/account.js", "root-a/data/tweets.js"}},
+		{"posts", []string{"root-a/data/account.js", "root-a/data/tweets.js", "root-b/data/tweets.js"}},
+		{"media", []string{"root-a/data/account.js", "root-a/data/tweets.js", "root-a/data/tweets_media/1-photo.jpg", "root-b/data/tweets_media/1-photo.jpg"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archivePath := writeStoredZIP(t, test.entries, func(string) []byte { return []byte("{}") })
+			archive, err := zip.OpenReader(archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer archive.Close()
+			_, err = preflightArchive(archive.File)
+			if err == nil || err.Error() != "X archive contains colliding supported paths" {
+				t.Fatalf("expected normalized %s collision rejection, got %v", test.name, err)
+			}
+		})
+	}
+}
+
+func TestImportRejectsOversizedRawArrayElementBeforeDecode(t *testing.T) {
+	account := `window.YTD.account.part0 = [{"account":{"accountId":"42","username":"synthetic","accountDisplayName":"Synthetic"}}];`
+	oversized := `window.YTD.tweets.part0 = [{"tweet":{"id_str":"1","created_at":"Thu Jun 12 12:00:00 +0000 2025","full_text":"small"},"ignored":"` + strings.Repeat("x", maxRawRecordBytes) + `"}];`
+	archivePath := writeStoredZIP(t, []string{"data/account.js", "data/tweets.js"}, func(name string) []byte {
+		if name == "data/account.js" {
+			return []byte(account)
+		}
+		return []byte(oversized)
+	})
+	store := NewStore(t.TempDir())
+	_, err := store.ImportZIP(archivePath, false)
+	if err == nil || err.Error() != "X archive post record exceeds its size limit" {
+		t.Fatalf("expected bounded-record rejection, got %v", err)
+	}
+}
+
+func TestInterruptedImportStagesAreCleanedBeforeListing(t *testing.T) {
+	store := NewStore(t.TempDir())
+	stage := filepath.Join(store.Root(), ".import-interrupted")
+	if err := os.MkdirAll(filepath.Join(stage, "media"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{postsName: "hidden post text", "media/private.bin": "hidden media"} {
+		if err := os.WriteFile(filepath.Join(stage, filepath.FromSlash(name)), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(stage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted stage retained: %v", err)
+	}
+}
+
+func TestInterruptedImportCleanupWaitsForImportLock(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := os.MkdirAll(store.Root(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(store.Root(), ".import-active")
+	if err := os.Mkdir(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	guard, locked, err := store.tryImportLock()
+	if err != nil || !locked {
+		t.Fatalf("acquire import lock: locked=%v err=%v", locked, err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(stage); err != nil {
+		t.Fatalf("active stage was removed: %v", err)
+	}
+	if err := guard.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(stage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released stage retained: %v", err)
+	}
+}
+
+func TestInterruptedImportCleanupRejectsSymlinkWithoutFollowingIt(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := os.MkdirAll(store.Root(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	privatePath := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(privatePath, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(store.Root(), ".import-link")
+	if err := os.Symlink(outside, stage); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := store.List(); err == nil || !strings.Contains(err.Error(), "staging path is unsafe") {
+		t.Fatalf("expected staging symlink rejection, got %v", err)
+	}
+	if data, err := os.ReadFile(privatePath); err != nil || string(data) != "outside" {
+		t.Fatalf("cleanup followed staging symlink: %q %v", data, err)
+	}
+}
+
+func TestNormalizeTweetPreservesStoredControlBytesForSafeRendering(t *testing.T) {
+	text := "visible\x1b[31mred\x1b[0m\x00tail"
+	activity, reason := normalizeTweet(rawTweet{
+		ID: "123", CreatedAt: time.Date(2025, 6, 12, 12, 0, 0, 0, time.UTC).Format(time.RubyDate), FullText: text,
+	}, AccountIdentity{ID: "42", Username: "owner"}, "tweet")
+	if reason != "" || activity.Text != text {
+		t.Fatalf("stored post text changed: reason=%q text=%q", reason, activity.Text)
+	}
+}
+
+func writeStoredZIP(t *testing.T, names []string, content func(string) []byte) string {
+	t.Helper()
+	archivePath := filepath.Join(t.TempDir(), "synthetic.zip")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	for _, name := range names {
+		entry, err := archive.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(content(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return archivePath
 }
 
 func TestDatasetIdentityIsDeterministic(t *testing.T) {

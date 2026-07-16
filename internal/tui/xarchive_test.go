@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -63,6 +65,65 @@ func TestXDetailWrappingPreservesLongWords(t *testing.T) {
 		if len(line) > 17 {
 			t.Fatalf("wrapped line exceeded width: %q", line)
 		}
+	}
+}
+
+func TestArchiveDisplayFieldsStripANSIAndTerminalControls(t *testing.T) {
+	untrusted := "safe\x1b[31mred\x1b[0m\x1b]52;c;secret\a\x00\u202Eend"
+	safe := terminalSafeText(untrusted)
+	for _, forbidden := range []string{"\x1b", "\a", "\x00", "\u202E"} {
+		if strings.Contains(safe, forbidden) {
+			t.Fatalf("terminal control retained in %q", safe)
+		}
+	}
+	for _, current := range safe {
+		if current != '\n' && (unicode.IsControl(current) || !unicode.IsPrint(current)) {
+			t.Fatalf("unsafe rune %U retained in %q", current, safe)
+		}
+	}
+
+	m := NewModel()
+	m.xSelectedLoaded = true
+	m.xSelected = xarchive.Activity{
+		Type: xarchive.ActivityReply, OccurredAt: time.Date(2025, 6, 12, 12, 0, 0, 0, time.UTC),
+		Text: untrusted, ReplyTo: &xarchive.RelatedPost{PostID: "99", Username: "friend\x1b[2J"},
+	}
+	rendered := strings.Join(m.xDetailTextLines(), "\n")
+	if strings.Contains(rendered, "\x1b") || strings.Contains(rendered, "\a") || !strings.Contains(rendered, "Reply to: @friend�[2J · post 99") {
+		t.Fatalf("unsafe archive detail rendering: %q", rendered)
+	}
+}
+
+func TestXPostDetailShowsSourceRelationsAndMediaMetadata(t *testing.T) {
+	store := xarchive.NewStore(t.TempDir())
+	result, err := store.ImportDemo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewModel()
+	m.xDataset = result.Dataset
+	m.xSelectedLoaded = true
+	m.xSelected = xarchive.Activity{
+		Type: xarchive.ActivityReply, SourceKind: "tweet", OccurredAt: time.Date(2025, 6, 12, 12, 0, 0, 0, time.UTC), Text: "Synthetic text",
+		ReplyTo:  &xarchive.RelatedPost{PostID: "11", Username: "reply_user"},
+		Quote:    &xarchive.RelatedPost{PostID: "22", Username: "quote_user"},
+		RepostOf: &xarchive.RelatedPost{PostID: "33", Username: "repost_user"},
+		Media:    []xarchive.MediaRef{{Kind: xarchive.MediaVideo, Width: 1920, Height: 1080, DurationMillis: 65_400, Bytes: 1_572_864}},
+	}
+	detail := strings.Join(m.xDetailTextLines(), "\n")
+	for _, want := range []string{
+		"Source: Vanish Demo (@vanish_demo) · Current posts",
+		"Reply to: @reply_user · post 11",
+		"Quote: @quote_user · post 22",
+		"Repost: @repost_user · post 33",
+		"Media: 1 retained",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail missing %q:\n%s", want, detail)
+		}
+	}
+	if label := xMediaActionLabel(m.xSelected.Media[0]); label != "Open video · 1920×1080 · 1:05 · 1.5 MiB" {
+		t.Fatalf("unexpected media metadata label: %q", label)
 	}
 }
 

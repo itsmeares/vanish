@@ -13,6 +13,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/gofrs/flock"
+
+	"github.com/itsmeares/vanish/internal/localdata"
 )
 
 const (
@@ -20,6 +24,7 @@ const (
 	manifestName   = "manifest.json"
 	indexName      = "index.jsonl"
 	postsName      = "posts.jsonl"
+	importLockName = ".import.lock"
 	maxIndexLine   = 1 << 20
 )
 
@@ -42,10 +47,28 @@ func NewStore(workspaceDir string) *Store {
 func (s *Store) Root() string { return s.root }
 
 func (s *Store) List() ([]DatasetSummary, error) {
+	if s == nil || s.workspaceDir == "" || s.workspaceDir == "." {
+		return nil, errors.New("local workspace is unavailable")
+	}
+	lease, err := localdata.TryUse(s.workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Close()
 	if err := validateDirectory(s.root); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
+	}
+	guard, locked, err := s.tryImportLock()
+	if err != nil {
+		return nil, err
+	}
+	if locked {
+		defer guard.Close()
+		if err := s.cleanupInterruptedImports(); err != nil {
+			return nil, err
+		}
 	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
@@ -69,6 +92,66 @@ func (s *Store) List() ([]DatasetSummary, error) {
 		return summaries[i].ImportedAt.After(summaries[j].ImportedAt)
 	})
 	return summaries, nil
+}
+
+func (s *Store) tryImportLock() (*flock.Flock, bool, error) {
+	lockPath := filepath.Join(s.root, importLockName)
+	if info, err := os.Lstat(lockPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, false, errors.New("X archive import lock path is unsafe")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, false, err
+	}
+	lock := flock.New(lockPath, flock.SetPermissions(0o600))
+	locked, err := lock.TryLock()
+	if err != nil {
+		_ = lock.Close()
+		return nil, false, err
+	}
+	if !locked {
+		_ = lock.Close()
+		return nil, false, nil
+	}
+	return lock, true, nil
+}
+
+func (s *Store) cleanupInterruptedImports() error {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".import-") {
+			continue
+		}
+		target := filepath.Join(s.root, entry.Name())
+		relative, err := filepath.Rel(s.root, target)
+		if err != nil || relative != entry.Name() {
+			return errors.New("X archive staging path is unsafe")
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return errors.New("X archive staging path is unsafe")
+		}
+		if info.IsDir() {
+			if err := validateDirectory(target); err != nil {
+				return err
+			}
+		} else if err := validateRegularFile(target); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Open(id string) (*Dataset, error) {

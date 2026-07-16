@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -307,7 +308,7 @@ func (m Model) xImportResultView() string {
 	items := []string{"Browse posts", "View warnings", "Back home"}
 	m.resultCursor = clampCursor(m.resultCursor, len(items))
 	lines := []string{
-		m.styles.body.Render(fmt.Sprintf("Account: @%s", m.xImportResult.Summary.Account.Username)),
+		m.styles.body.Render("Account: " + xAccountIdentity(m.xImportResult.Summary.Account)),
 		m.styles.body.Render(fmt.Sprintf("Posts: %d", counts.Posts)),
 		m.styles.body.Render(fmt.Sprintf("Replies: %d", counts.Replies)),
 		m.styles.body.Render(fmt.Sprintf("Quote posts: %d", counts.QuotePosts)),
@@ -333,7 +334,7 @@ func (m Model) xBrowserView() string {
 		if !ok {
 			continue
 		}
-		relevant := entry.RelevantAccount
+		relevant := terminalSafeInline(entry.RelevantAccount)
 		if relevant != "" {
 			relevant = "@" + relevant
 		}
@@ -362,10 +363,10 @@ func (m Model) xBrowserView() string {
 	detail := []string{}
 	if m.xSelectedLoaded {
 		detail = append(detail,
-			m.styles.body.Render("Type: "+string(m.xSelected.Type)),
+			m.styles.body.Render("Type: "+terminalSafeInline(string(m.xSelected.Type))),
 			m.styles.body.Render("Date: "+m.xSelected.OccurredAt.Format("2006-01-02 15:04 UTC")),
 			m.styles.body.Render(fmt.Sprintf("Media: %d", len(m.xSelected.Media))), "",
-			m.styles.body.Render(truncateEnd(singleLine(m.xSelected.Text), paneTextWidth(detailWidth))),
+			m.styles.body.Render(truncateEnd(terminalSafeInline(m.xSelected.Text), paneTextWidth(detailWidth))),
 		)
 	} else {
 		detail = append(detail, m.emptyState("No post selected."))
@@ -401,13 +402,7 @@ func (m Model) xDetailView() string {
 			items := make([]string, 0, len(m.xSelected.Media))
 			disabled := make(map[int]bool)
 			for index, media := range m.xSelected.Media {
-				label := "Open video"
-				if media.Kind == xarchive.MediaPhoto {
-					label = "Open photo"
-				} else if media.Kind == xarchive.MediaAnimation {
-					label = "Open animation"
-				}
-				items = append(items, label)
+				items = append(items, xMediaActionLabel(media))
 				if m.xDataset == nil || !m.xDataset.MediaAvailable(media) {
 					disabled[index] = true
 				}
@@ -458,7 +453,7 @@ func (m Model) xArchivesView() string {
 	}
 	for index := start; index < end; index++ {
 		dataset := m.xDatasets[index]
-		row := fixedWidthRow(fixedColumn{Text: "@" + dataset.Account.Username, Width: 22}, fixedColumn{Text: dataset.ImportedAt.Format("2006-01-02"), Width: 10}, fixedColumn{Text: fmt.Sprintf("%d posts", dataset.Counts.Total), Width: 12})
+		row := fixedWidthRow(fixedColumn{Text: "@" + terminalSafeInline(dataset.Account.Username), Width: 22}, fixedColumn{Text: dataset.ImportedAt.Format("2006-01-02"), Width: 10}, fixedColumn{Text: fmt.Sprintf("%d posts", dataset.Counts.Total), Width: 12})
 		prefix := "  "
 		style := m.styles.body
 		if index == m.xArchiveCursor {
@@ -471,7 +466,7 @@ func (m Model) xArchivesView() string {
 	if len(m.xDatasets) > 0 {
 		dataset := m.xDatasets[clampCursor(m.xArchiveCursor, len(m.xDatasets))]
 		detail = m.detailRows([]string{
-			"Account: @" + dataset.Account.Username,
+			"Account: " + xAccountIdentity(dataset.Account),
 			fmt.Sprintf("Current posts: %d", dataset.Counts.Total),
 			fmt.Sprintf("Media: %d", dataset.Counts.Media),
 			fmt.Sprintf("Warnings: %d", dataset.WarningCount),
@@ -490,12 +485,135 @@ func (m Model) xDetailVisibleRows() int { return maxInt(3, layoutSpec(m.width, m
 func (m Model) xDetailTextLines() []string {
 	width := maxInt(12, layoutSpec(m.width, m.height).contentWidth-4)
 	lines := []string{
-		"Type: " + string(m.xSelected.Type),
+		"Type: " + terminalSafeInline(string(m.xSelected.Type)),
 		"Date: " + m.xSelected.OccurredAt.Format("2006-01-02 15:04 UTC"),
-		"",
+		m.xDetailSourceLine(),
 	}
-	lines = append(lines, wrapPlainText(m.xSelected.Text, width)...)
+	for _, relation := range []struct {
+		label string
+		post  *xarchive.RelatedPost
+	}{{"Reply to", m.xSelected.ReplyTo}, {"Quote", m.xSelected.Quote}, {"Repost", m.xSelected.RepostOf}} {
+		if relation.post != nil {
+			lines = append(lines, relation.label+": "+xRelatedIdentity(relation.post))
+		}
+	}
+	lines = append(lines, fmt.Sprintf("Media: %d retained", len(m.xSelected.Media)), "", "Text:")
+	lines = append(lines, wrapPlainText(terminalSafeText(m.xSelected.Text), width)...)
 	return lines
+}
+
+func (m Model) xDetailSourceLine() string {
+	source := "Current posts"
+	if m.xSelected.SourceKind == "community_tweet" {
+		source = "Community posts"
+	}
+	if m.xDataset == nil {
+		return "Source: " + source
+	}
+	return "Source: " + xAccountIdentity(m.xDataset.Summary().Account) + " · " + source
+}
+
+func xAccountIdentity(account xarchive.AccountIdentity) string {
+	username := terminalSafeInline(account.Username)
+	displayName := terminalSafeInline(account.DisplayName)
+	if displayName != "" && username != "" {
+		return displayName + " (@" + username + ")"
+	}
+	if username != "" {
+		return "@" + username
+	}
+	return displayName
+}
+
+func xRelatedIdentity(post *xarchive.RelatedPost) string {
+	if post == nil {
+		return "Unknown"
+	}
+	username := terminalSafeInline(post.Username)
+	postID := terminalSafeInline(post.PostID)
+	if username != "" && postID != "" {
+		return "@" + username + " · post " + postID
+	}
+	if username != "" {
+		return "@" + username
+	}
+	if postID != "" {
+		return "post " + postID
+	}
+	return "Unknown"
+}
+
+func xMediaActionLabel(media xarchive.MediaRef) string {
+	kind := "video"
+	if media.Kind == xarchive.MediaPhoto {
+		kind = "photo"
+	} else if media.Kind == xarchive.MediaAnimation {
+		kind = "animation"
+	}
+	parts := []string{"Open " + kind}
+	if media.Width > 0 && media.Height > 0 {
+		parts = append(parts, fmt.Sprintf("%d×%d", media.Width, media.Height))
+	}
+	if media.DurationMillis > 0 {
+		parts = append(parts, formatMediaDuration(media.DurationMillis))
+	}
+	if media.Bytes > 0 {
+		parts = append(parts, formatMediaBytes(media.Bytes))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatMediaDuration(milliseconds int64) string {
+	hours := milliseconds / 3_600_000
+	minutes := (milliseconds % 3_600_000) / 60_000
+	seconds := (milliseconds % 60_000) / 1_000
+	tenths := (milliseconds % 1_000) / 100
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%d:%02d", minutes, seconds)
+	}
+	if tenths > 0 {
+		return fmt.Sprintf("%d.%ds", seconds, tenths)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
+func formatMediaBytes(value int64) string {
+	if value < 1024 {
+		return fmt.Sprintf("%d B", value)
+	}
+	if value < 1024*1024 {
+		return fmt.Sprintf("%.1f KiB", float64(value)/1024)
+	}
+	if value < 1024*1024*1024 {
+		return fmt.Sprintf("%.1f MiB", float64(value)/(1024*1024))
+	}
+	return fmt.Sprintf("%.1f GiB", float64(value)/(1024*1024*1024))
+}
+
+func terminalSafeText(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	var safe strings.Builder
+	safe.Grow(len(value))
+	for _, current := range value {
+		switch {
+		case current == '\n':
+			safe.WriteByte('\n')
+		case current == '\t':
+			safe.WriteByte(' ')
+		case unicode.IsPrint(current):
+			safe.WriteRune(current)
+		default:
+			safe.WriteRune('�')
+		}
+	}
+	return safe.String()
+}
+
+func terminalSafeInline(value string) string {
+	return strings.Join(strings.Fields(terminalSafeText(value)), " ")
 }
 
 func wrapPlainText(value string, width int) []string {

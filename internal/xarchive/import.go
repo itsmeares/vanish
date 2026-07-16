@@ -28,6 +28,7 @@ const (
 	maxActivities         = 5_000_000
 	maxPostEntryBytes     = uint64(2 << 30)
 	maxAccountEntryBytes  = uint64(2 << 20)
+	maxRawRecordBytes     = 8 << 20
 	maxTextBytes          = 1 << 20
 	maxNormalizedRecord   = 2 << 20
 	maxEntitiesPerRecord  = 10_000
@@ -183,6 +184,17 @@ func (s *Store) ImportZIP(zipPath string, demo bool) (result ImportResult, err e
 	if err := validateDirectory(s.root); err != nil {
 		return result, err
 	}
+	importLock, locked, err := s.tryImportLock()
+	if err != nil {
+		return result, err
+	}
+	if !locked {
+		return result, localdata.ErrActive
+	}
+	defer importLock.Close()
+	if err := s.cleanupInterruptedImports(); err != nil {
+		return result, err
+	}
 	stage, err := os.MkdirTemp(s.root, ".import-")
 	if err != nil {
 		return result, err
@@ -270,6 +282,7 @@ func preflightArchive(entries []*zip.File) (archiveFiles, error) {
 	}
 	result := archiveFiles{posts: make(map[string]*zip.File), media: make(map[string]*zip.File)}
 	seen := make(map[string]struct{}, len(entries))
+	logicalSeen := make(map[string]struct{})
 	for _, file := range entries {
 		name, ok := safeArchiveName(file.Name)
 		if !ok {
@@ -299,6 +312,11 @@ func preflightArchive(entries []*zip.File) (archiveFiles, error) {
 			}
 		}
 		if limit > 0 {
+			logicalFold := strings.ToLower(logical)
+			if _, exists := logicalSeen[logicalFold]; exists {
+				return archiveFiles{}, errors.New("X archive contains colliding supported paths")
+			}
+			logicalSeen[logicalFold] = struct{}{}
 			if file.UncompressedSize64 > limit {
 				return archiveFiles{}, errors.New("X archive supported entry exceeds its size limit")
 			}
@@ -378,23 +396,30 @@ func streamPostFile(file *zip.File, spec struct{ name, wrapper, kind, media stri
 	}
 	defer reader.Close()
 	buffered := bufio.NewReaderSize(reader, 64*1024)
-	prefix, err := buffered.ReadString('=')
-	if err != nil || len(prefix) > 256 || strings.TrimSpace(strings.TrimSuffix(prefix, "=")) != spec.wrapper {
+	prefix, err := readBoundedUntil(buffered, '=', 256)
+	if err != nil || strings.TrimSpace(strings.TrimSuffix(string(prefix), "=")) != spec.wrapper {
 		return errors.New("X archive post data has an unsupported wrapper")
 	}
-	decoder := json.NewDecoder(buffered)
-	token, err := decoder.Token()
-	if err != nil || token != json.Delim('[') {
+	first, err := readNonSpaceByte(buffered)
+	if err != nil || first != '[' {
 		return errors.New("X archive post data is invalid")
 	}
-	for decoder.More() {
+	firstRecord := true
+	for {
+		raw, done, err := readBoundedArrayObject(buffered, firstRecord, maxRawRecordBytes)
+		if err != nil {
+			if errors.Is(err, errRawRecordTooLarge) {
+				return errors.New("X archive post record exceeds its size limit")
+			}
+			return errors.New("X archive post data is invalid")
+		}
+		if done {
+			break
+		}
 		if w.counts.Total >= maxActivities {
 			return errors.New("X archive activity limit exceeded")
 		}
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err != nil {
-			return errors.New("X archive post data is invalid")
-		}
+		firstRecord = false
 		var envelope rawEnvelope
 		if json.Unmarshal(raw, &envelope) != nil {
 			w.warnings.add(spec.kind, "record", "invalid record skipped", WarningRecord, 1)
@@ -419,14 +444,112 @@ func streamPostFile(file *zip.File, spec struct{ name, wrapper, kind, media stri
 			return err
 		}
 	}
-	if _, err := decoder.Token(); err != nil {
-		return errors.New("X archive post data is invalid")
-	}
-	tail, err := io.ReadAll(io.LimitReader(io.MultiReader(decoder.Buffered(), buffered), 17))
+	tail, err := io.ReadAll(io.LimitReader(buffered, 17))
 	if err != nil || len(tail) > 16 || (strings.TrimSpace(string(tail)) != "" && strings.TrimSpace(string(tail)) != ";") {
 		return errors.New("X archive post data has unexpected trailing content")
 	}
 	return nil
+}
+
+var errRawRecordTooLarge = errors.New("raw X archive record is too large")
+
+func readBoundedArrayObject(reader *bufio.Reader, first bool, limit int) ([]byte, bool, error) {
+	marker, err := readNonSpaceByte(reader)
+	if err != nil {
+		return nil, false, err
+	}
+	if !first {
+		if marker == ']' {
+			return nil, true, nil
+		}
+		if marker != ',' {
+			return nil, false, errors.New("missing array separator")
+		}
+		marker, err = readNonSpaceByte(reader)
+		if err != nil {
+			return nil, false, err
+		}
+	} else if marker == ']' {
+		return nil, true, nil
+	}
+	if marker != '{' {
+		return nil, false, errors.New("array element is not an object")
+	}
+
+	capacity := limit
+	if capacity > 64*1024 {
+		capacity = 64 * 1024
+	}
+	raw := make([]byte, 1, capacity)
+	raw[0] = marker
+	stack := []byte{'}'}
+	inString := false
+	escaped := false
+	for len(stack) > 0 {
+		value, err := reader.ReadByte()
+		if err != nil {
+			return nil, false, err
+		}
+		if len(raw) >= limit {
+			return nil, false, errRawRecordTooLarge
+		}
+		raw = append(raw, value)
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case value == '\\':
+				escaped = true
+			case value == '"':
+				inString = false
+			}
+			continue
+		}
+		switch value {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if stack[len(stack)-1] != value {
+				return nil, false, errors.New("mismatched JSON delimiter")
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	return raw, false, nil
+}
+
+func readNonSpaceByte(reader *bufio.Reader) (byte, error) {
+	for {
+		value, err := reader.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		switch value {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return value, nil
+		}
+	}
+}
+
+func readBoundedUntil(reader *bufio.Reader, delimiter byte, limit int) ([]byte, error) {
+	value := make([]byte, 0, limit)
+	for len(value) < limit {
+		current, err := reader.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		value = append(value, current)
+		if current == delimiter {
+			return value, nil
+		}
+	}
+	return nil, errors.New("bounded delimiter was not found")
 }
 
 func normalizeTweet(tweet rawTweet, account AccountIdentity, sourceKind string) (Activity, string) {
