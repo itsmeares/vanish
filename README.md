@@ -30,6 +30,8 @@ It can:
 - Keep local history, audit records, workspace data, and a local-data wipe flow.
 - Keep no-op execution progress in a durable local journal and offer explicit,
   safety-classified resume or abandonment after restart.
+- Import an official X/Twitter archive ZIP, retain only supported current posts
+  and linked media, and browse that read-only dataset after restart.
 - Offer a read-only Reddit official API planner prototype.
 
 Vanish does not yet provide automatic or complete multi-platform cleanup. See
@@ -41,10 +43,12 @@ Vanish does not yet provide automatic or complete multi-platform cleanup. See
 | Platform | Import or scan | Cleanup planning | Assisted cleanup | Automatic cleanup |
 | --- | --- | --- | --- | --- |
 | Instagram Export | Supported | Supported | Supported | No |
+| X / Twitter Archive | Supported local archive | No | No | No |
 | Reddit | Official API, access pending | Prototype | No | No |
 | Other platforms | Planned | Planned | Planned | Planned |
 
-Instagram Export is the current alpha path. Reddit is an experimental,
+Instagram Export is the cleanup path. X archive support is a local-only,
+read-only post browser; see [docs/x-archive.md](docs/x-archive.md). Reddit is an experimental,
 read-only official API planner prototype. A developer access request has been
 submitted to Reddit, and the project is awaiting a response, so the integration
 may not be usable in public builds yet. Approval has not been granted. Reddit
@@ -131,10 +135,11 @@ stays on your machine.
 
 ## Privacy and Safety
 
-Vanish has no cloud backend or default telemetry. It does not collect
-Instagram passwords, cookies, browser sessions, or private API access, and it
-does not scrape or automate a browser. Instagram cleanup remains user-directed
-manual work in the system browser.
+Vanish has no cloud backend or default telemetry. It does not collect platform
+passwords, cookies, browser sessions, or private API access, and it does not
+scrape or automate a browser. Instagram cleanup remains user-directed manual
+work in the system browser. X archive import performs no network access or
+remote post actions.
 
 The Reddit prototype is the narrow exception to local-file-only behavior: it
 uses the official API within its documented read-only boundary. Details live in
@@ -144,9 +149,10 @@ uses the official API within its documented read-only boundary. Details live in
 
 Vanish stores local workspace metadata, history, audit records, safe manual
 cleanup progress, and durable no-op execution journals in its app directory. It
-does not copy raw exports or persist raw comment text. Local-data wipe clears
-Vanish-managed data, including execution progress and locks; it does not delete
-export ZIPs or plan files you chose outside that directory.
+does not copy raw exports. For X archive browsing, it explicitly retains
+normalized supported post text and linked media under `x-archives/`; that data
+is removed by local-data wipe. Original export ZIPs and plan files outside the
+app directory are not deleted.
 
 For Reddit, the operating-system credential store is primary. Only after
 explicit confirmation, an unavailable credential store may use a
@@ -163,6 +169,8 @@ and wipe behavior.
 - Instagram changes are performed manually in your browser.
 - Instagram export formats can change.
 - Comment previews are memory-only and disappear after restart.
+- X archive support is read-only and covers current posts, replies, quote
+  posts, reposts, and current community posts only.
 - Reddit remains an experimental read-only prototype awaiting developer access.
 - Vanish has no automatic platform mutations or browser automation.
 

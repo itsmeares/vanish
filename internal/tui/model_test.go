@@ -223,7 +223,7 @@ func TestHomeDetailChangesWithPlatformCursor(t *testing.T) {
 		t.Fatalf("expected static home copy to be removed, got:\n%s", instagramView)
 	}
 
-	m.homeCursor = 1
+	m.homeCursor = 2
 	redditView := m.View().Content
 	for _, want := range []string{
 		"Reddit",
@@ -320,17 +320,17 @@ func TestHomeMenuNavigationUsesArrowAndJK(t *testing.T) {
 
 	next := updateModel(t, m, keyPress("down"))
 	if next.homeCursor != 1 {
-		t.Fatalf("expected down to select Reddit, got %d", next.homeCursor)
+		t.Fatalf("expected down to select X archive, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("j"))
-	if next.homeCursor != 1 {
-		t.Fatalf("expected cursor to stay at bottom, got %d", next.homeCursor)
+	if next.homeCursor != 2 {
+		t.Fatalf("expected j to select Reddit, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("up"))
-	if next.homeCursor != 0 {
-		t.Fatalf("expected up to select Instagram Export, got %d", next.homeCursor)
+	if next.homeCursor != 1 {
+		t.Fatalf("expected up to select X archive, got %d", next.homeCursor)
 	}
 
 	next = updateModel(t, next, keyPress("k"))
@@ -485,7 +485,7 @@ func TestRedditNotConnectedShowsSimpleSignInState(t *testing.T) {
 	t.Setenv(reddit.ClientIDEnv, "")
 
 	m := NewModel()
-	m.openPlatformDetail(1)
+	m.openPlatformDetail(2)
 	if m.current != screenRedditConnect || m.selectedPlatformID != platform.PlatformReddit {
 		t.Fatalf("expected Reddit connect screen, screen=%v id=%q", m.current, m.selectedPlatformID)
 	}
@@ -514,7 +514,7 @@ func TestRedditSignInWithoutClientIDShowsShortError(t *testing.T) {
 	t.Setenv(reddit.ClientIDEnv, "")
 
 	m := NewModel()
-	m.openPlatformDetail(1)
+	m.openPlatformDetail(2)
 
 	next := updateModel(t, m, keyPress("enter"))
 	if next.current != screenRedditConnect {
@@ -538,7 +538,7 @@ func TestRedditSignInOpensBrowserWaitScreen(t *testing.T) {
 	t.Setenv(reddit.ClientIDEnv, "test-client")
 
 	m := NewModel()
-	m.openPlatformDetail(1)
+	m.openPlatformDetail(2)
 
 	updated, cmd := m.Update(keyPress("enter"))
 	if cmd == nil {
@@ -991,7 +991,7 @@ func TestPlansTabPrefersLoadedPlanThenGeneratedPreview(t *testing.T) {
 
 func TestMouseClickHomeMenuRowActivatesOnSingleClick(t *testing.T) {
 	m := NewModel()
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 2, "")
 
 	next := updateModel(t, m, mouseClick(box.X, box.Y))
 	if next.current != screenRedditConnect || next.selectedPlatformID != platform.PlatformReddit {
@@ -1001,7 +1001,7 @@ func TestMouseClickHomeMenuRowActivatesOnSingleClick(t *testing.T) {
 
 func TestMouseClickOutsideMenuRowBoundsDoesNotActivate(t *testing.T) {
 	m := NewModel()
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 2, "")
 
 	next := updateModel(t, m, mouseClick(box.X+box.Width+1, box.Y))
 	if next.current != screenHome {
@@ -1041,10 +1041,10 @@ func TestHomeHitBoxesMapVisibleRowsWithFrameOffsets(t *testing.T) {
 
 func TestMouseHoverHomeRowUsesRenderedHitBox(t *testing.T) {
 	m := NewModel()
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 2, "")
 
 	next := updateModel(t, m, mouseMotion(box.X, box.Y))
-	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != 1 {
+	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != 2 {
 		t.Fatalf("expected hover target for Reddit row, got %#v", next.hoverTarget)
 	}
 	if next.homeCursor != 0 {
@@ -1054,10 +1054,10 @@ func TestMouseHoverHomeRowUsesRenderedHitBox(t *testing.T) {
 
 func TestMouseHitBoxesStillMatchRowsAfterResize(t *testing.T) {
 	m := updateModel(t, NewModel(), tea.WindowSizeMsg{Width: 90, Height: 18})
-	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 1, "")
+	box := requireHitBox(t, hitBoxesForTest(t, m), hitHomeAction, 2, "")
 
 	next := updateModel(t, m, mouseMotion(box.X, box.Y))
-	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != 1 {
+	if next.hoverTarget.Kind != hitHomeAction || next.hoverTarget.Index != 2 {
 		t.Fatalf("expected resized hover target for Reddit row, got %#v", next.hoverTarget)
 	}
 

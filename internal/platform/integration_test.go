@@ -6,6 +6,7 @@ import (
 	"github.com/itsmeares/vanish/internal/instagram"
 	"github.com/itsmeares/vanish/internal/platform"
 	"github.com/itsmeares/vanish/internal/reddit"
+	"github.com/itsmeares/vanish/internal/xarchive"
 )
 
 var capabilityOrder = []platform.CapabilityID{
@@ -125,6 +126,34 @@ func TestRedditCapabilityDeclaration(t *testing.T) {
 		platform.SupportPrototype,
 		platform.SupportPrototype,
 	})
+}
+
+func TestXArchiveCapabilityDeclaration(t *testing.T) {
+	current := xarchive.Platform()
+	assertCapabilities(t, current, []platform.CapabilitySupport{
+		platform.SupportSupported,
+		platform.SupportUnsupported,
+		platform.SupportSupported,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+		platform.SupportUnsupported,
+	})
+	wantActions := []string{
+		platform.ActionRequestXArchive,
+		platform.ActionChooseXArchiveZIP,
+		platform.ActionXDemoImport,
+		platform.ActionBack,
+	}
+	if len(current.Actions) != len(wantActions) {
+		t.Fatalf("unexpected X action count: %#v", current.Actions)
+	}
+	for index, want := range wantActions {
+		if current.Actions[index].ID != want {
+			t.Fatalf("X action[%d] = %q, want %q", index, current.Actions[index].ID, want)
+		}
+	}
 }
 
 func assertCapabilities(t *testing.T, current platform.Platform, support []platform.CapabilitySupport) {
