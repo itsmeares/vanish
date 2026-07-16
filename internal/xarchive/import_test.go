@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +316,53 @@ func TestPreflightRejectsSupportedPathCollisionsAfterRootNormalization(t *testin
 	}
 }
 
+func TestImportRejectsMixedSupportedArchiveRootsBeforeRetention(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+	}{
+		{"account and posts", []string{"root-a/data/account.js", "root-b/data/tweets.js"}},
+		{"posts and media", []string{"root-a/data/account.js", "root-a/data/tweets.js", "root-b/data/tweets_media/1-photo.jpg"}},
+		{"three roots", []string{"root-a/data/account.js", "root-b/data/tweets.js", "root-c/data/tweets_media/1-photo.jpg"}},
+		{"rooted and rootless", []string{"data/account.js", "root-a/data/tweets.js", "root-a/data/tweets_media/1-photo.jpg"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archivePath := writeStoredZIP(t, test.entries, func(string) []byte { return []byte("invalid by design") })
+			store := NewStore(t.TempDir())
+			_, err := store.ImportZIP(archivePath, false)
+			if err == nil || err.Error() != "X archive contains mixed supported roots" {
+				t.Fatalf("expected mixed-root rejection, got %v", err)
+			}
+			if _, err := os.Lstat(store.Root()); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("mixed-root import retained storage: %v", err)
+			}
+		})
+	}
+}
+
+func TestImportAcceptsRootlessAndSingleSharedRootLayouts(t *testing.T) {
+	rootless := filepath.Join(t.TempDir(), "rootless.zip")
+	if err := WriteDemoZIP(rootless); err != nil {
+		t.Fatal(err)
+	}
+	sharedRoot := rewriteSyntheticZIPPaths(t, rootless, func(name string) string { return "archive-root/" + name })
+	for _, test := range []struct {
+		name string
+		path string
+	}{{"official rootless", rootless}, {"single shared root", sharedRoot}} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := NewStore(t.TempDir()).ImportZIP(test.path, false)
+			if err != nil {
+				t.Fatalf("import %s layout: %v", test.name, err)
+			}
+			if result.Summary.Counts.Total != 6 || result.Summary.Counts.Media != 2 {
+				t.Fatalf("unexpected %s import counts: %#v", test.name, result.Summary.Counts)
+			}
+		})
+	}
+}
+
 func TestImportRejectsOversizedRawArrayElementBeforeDecode(t *testing.T) {
 	account := `window.YTD.account.part0 = [{"account":{"accountId":"42","username":"synthetic","accountDisplayName":"Synthetic"}}];`
 	oversized := `window.YTD.tweets.part0 = [{"tweet":{"id_str":"1","created_at":"Thu Jun 12 12:00:00 +0000 2025","full_text":"small"},"ignored":"` + strings.Repeat("x", maxRawRecordBytes) + `"}];`
@@ -436,6 +484,46 @@ func writeStoredZIP(t *testing.T, names []string, content func(string) []byte) s
 		t.Fatal(err)
 	}
 	return archivePath
+}
+
+func rewriteSyntheticZIPPaths(t *testing.T, source string, rewrite func(string) string) string {
+	t.Helper()
+	input, err := zip.OpenReader(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	destination := filepath.Join(t.TempDir(), "rewritten-synthetic.zip")
+	file, err := os.Create(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	for _, entry := range input.File {
+		opened, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(opened)
+		closeErr := opened.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("read synthetic entry: %v %v", err, closeErr)
+		}
+		output, err := archive.CreateHeader(&zip.FileHeader{Name: rewrite(entry.Name), Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := output.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return destination
 }
 
 func TestDatasetIdentityIsDeterministic(t *testing.T) {

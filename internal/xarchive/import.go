@@ -283,6 +283,8 @@ func preflightArchive(entries []*zip.File) (archiveFiles, error) {
 	result := archiveFiles{posts: make(map[string]*zip.File), media: make(map[string]*zip.File)}
 	seen := make(map[string]struct{}, len(entries))
 	logicalSeen := make(map[string]struct{})
+	supportedRoot := ""
+	supportedRootSet := false
 	for _, file := range entries {
 		name, ok := safeArchiveName(file.Name)
 		if !ok {
@@ -317,6 +319,12 @@ func preflightArchive(entries []*zip.File) (archiveFiles, error) {
 				return archiveFiles{}, errors.New("X archive contains colliding supported paths")
 			}
 			logicalSeen[logicalFold] = struct{}{}
+			root := archiveRoot(name)
+			if supportedRootSet && root != supportedRoot {
+				return archiveFiles{}, errors.New("X archive contains mixed supported roots")
+			}
+			supportedRoot = root
+			supportedRootSet = true
 			if file.UncompressedSize64 > limit {
 				return archiveFiles{}, errors.New("X archive supported entry exceeds its size limit")
 			}
@@ -361,6 +369,14 @@ func logicalArchiveName(name string) string {
 		return name[slash+1:]
 	}
 	return name
+}
+
+func archiveRoot(name string) string {
+	if strings.HasPrefix(name, "data/") || name == "data" {
+		return ""
+	}
+	root, _, _ := strings.Cut(name, "/")
+	return root
 }
 
 func parseAccount(file *zip.File) (AccountIdentity, error) {
