@@ -12,6 +12,7 @@ type PlatformID string
 
 const (
 	PlatformInstagramExport PlatformID = "instagram-export"
+	PlatformXArchive        PlatformID = "x-archive"
 	PlatformReddit          PlatformID = "reddit"
 )
 
@@ -75,6 +76,9 @@ type PlatformAction struct {
 
 const (
 	ActionRequestInstagramExport = "request-instagram-export"
+	ActionRequestXArchive        = "request-x-archive"
+	ActionChooseXArchiveZIP      = "choose-x-archive-zip"
+	ActionXDemoImport            = "x-demo-import"
 	ActionChooseExportZIP        = "choose-export-zip"
 	ActionExportGuide            = "export-guide"
 	ActionViewRecentImports      = "view-recent-imports"

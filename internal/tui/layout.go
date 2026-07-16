@@ -172,13 +172,13 @@ func (m Model) tabs(spec layoutMetrics) string {
 
 func (m Model) activeTab() string {
 	switch m.current {
-	case screenImportPath, screenImporting, screenImportResult, screenWarnings:
+	case screenImportPath, screenImporting, screenImportResult, screenWarnings, screenXImporting, screenXImportResult, screenXWarnings:
 		return "Import"
-	case screenItemsBrowser, screenReviewEmpty, screenFilters, screenSelectionSummary, screenSelectedItems:
+	case screenItemsBrowser, screenReviewEmpty, screenFilters, screenSelectionSummary, screenSelectedItems, screenXBrowser, screenXDetail:
 		return "Review"
 	case screenPlanPreview, screenPlanExportPath, screenPlanLoadPath, screenLoadedPlanSummary, screenLoadedPlanActions, screenApplyPreview, screenApplyConfirm, screenApplyRunning, screenApplyResult, screenManualCleanupChoice, screenManualCleanupAction, screenManualCleanupResult:
 		return "Plans"
-	case screenLocalDataOverview, screenRecentImports, screenRecentPlans, screenAuditLog, screenWipeLocalDataConfirm:
+	case screenLocalDataOverview, screenRecentImports, screenRecentPlans, screenAuditLog, screenXArchives, screenWipeLocalDataConfirm:
 		return "Local"
 	case screenKeybindings:
 		return "Help"

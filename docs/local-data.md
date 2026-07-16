@@ -15,6 +15,19 @@ Imported Instagram export ZIPs and exported cleanup plans stay at the paths you
 choose. Vanish records limited metadata about those paths but does not copy raw
 exports into its app directory.
 
+Original X archive ZIPs also stay at their chosen paths. A successful X import
+creates a narrowed browsing dataset under `x-archives/<dataset-sha256>/`:
+
+- `manifest.json`: format, account display identity, counts, hashes, and sizes;
+  it contains no post text.
+- `index.jsonl`: compact type/date/relationship/media metadata and record
+  offsets; it contains no post text.
+- `posts.jsonl`: normalized supported post records, including full post text.
+- `media/`: content-addressed copies of media referenced by accepted posts.
+
+Unsupported archive sections are not copied. Dataset summaries are loaded at
+startup; full post text is read only for the selected browser record.
+
 ## What Vanish Stores
 
 - Local configuration and workspace timestamps.
@@ -27,6 +40,8 @@ exports into its app directory.
   and done/skipped outcomes so a session can resume after restart.
 - Durable no-op execution progress: an immutable cleanup-plan snapshot, execution
   route and policy, append-only runtime events, and a derived list summary.
+- Narrowed X archive datasets containing supported current post text and linked
+  local media for restart-safe browsing.
 
 ## Durable Executions
 
@@ -61,7 +76,9 @@ otherwise the execution remains stored.
 
 ## What Vanish Does Not Store
 
-- Raw parsed items, export files, comment text, or private messages.
+- Raw export files, unsupported archive sections, Instagram comment text, or
+  private messages. The documented exception is normalized supported X post
+  text in `x-archives/*/posts.jsonl`.
 - Passwords, cookies, login sessions, or authorization headers.
 - Reddit token values in normal configuration, history, audit, plans, or errors.
 
@@ -82,11 +99,11 @@ connection metadata may remain in local configuration.
 ## Wipe Behavior
 
 Local-data wipe clears Vanish-managed configuration, recent import/plan history,
-audit records, manual-cleanup progress, durable execution manifests, journals,
-summaries, locks, and any confirmed local-file fallback secrets from the active
-app directory. Wipe fails safely while a durable execution writer is active and
-prevents new writers for the duration of the wipe. It does not delete user-owned
-export ZIPs or plan JSON files
+audit records, retained X archive datasets, manual-cleanup progress, durable
+execution manifests, journals, summaries, locks, and any confirmed local-file
+fallback secrets from the active app directory. Wipe fails safely while a
+durable execution writer is active and prevents new writers for the duration of
+the wipe. It does not delete user-owned export ZIPs or plan JSON files
 outside that directory. Operating-system credential-store secrets are outside
 the app directory and are not removed by local-data wipe.
 

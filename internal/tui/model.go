@@ -27,6 +27,7 @@ import (
 	"github.com/itsmeares/vanish/internal/reddit"
 	"github.com/itsmeares/vanish/internal/secretstore"
 	"github.com/itsmeares/vanish/internal/workspace"
+	"github.com/itsmeares/vanish/internal/xarchive"
 )
 
 var (
@@ -35,7 +36,7 @@ var (
 )
 
 func mustPlatformRegistry() platform.Registry {
-	registry, err := platform.NewRegistry(instagram.Platform(), reddit.Platform())
+	registry, err := platform.NewRegistry(instagram.Platform(), xarchive.Platform(), reddit.Platform())
 	if err != nil {
 		panic(err)
 	}
@@ -63,6 +64,12 @@ const (
 	screenImportPath
 	screenImporting
 	screenImportResult
+	screenXImporting
+	screenXImportResult
+	screenXBrowser
+	screenXDetail
+	screenXWarnings
+	screenXArchives
 	screenItemsBrowser
 	screenReviewEmpty
 	screenFilters
@@ -292,6 +299,7 @@ const (
 	localDataRecentPlans
 	localDataExecutions
 	localDataAuditLog
+	localDataXArchives
 	localDataWipe
 	localDataBackHome
 )
@@ -301,6 +309,7 @@ var localDataMenuItems = []string{
 	"Recent plans",
 	"Executions",
 	"Audit log",
+	"X archives",
 	"Wipe local data",
 	"Back home",
 }
@@ -503,6 +512,22 @@ type Model struct {
 	recentPlanOffset       int
 	auditCursor            int
 	auditOffset            int
+	xDatasets              []xarchive.DatasetSummary
+	xDataset               *xarchive.Dataset
+	xImportResult          xarchive.ImportResult
+	xImportErr             error
+	xStatus                string
+	xError                 string
+	xCursor                int
+	xOffset                int
+	xSelected              xarchive.Activity
+	xSelectedLoaded        bool
+	xDetailTab             int
+	xDetailOffset          int
+	xMediaCursor           int
+	xBrowserReturn         screen
+	xArchiveCursor         int
+	xArchiveOffset         int
 	wipeLocalDataCursor    int
 	helpReturnScreen       screen
 	quitReturnScreen       screen
@@ -542,6 +567,7 @@ func NewModelWithWorkspace(localWorkspace *workspace.Workspace, localErr error) 
 	}
 	if localWorkspace != nil {
 		m.refreshLocalData()
+		m.refreshXDatasets()
 		store := manualcleanup.NewStore(localWorkspace.Dir())
 		if session, ok, err := store.LatestUnfinished(); err == nil && ok {
 			m.manualSession = session
@@ -583,6 +609,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
 		m.executionOffset = ensureOffset(m.executionCursor, m.executionOffset, len(m.executionSummaries), m.localDataListHeight())
 		m.importPickerOffset = ensureOffset(m.importPickerCursor, m.importPickerOffset, len(m.importPickerEntries), m.importPickerListHeight())
+		m.xOffset = ensureOffset(m.xCursor, m.xOffset, m.xDatasetLen(), m.localDataListHeight())
+		m.xArchiveOffset = ensureOffset(m.xArchiveCursor, m.xArchiveOffset, len(m.xDatasets), m.localDataListHeight())
+
+	case xImportFinishedMsg:
+		m.xImportResult = msg.result
+		m.xImportErr = msg.err
+		m.importSource = ""
+		m.resultCursor = 0
+		m.xError = ""
+		m.xStatus = ""
+		if msg.err == nil {
+			m.xDataset = msg.result.Dataset
+			m.xCursor = 0
+			m.xOffset = 0
+			m.refreshXSelected()
+			m.refreshXDatasets()
+			m.recordXImport(msg.result)
+		}
+		m.current = screenXImportResult
+
+	case xArchivePageOpenedMsg:
+		if msg.err != nil {
+			m.xError = "Could not open X archive settings. Try Request archive again."
+			m.xStatus = ""
+		} else {
+			m.xError = ""
+			m.xStatus = "X archive settings opened in your browser."
+		}
+		return m, nil
+
+	case xMediaOpenedMsg:
+		if msg.err != nil {
+			m.xError = "Local media could not be opened."
+			m.xStatus = ""
+		} else {
+			m.xError = ""
+			m.xStatus = "Opened local media."
+		}
+		return m, nil
 
 	case importFinishedMsg:
 		m.importResult = activityResultFromAny(msg.result)
@@ -714,7 +779,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.current == screenImporting || m.current == screenRedditSigningIn || m.current == screenRedditBusy || m.current == screenApplyRunning {
+		if m.current == screenImporting || m.current == screenXImporting || m.current == screenRedditSigningIn || m.current == screenRedditBusy || m.current == screenApplyRunning {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -902,6 +967,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateImportPath(msg)
 		case screenImportResult:
 			return m.updateImportResult(msg)
+		case screenXImportResult:
+			return m.updateXImportResult(msg)
+		case screenXBrowser:
+			return m.updateXBrowser(msg)
+		case screenXDetail:
+			return m.updateXDetail(msg)
+		case screenXWarnings:
+			return m.updateXWarnings(msg)
+		case screenXArchives:
+			return m.updateXArchives(msg)
 		case screenItemsBrowser:
 			return m.updateItemsBrowser(msg)
 		case screenReviewEmpty:
@@ -1690,6 +1765,11 @@ func (m Model) updateLocalDataOverview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 			m.auditCursor = clampCursor(m.auditCursor, len(m.auditEvents))
 			m.auditOffset = ensureOffset(m.auditCursor, m.auditOffset, len(m.auditEvents), m.localDataListHeight())
 			m.current = screenAuditLog
+		case localDataXArchives:
+			m.refreshXDatasets()
+			m.xArchiveCursor = clampCursor(m.xArchiveCursor, len(m.xDatasets))
+			m.xArchiveOffset = ensureOffset(m.xArchiveCursor, m.xArchiveOffset, len(m.xDatasets), m.localDataListHeight())
+			m.current = screenXArchives
 		case localDataWipe:
 			m.wipeLocalDataCursor = wipeLocalDataCancel
 			m.current = screenWipeLocalDataConfirm
@@ -2143,6 +2223,18 @@ func (m Model) renderContent() string {
 		content = m.importingView()
 	case screenImportResult:
 		content = m.importResultView()
+	case screenXImporting:
+		content = m.xImportingView()
+	case screenXImportResult:
+		content = m.xImportResultView()
+	case screenXBrowser:
+		content = m.xBrowserView()
+	case screenXDetail:
+		content = m.xDetailView()
+	case screenXWarnings:
+		content = m.xWarningsView()
+	case screenXArchives:
+		content = m.xArchivesView()
 	case screenItemsBrowser:
 		content = m.itemsBrowserView()
 	case screenReviewEmpty:
@@ -2247,12 +2339,31 @@ func (m Model) platformDetailView() string {
 
 func (m Model) platformDetailLines(current platform.Platform) []string {
 	actionLabels, disabled := platformActionRows(current)
+	if current.ID == platform.PlatformXArchive && m.localWorkspace == nil {
+		if disabled == nil {
+			disabled = make(map[int]bool)
+		}
+		for index, action := range current.Actions {
+			if action.ID == platform.ActionChooseXArchiveZIP || action.ID == platform.ActionXDemoImport {
+				disabled[index] = true
+			}
+		}
+	}
 	lines := []string{m.styles.separator.Render("Actions")}
 	lines = append(lines, m.menuRowsWithDisabled(actionLabels, disabled, m.platformActionCursor, layoutSpec(m.width, m.height).contentWidth, hitPlatformAction)...)
 	if len(current.Actions) > 0 {
 		action := current.Actions[clampCursor(m.platformActionCursor, len(current.Actions))]
-		if available, reason := current.ActionAvailable(action); !available && strings.TrimSpace(reason) != "" {
+		if current.ID == platform.PlatformXArchive && m.localWorkspace == nil && (action.ID == platform.ActionChooseXArchiveZIP || action.ID == platform.ActionXDemoImport) {
+			lines = append(lines, m.notice("warning", "Local data is unavailable in this run."))
+		} else if available, reason := current.ActionAvailable(action); !available && strings.TrimSpace(reason) != "" {
 			lines = append(lines, m.notice("warning", reason))
+		}
+	}
+	if current.ID == platform.PlatformXArchive {
+		if m.xError != "" {
+			lines = append(lines, m.notice("error", m.xError))
+		} else if m.xStatus != "" {
+			lines = append(lines, m.notice("success", m.xStatus))
 		}
 	}
 
@@ -2412,8 +2523,14 @@ func (m Model) importPathView() string {
 		listLines = append(listLines, m.tableRowsWithDisabled(rows, disabled, cursor, offset, visibleRows, listWidth, hitImportPickerRow)...)
 	}
 
+	platformLabel := "Instagram export"
+	pageTitle := "Import Instagram Export"
+	if m.importPlatform == domain.PlatformX {
+		platformLabel = "X archive"
+		pageTitle = "Import X Archive"
+	}
 	detailLines := []string{
-		m.styles.body.Render("Choose a local Instagram export ZIP."),
+		m.styles.body.Render("Choose a local " + platformLabel + " ZIP."),
 		m.styles.muted.Render("Directories open in place; non-ZIP files are disabled."),
 	}
 	if len(m.importPickerEntries) > 0 {
@@ -2426,7 +2543,7 @@ func (m Model) importPathView() string {
 		"Import ZIP", "Local file picker", listLines,
 		"Selection", "", detailLines,
 	)
-	return m.appShell("Import Instagram Export", body, m.footer(footerImportPicker))
+	return m.appShell(pageTitle, body, m.footer(footerImportPicker))
 }
 
 func (m Model) importingView() string {
@@ -3318,6 +3435,7 @@ func (m Model) localDataOverviewView() string {
 		m.styles.body.Render(fmt.Sprintf("Recent plans: %d", len(m.recentPlans))),
 		m.styles.body.Render(fmt.Sprintf("Executions: %d", len(m.executionSummaries))),
 		m.styles.body.Render(fmt.Sprintf("Audit events: %d", len(m.auditEvents))),
+		m.styles.body.Render(fmt.Sprintf("X archives: %d", len(m.xDatasets))),
 	}
 	if m.auditMalformed > 0 {
 		stats = append(stats, m.notice("warning", fmt.Sprintf("Skipped malformed audit lines: %d", m.auditMalformed)))
@@ -3431,8 +3549,8 @@ func (m Model) auditLogView() string {
 func (m Model) wipeLocalDataConfirmView() string {
 	spec := layoutSpec(m.width, m.height)
 	lines := []string{
-		m.notice("warning", "This clears Vanish-managed config, history, audit records, and saved execution progress."),
-		m.styles.body.Render("It does not delete Instagram export ZIPs or cleanup plan JSON files outside the app directory."),
+		m.notice("warning", "This clears Vanish-managed config, history, retained X archives, audit records, and saved execution progress."),
+		m.styles.body.Render("It does not delete original Instagram/X ZIPs or cleanup plan JSON files outside the app directory."),
 		m.styles.body.Render(fmt.Sprintf("App directory: %s", m.localDataDirLabel())),
 		"",
 	}
@@ -3461,7 +3579,7 @@ func (m Model) keybindingsView() string {
 		m.styles.separator.Render("Plans"),
 		m.styles.body.Render("Generate, preview, export, and load dry-run JSON plans."),
 		m.styles.separator.Render("Notes"),
-		m.styles.body.Render("Instagram import uses local files; Reddit uses explicit official API connect only."),
+		m.styles.body.Render("Instagram and X archive import use local files; Reddit uses explicit official API connect only."),
 	}
 	return m.singlePaneFooter("Help", "Keyboard reference", lines, m.footer(footerHelp))
 }
@@ -3576,6 +3694,28 @@ func (m Model) activatePlatformAction() (tea.Model, tea.Cmd) {
 	}
 
 	switch action.ID {
+	case platform.ActionRequestXArchive:
+		m.xError = ""
+		m.xStatus = ""
+		return m, openXArchivePageCmd()
+	case platform.ActionChooseXArchiveZIP:
+		if m.localWorkspace == nil {
+			m.xError = "Local data is unavailable, so an X archive cannot be retained."
+			return m, nil
+		}
+		m.importPlatform = domain.PlatformX
+		m.importReturnScreen = screenPlatformDetail
+		m.openImportPicker(initialImportPickerDir())
+		m.current = screenImportPath
+	case platform.ActionXDemoImport:
+		if m.localWorkspace == nil {
+			m.xError = "Local data is unavailable, so the demo archive cannot be retained."
+			return m, nil
+		}
+		m.xError = ""
+		m.xStatus = ""
+		m.current = screenXImporting
+		return m, tea.Batch(startSpinnerCmd(m.spinner), xDemoImportCmd(m.xStore()))
 	case platform.ActionChooseExportZIP:
 		m.openInstagramZIPPicker(screenPlatformDetail)
 	case platform.ActionRequestInstagramExport, platform.ActionExportGuide:
@@ -3624,6 +3764,7 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 		m.current = screenHome
 	case "Import":
 		m.importReturnScreen = screenHome
+		m.importPlatform = domain.PlatformInstagram
 		m.current = screenImportPath
 		if strings.TrimSpace(m.importPickerDir) == "" {
 			m.openImportPicker(initialImportPickerDir())
@@ -3635,6 +3776,9 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 			m.itemOffset = ensureOffset(m.itemCursor, m.itemOffset, itemCount, m.parsedItemsViewport().VisibleRows)
 			m.itemFocus = itemFocusList
 			m.current = screenItemsBrowser
+		} else if m.openLatestXDataset() {
+			m.xBrowserReturn = screenHome
+			m.current = screenXBrowser
 		} else {
 			m.current = screenReviewEmpty
 		}
@@ -3669,6 +3813,7 @@ func (m Model) activateTab(label string) (tea.Model, tea.Cmd) {
 
 func (m *Model) openLocalDataOverview() {
 	m.refreshLocalData()
+	m.refreshXDatasets()
 	m.refreshExecutions()
 	m.localDataCursor = clampCursor(m.localDataCursor, len(localDataMenuItems))
 	m.current = screenLocalDataOverview
@@ -4593,6 +4738,16 @@ func (m *Model) wipeLocalData() {
 	m.recentPlans = nil
 	m.auditEvents = nil
 	m.auditMalformed = 0
+	m.xDatasets = nil
+	m.xDataset = nil
+	m.xImportResult = xarchive.ImportResult{}
+	m.xImportErr = nil
+	m.xSelected = xarchive.Activity{}
+	m.xSelectedLoaded = false
+	m.xCursor = 0
+	m.xOffset = 0
+	m.xArchiveCursor = 0
+	m.xArchiveOffset = 0
 	m.executionSummaries = nil
 	m.executionView = apply.ExecutionView{}
 	m.executionSelected = apply.ExecutionSummary{}
@@ -6916,6 +7071,14 @@ func (m Model) activateImportPickerEntry(index int) (tea.Model, tea.Cmd) {
 		return m, nil
 	default:
 		zipPath := entry.Path
+		if m.importPlatform == domain.PlatformX {
+			m.current = screenXImporting
+			m.xImportErr = nil
+			m.xImportResult = xarchive.ImportResult{}
+			m.xError = ""
+			m.xStatus = ""
+			return m, tea.Batch(startSpinnerCmd(m.spinner), xImportZIPCmd(m.xStore(), zipPath))
+		}
 		m = m.resetImportState()
 		m.current = screenImporting
 		m.importSource = zipPath
