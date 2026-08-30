@@ -1,0 +1,28 @@
+import { describe, expect, it } from 'vitest'
+import { normalizeInstagramPage } from '../src/main/instagram-normalize'
+
+describe('normalizeInstagramPage', () => {
+  it('normalizes current native media shapes and removes duplicate media ids', () => {
+    const page = normalizeInstagramPage({
+      items: [
+        { pk: '10', code: 'POST10', media_type: 1, user: { username: 'alice' }, caption: { text: 'A post' }, image_versions2: { candidates: [{ url: 'https://scontent.cdninstagram.com/a.jpg' }] }, liked_at: 1_710_000_000 },
+        { id: 10, shortcode: 'POST10', media_type: 1 },
+        { id: '11', code: 'REEL11', media_type: 2, product_type: 'clips', owner: { username: 'bob' } },
+        { pk: '12', code: 'CAR12', media_type: 8, carousel_media: [{}] },
+        { code: 'missing-id' },
+      ],
+      more_available: true,
+      next_max_id: 'cursor-2',
+    }, '2026-01-01T00:00:00.000Z')
+
+    expect(page.items).toHaveLength(3)
+    expect(page.items[0]).toMatchObject({ mediaId: '10', mediaType: 'post', ownerUsername: 'alice', permalink: 'https://www.instagram.com/p/POST10/' })
+    expect(page.items[1]).toMatchObject({ mediaId: '11', mediaType: 'reel', permalink: 'https://www.instagram.com/reel/REEL11/' })
+    expect(page.items[2]?.mediaType).toBe('carousel')
+    expect(page).toMatchObject({ cursor: 'cursor-2', hasMore: true })
+  })
+
+  it('accepts wrapped responses and ends without a cursor', () => {
+    expect(normalizeInstagramPage({ data: { liked_items: [], more_available: true } })).toEqual({ items: [], cursor: null, hasMore: false })
+  })
+})
