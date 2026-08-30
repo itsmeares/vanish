@@ -1,6 +1,6 @@
 export type AccountState = 'disconnected' | 'connected' | 'needs_auth'
 export type ScanState = 'idle' | 'scanning' | 'paused' | 'rate_limited' | 'needs_auth' | 'offline' | 'failed'
-export type JobState = 'confirmed' | 'running' | 'paused' | 'waiting_rate_limit' | 'needs_auth' | 'offline' | 'needs_reconciliation' | 'completed'
+export type JobState = 'confirmed' | 'running' | 'paused' | 'waiting_rate_limit' | 'needs_auth' | 'offline' | 'needs_reconciliation' | 'client_update_required' | 'completed'
 export type ItemState = 'pending' | 'in_flight' | 'succeeded' | 'already_unliked' | 'failed' | 'skipped' | 'ambiguous'
 
 export interface Account {
@@ -84,7 +84,7 @@ export interface InstagramPage {
 }
 
 export interface InstagramResult {
-  kind: 'succeeded' | 'already_unliked' | 'rate_limited' | 'needs_auth' | 'offline' | 'ambiguous'
+  kind: 'succeeded' | 'already_unliked' | 'rate_limited' | 'needs_auth' | 'offline' | 'ambiguous' | 'client_update_required'
   retryAfterMs?: number
   message?: string
 }

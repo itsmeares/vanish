@@ -92,4 +92,15 @@ describe('CleanupRunner', () => {
     expect(db.getJob(jobId).skipped).toBe(1)
     db.close()
   })
+
+  it('stops for a client update without recording or retrying a mutation', async () => {
+    const db = new VanishDatabase(':memory:')
+    const { jobId } = seed(db)
+    const remote: CleanupRemote = { unlike: async () => ({ kind: 'client_update_required', message: 'Update required.' }), reconcile: async () => ({ kind: 'ambiguous' }) }
+    new CleanupRunner(db, remote, () => undefined).start(jobId)
+    await settle(db, jobId, 'client_update_required')
+    expect(db.getJob(jobId)).toMatchObject({ pending: 1, ambiguous: 0, message: 'Update required.' })
+    expect(db.nextItem(jobId)).toMatchObject({ attempts: 0 })
+    db.close()
+  })
 })

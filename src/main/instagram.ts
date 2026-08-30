@@ -13,7 +13,7 @@ const instagramUrl = (value: string): boolean => {
   } catch { return false }
 }
 
-type RemoteResult = { ok: boolean; status?: number; data?: any; message?: string; retryAfter?: number }
+type RemoteResult = { ok: boolean; status?: number; data?: any; message?: string; retryAfter?: number; clientUpdateRequired?: boolean }
 
 function classifyRemote(result: RemoteResult): InstagramResult {
   const message = result.message || 'Instagram did not return a definite result.'
@@ -156,19 +156,17 @@ export class InstagramService {
     const result = await win.webContents.executeJavaScript(`(async () => {
       try {
         const mediaId = ${JSON.stringify(mediaId)}
-        const unlike = window.require?.('PolarisAPIUnlikePost')?.unlikePost
+        let unlike = null
+        try { unlike = window.require?.('PolarisAPIUnlikePost')?.unlikePost } catch {}
         if (unlike) {
           const data = await unlike(mediaId)
           const media = data?.xig_media_unlike?.media
           return { ok: media?.has_liked === false, data, message: media ? 'Instagram still reports this item as liked.' : 'Instagram returned no final state.' }
         }
-        const csrf = document.cookie.split('; ').find(value => value.startsWith('csrftoken='))?.split('=')[1] ?? ''
-        const response = await fetch('/api/v1/web/likes/' + encodeURIComponent(mediaId) + '/unlike/', { method: 'POST', credentials: 'include', headers: { 'x-csrftoken': csrf, 'x-requested-with': 'XMLHttpRequest', 'x-ig-app-id': '936619743392459' } })
-        if (response.redirected && response.url.includes('/accounts/login')) return { ok: false, status: 401, message: 'login required' }
-        let data = null; try { data = await response.json() } catch {}
-        return { ok: response.ok && data?.status === 'ok', status: response.status, data, message: data?.message, retryAfter: Number(response.headers.get('retry-after')) || undefined }
+        return { ok: false, clientUpdateRequired: true, message: 'Instagram changed its web client. Vanish needs an update before cleanup can continue.' }
       } catch (error) { return { ok: false, status: Number(error?.status ?? error?.response?.status) || undefined, message: String(error) } }
     })()`, true) as RemoteResult
+    if (result.clientUpdateRequired) return { kind: 'client_update_required', message: result.message }
     return result.ok ? { kind: 'succeeded' } : classifyRemote(result)
   }
 

@@ -125,6 +125,7 @@ export class VanishDatabase {
         state TEXT NOT NULL DEFAULT 'disconnected',
         scan_state TEXT NOT NULL DEFAULT 'idle',
         scan_cursor TEXT,
+        scan_is_full INTEGER NOT NULL DEFAULT 0 CHECK (scan_is_full IN (0, 1)),
         scan_count INTEGER NOT NULL DEFAULT 0,
         last_scan_at TEXT,
         message TEXT,
@@ -145,6 +146,7 @@ export class VanishDatabase {
         liked_at TEXT,
         discovered_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL,
+        seen_in_scan INTEGER NOT NULL DEFAULT 0 CHECK (seen_in_scan IN (0, 1)),
         is_liked INTEGER NOT NULL DEFAULT 1 CHECK (is_liked IN (0, 1)),
         UNIQUE(account_id, media_id)
       );
@@ -202,6 +204,10 @@ export class VanishDatabase {
         WHEN EXISTS (SELECT 1 FROM jobs WHERE id = old.job_id AND confirmed_at IS NOT NULL)
         BEGIN SELECT RAISE(ABORT, 'confirmed cleanup targets are immutable'); END;
     `)
+    const accountColumns = this.raw.pragma('table_info(accounts)') as Row[]
+    if (!accountColumns.some((column) => column.name === 'scan_is_full')) this.raw.exec(`ALTER TABLE accounts ADD COLUMN scan_is_full INTEGER NOT NULL DEFAULT 0 CHECK (scan_is_full IN (0, 1))`)
+    const activityColumns = this.raw.pragma('table_info(activity)') as Row[]
+    if (!activityColumns.some((column) => column.name === 'seen_in_scan')) this.raw.exec(`ALTER TABLE activity ADD COLUMN seen_in_scan INTEGER NOT NULL DEFAULT 0 CHECK (seen_in_scan IN (0, 1))`)
   }
 
   private recover(): void {
@@ -239,20 +245,38 @@ export class VanishDatabase {
     this.raw.prepare(`UPDATE accounts SET state = ?, message = ?, updated_at = ? WHERE id = ?`).run(state, message, now(), id)
   }
 
-  startScan(id: string): void {
-    this.raw.prepare(`UPDATE accounts SET scan_state = 'scanning', message = NULL, updated_at = ? WHERE id = ?`).run(now(), id)
+  startScan(id: string): string | null {
+    const account = this.getAccount(id)
+    const full = account.scanState === 'idle'
+    this.raw.transaction(() => {
+      if (full) this.raw.prepare(`UPDATE activity SET seen_in_scan = 0 WHERE account_id = ? AND is_liked = 1`).run(id)
+      this.raw.prepare(`UPDATE accounts SET scan_state = 'scanning', scan_cursor = CASE WHEN ? THEN NULL ELSE scan_cursor END, scan_is_full = CASE WHEN ? THEN 1 ELSE scan_is_full END, message = NULL, updated_at = ? WHERE id = ?`)
+        .run(full ? 1 : 0, full ? 1 : 0, now(), id)
+    })()
+    return full ? null : account.scanCursor
   }
 
   updateScan(id: string, state: Account['scanState'], cursor: string | null, message: string | null): void {
-    this.raw.prepare(`UPDATE accounts SET scan_state = ?, scan_cursor = ?, message = ?, last_scan_at = CASE WHEN ? = 'idle' THEN ? ELSE last_scan_at END, updated_at = ? WHERE id = ?`)
-      .run(state, cursor, message, state, now(), now(), id)
+    this.raw.prepare(`UPDATE accounts SET scan_state = ?, scan_cursor = ?, message = ?, updated_at = ? WHERE id = ?`)
+      .run(state, cursor, message, now(), id)
+  }
+
+  finishScan(id: string): void {
+    const timestamp = now()
+    this.raw.transaction(() => {
+      const account = this.raw.prepare(`SELECT scan_state, scan_is_full FROM accounts WHERE id = ?`).get(id) as Row | undefined
+      if (!account || account.scan_state !== 'scanning') throw new Error('Scan is not running.')
+      if (account.scan_is_full) this.raw.prepare(`UPDATE activity SET is_liked = 0 WHERE account_id = ? AND is_liked = 1 AND seen_in_scan = 0`).run(id)
+      this.raw.prepare(`UPDATE accounts SET scan_state = 'idle', scan_cursor = NULL, scan_is_full = 0, scan_count = (SELECT count(*) FROM activity WHERE account_id = ? AND is_liked = 1), last_scan_at = ?, message = NULL, updated_at = ? WHERE id = ?`)
+        .run(id, timestamp, timestamp, id)
+    })()
   }
 
   saveScanPage(accountId: string, page: InstagramPage): number {
     const timestamp = now()
     const upsert = this.raw.prepare(`
-      INSERT INTO activity (account_id, media_id, shortcode, owner_username, caption, media_type, thumbnail_url, permalink, liked_at, discovered_at, last_seen_at)
-      VALUES (@accountId, @mediaId, @shortcode, @ownerUsername, @caption, @mediaType, @thumbnailUrl, @permalink, @likedAt, @discoveredAt, @lastSeenAt)
+      INSERT INTO activity (account_id, media_id, shortcode, owner_username, caption, media_type, thumbnail_url, permalink, liked_at, discovered_at, last_seen_at, seen_in_scan)
+      VALUES (@accountId, @mediaId, @shortcode, @ownerUsername, @caption, @mediaType, @thumbnailUrl, @permalink, @likedAt, @discoveredAt, @lastSeenAt, 1)
       ON CONFLICT(account_id, media_id) DO UPDATE SET
         shortcode = excluded.shortcode,
         owner_username = excluded.owner_username,
@@ -262,6 +286,7 @@ export class VanishDatabase {
         permalink = excluded.permalink,
         liked_at = COALESCE(excluded.liked_at, activity.liked_at),
         last_seen_at = excluded.last_seen_at,
+        seen_in_scan = 1,
         is_liked = 1
     `)
     this.raw.transaction(() => {
@@ -399,6 +424,14 @@ export class VanishDatabase {
     this.raw.transaction(() => {
       this.raw.prepare(`UPDATE job_items SET status = 'ambiguous', message = ? WHERE id = ? AND job_id = ? AND status = 'in_flight'`).run(message, itemId, jobId)
       this.setJobState(jobId, state, message, waitUntil)
+    })()
+  }
+
+  stopBeforeMutation(jobId: string, itemId: number, message: string): void {
+    this.raw.transaction(() => {
+      const result = this.raw.prepare(`UPDATE job_items SET status = 'pending', attempts = MAX(0, attempts - 1), attempt_started_at = NULL, message = ? WHERE id = ? AND job_id = ? AND status = 'in_flight'`).run(message, itemId, jobId)
+      if (!result.changes) throw new Error('Cleanup item is not in progress.')
+      this.setJobState(jobId, 'client_update_required', message)
     })()
   }
 

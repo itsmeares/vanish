@@ -94,6 +94,11 @@ export class CleanupRunner {
         this.changed(jobId)
         continue
       }
+      if (result.kind === 'client_update_required') {
+        this.db.stopBeforeMutation(jobId, item.id, result.message ?? 'Vanish needs an update before cleanup can continue.')
+        this.changed(jobId)
+        return
+      }
       const state = result.kind === 'rate_limited' ? 'waiting_rate_limit' : result.kind === 'needs_auth' ? 'needs_auth' : result.kind === 'offline' ? 'offline' : 'needs_reconciliation'
       this.db.interruptItem(jobId, item.id, state, result.message ?? 'Instagram did not return a definite result.', result.kind === 'rate_limited' ? waitUntil(result.retryAfterMs) : null)
       this.changed(jobId)

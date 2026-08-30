@@ -21,4 +21,11 @@ describe('privileged Electron boundaries', () => {
     expect(preload).not.toMatch(/exposeInMainWorld\([^)]*ipcRenderer/s)
     expect(preload).not.toContain('sendSync')
   })
+
+  it('stops for a client update instead of calling the retired REST unlike endpoint', () => {
+    const instagram = readFileSync(new URL('../src/main/instagram.ts', import.meta.url), 'utf8')
+    expect(instagram).toContain("window.require?.('PolarisAPIUnlikePost')?.unlikePost")
+    expect(instagram).toContain('clientUpdateRequired: true')
+    expect(instagram).not.toContain('/api/v1/web/likes/')
+  })
 })

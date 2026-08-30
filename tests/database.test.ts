@@ -55,6 +55,24 @@ describe('VanishDatabase', () => {
     db.close()
   })
 
+  it.each(['paused', 'failed'] as const)('retires stale likes only after a full refresh completes, not when it is %s', (state) => {
+    const db = new VanishDatabase(':memory:')
+    const account = db.createAccount()
+    db.startScan(account.id)
+    db.saveScanPage(account.id, page(1, 3))
+    db.finishScan(account.id)
+
+    db.startScan(account.id)
+    db.saveScanPage(account.id, { ...page(1, 1), cursor: 'next', hasMore: true })
+    db.updateScan(account.id, state, 'next', 'Stopped.')
+    expect(db.activityPage(account.id, all, 0, 20).total).toBe(3)
+
+    expect(db.startScan(account.id)).toBe('next')
+    db.finishScan(account.id)
+    expect(db.activityPage(account.id, all, 0, 20).items.map((item) => item.mediaId)).toEqual(['1'])
+    db.close()
+  })
+
   it('queries and snapshots 100,000 items without rendering or replay', () => {
     const db = new VanishDatabase(':memory:')
     const account = db.createAccount()

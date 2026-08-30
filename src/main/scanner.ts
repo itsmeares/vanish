@@ -35,9 +35,8 @@ export class Scanner {
     const account = this.db.getAccount(accountId)
     if (account.state !== 'connected') throw new Error('Connect this Instagram account first.')
     this.remote.hide(accountId)
-    this.db.startScan(accountId)
+    let cursor = this.db.startScan(accountId)
     this.changed(accountId)
-    let cursor = account.scanState === 'idle' ? null : account.scanCursor
     while (true) {
       if (this.pauseRequested.has(accountId)) {
         this.db.updateScan(accountId, 'paused', cursor, 'Scan paused.')
@@ -49,7 +48,7 @@ export class Scanner {
         this.db.saveScanPage(accountId, page)
         this.changed(accountId)
         if (!page.hasMore) {
-          this.db.updateScan(accountId, 'idle', null, null)
+          this.db.finishScan(accountId)
           this.changed(accountId)
           return
         }
