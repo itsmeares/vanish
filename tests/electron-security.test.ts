@@ -29,6 +29,16 @@ describe('privileged Electron boundaries', () => {
     expect(instagram).not.toContain('/api/v1/web/likes/')
   })
 
+  it('learns the current Likes request from Instagram instead of using the rejected feed endpoint', () => {
+    const instagram = readFileSync(new URL('../src/main/instagram.ts', import.meta.url), 'utf8')
+    const normalizer = readFileSync(new URL('../src/main/instagram-normalize.ts', import.meta.url), 'utf8')
+    expect(instagram).toContain('com.instagram.privacy.activity_center.liked_refresh')
+    expect(normalizer).toContain('com.instagram.privacy.activity_center.liked_next')
+    expect(instagram).toContain("win.loadURL(LIKES_URL)")
+    expect(instagram).toContain('Instagram returned an unreadable Likes response')
+    expect(instagram).not.toContain('/api/v1/feed/liked/')
+  })
+
   it('uses authenticated viewer data and clears only the selected account partition', () => {
     const instagram = readFileSync(new URL('../src/main/instagram.ts', import.meta.url), 'utf8')
     expect(instagram).toContain("window.require?.('PolarisViewer')")

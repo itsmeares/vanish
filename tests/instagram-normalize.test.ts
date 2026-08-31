@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { extractInstagramBootstrapIdentity, identityFromOwnProfile, normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
+import { addInstagramRequestToken, buildInstagramLikesRequest, extractInstagramBootstrapIdentity, identityFromOwnProfile, normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
 
 describe('normalizeInstagramPage', () => {
   it('normalizes current native media shapes and removes duplicate media ids', () => {
@@ -24,6 +24,47 @@ describe('normalizeInstagramPage', () => {
 
   it('accepts wrapped responses and ends without a cursor', () => {
     expect(normalizeInstagramPage({ data: { liked_items: [], more_available: true } })).toEqual({ items: [], cursor: null, hasMore: false })
+  })
+
+  it('normalizes the current Activity Center liked-media response', () => {
+    const cursor = 'A'.repeat(40)
+    const activityCenterParams = '{\\"py/object\\":\\"ActivityCenterParams\\"}'
+    const bloks = `(bk.action.map.Make, (bk.action.array.Make, "media_id", "media_code", "media_product_type", "media_type", "media_image_url", "location_name", "icon", "margin_right"), (bk.action.array.Make, "100_200", "REEL100", "clips", (bk.action.i32.Const, 2), "https:\\/\\/cdn.example\\/100.jpg", "", "reels", "0")) AsyncActionWithDataManifest, "com.instagram.privacy.activity_center.liked_next", (bk.action.array.Make, "page_size", "activity_center_params", "cursor", "container_id", "element_id"), (bk.action.array.Make, "9", "${activityCenterParams}", "${cursor}", "123", "456"))`
+    const next = JSON.stringify({ pageSize: '9', activityCenterParams: '{"py/object":"ActivityCenterParams"}', cursor, containerId: '123', elementId: '456' })
+    expect(normalizeInstagramPage({ payload: { layout: { bloks_payload: { tree: { actions: [bloks] } } } } }, '2026-01-01T00:00:00.000Z')).toEqual({
+      items: [{
+        mediaId: '100_200',
+        shortcode: 'REEL100',
+        ownerUsername: '',
+        caption: '',
+        mediaType: 'reel',
+        thumbnailUrl: 'https://cdn.example/100.jpg',
+        permalink: 'https://www.instagram.com/reel/REEL100/',
+        likedAt: null,
+        discoveredAt: '2026-01-01T00:00:00.000Z',
+      }],
+      cursor: next,
+      hasMore: true,
+    })
+  })
+
+  it('does not mistake an unknown Instagram response for a completed empty scan', () => {
+    expect(() => normalizeInstagramPage({ payload: { changed: true } })).toThrow('unsupported Likes response')
+  })
+
+  it('builds the next Activity Center request from the persisted manifest', () => {
+    const template = { url: 'https://www.instagram.com/async/wbloks/fetch/?appid=com.instagram.privacy.activity_center.liked_refresh&type=action', body: '__req=a&params=%7B%22initial%22%3Atrue%7D' }
+    const cursor = addInstagramRequestToken(JSON.stringify({ pageSize: '9', activityCenterParams: '{"py/object":"ActivityCenterParams"}', cursor: 'QVF_cursor', containerId: '123', elementId: '456' }), 'b')
+    const request = buildInstagramLikesRequest(template, cursor)
+    expect(new URL(request.url).searchParams.get('appid')).toBe('com.instagram.privacy.activity_center.liked_next')
+    expect(request.requestToken).toBe('c')
+    expect(JSON.parse(new URLSearchParams(request.body).get('params') ?? '')).toEqual({ page_size: '9', activity_center_params: '{"py/object":"ActivityCenterParams","initial_cursor":"QVF_cursor"}', cursor: 'QVF_cursor', container_id: '123', element_id: '456' })
+  })
+
+  it('replays the captured refresh request for the first page', () => {
+    const request = buildInstagramLikesRequest({ url: 'https://www.instagram.com/async/wbloks/fetch/?appid=com.instagram.privacy.activity_center.liked_refresh&type=action', body: '__req=z&params=%7B%22captured%22%3Atrue%7D' }, null)
+    expect(request.requestToken).toBe('10')
+    expect(JSON.parse(new URLSearchParams(request.body).get('params') ?? '')).toEqual({ captured: true })
   })
 })
 

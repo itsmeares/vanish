@@ -1,12 +1,14 @@
 import { BrowserWindow, session, shell } from 'electron'
 import type { Account, InstagramResult, ReconcileResult } from '../shared/types'
 import { VanishDatabase } from './database'
-import { extractInstagramBootstrapIdentity, identityFromOwnProfile, normalizeInstagramPage, resolveInstagramIdentity, withIdentityTimeout, type InstagramIdentity } from './instagram-normalize'
+import { addInstagramRequestToken, buildInstagramLikesRequest, extractInstagramBootstrapIdentity, identityFromOwnProfile, normalizeInstagramPage, resolveInstagramIdentity, withTimeout, type InstagramIdentity } from './instagram-normalize'
 
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/'
 const HOME_URL = 'https://www.instagram.com/'
+const LIKES_URL = 'https://www.instagram.com/your_activity/interactions/likes/'
 const IDENTITY_SOURCE_TIMEOUT = 3_000
 const IDENTITY_ACTION_TIMEOUT = 8_000
+const INSTAGRAM_PAGE_TIMEOUT = 20_000
 const allowedRemoteHost = (hostname: string): boolean => hostname === 'instagram.com' || hostname.endsWith('.instagram.com') || hostname === 'facebook.com' || hostname.endsWith('.facebook.com')
 const instagramUrl = (value: string): boolean => {
   try {
@@ -16,6 +18,7 @@ const instagramUrl = (value: string): boolean => {
 }
 
 type RemoteResult = { ok: boolean; status?: number; data?: any; message?: string; retryAfter?: number; clientUpdateRequired?: boolean }
+type LikesRequest = { url: string; body: string }
 
 function classifyRemote(result: RemoteResult): InstagramResult {
   const message = result.message || 'Instagram did not return a definite result.'
@@ -27,6 +30,7 @@ function classifyRemote(result: RemoteResult): InstagramResult {
 
 export class InstagramService {
   private readonly windows = new Map<string, BrowserWindow>()
+  private readonly likesRequests = new Map<string, LikesRequest>()
 
   constructor(private readonly db: VanishDatabase, private readonly changed: (accountId: string) => void) {}
 
@@ -107,14 +111,33 @@ export class InstagramService {
       throw new Error('Finish signing in on Instagram, then check the account again.')
     }
     const sessionUserId = cookies.find((cookie) => cookie.name === 'ds_user_id' && /^\d+$/.test(cookie.value))?.value
-    if (!instagramUrl(win.webContents.getURL())) await win.loadURL(HOME_URL)
+    if (!instagramUrl(win.webContents.getURL()) || win.webContents.getURL().includes('/accounts/login')) await win.loadURL(HOME_URL)
     try {
-      const profile = await withIdentityTimeout(win.webContents.executeJavaScript(`({
-        url: location.href,
-        ownsProfile: Boolean(document.querySelector('[href*="/accounts/edit"], [href^="/archive/"]')),
-      })`, true), IDENTITY_SOURCE_TIMEOUT).catch(() => null) as { url?: string; ownsProfile?: boolean } | null
-      const profileIdentity = identityFromOwnProfile(profile?.url ?? '', profile?.ownsProfile === true, sessionUserId)
+      const readOwnProfile = async (): Promise<InstagramIdentity | null> => {
+        const profile = await withTimeout(win.webContents.executeJavaScript(`({
+          url: location.href,
+          ownsProfile: Boolean(document.querySelector('[href*="/accounts/edit"], [href^="/archive/"]')),
+        })`, true), IDENTITY_SOURCE_TIMEOUT).catch(() => null) as { url?: string; ownsProfile?: boolean } | null
+        return identityFromOwnProfile(profile?.url ?? '', profile?.ownsProfile === true, sessionUserId)
+      }
+      const profileIdentity = await readOwnProfile()
       if (profileIdentity) return profileIdentity
+      const profileUrl = await withTimeout(win.webContents.executeJavaScript(`(() => {
+        const reserved = new Set(['accounts', 'archive', 'direct', 'explore', 'p', 'reel', 'reels', 'stories', 'your_activity'])
+        const links = [...document.querySelectorAll('a[href]')]
+        const profile = links.find((link) => {
+          const url = new URL(link.href, location.href)
+          const name = /^\\/([A-Za-z0-9._]{1,30})\\/?$/.exec(url.pathname)?.[1]
+          const rect = link.getBoundingClientRect()
+          return name && !reserved.has(name) && link.querySelector('img') && (link.closest('nav, [role="navigation"]') || rect.left < 240)
+        })
+        return profile?.href ?? null
+      })()`, true), IDENTITY_SOURCE_TIMEOUT).catch(() => null)
+      if (typeof profileUrl === 'string' && instagramUrl(profileUrl)) {
+        await win.loadURL(profileUrl)
+        const navigatedIdentity = await readOwnProfile()
+        if (navigatedIdentity) return navigatedIdentity
+      }
       return await resolveInstagramIdentity(
         () => win.webContents.executeJavaScript(`(() => {
           try {
@@ -145,13 +168,13 @@ export class InstagramService {
   }
 
   async identifyAccount(accountId: string): Promise<string> {
-    try { return (await withIdentityTimeout(this.detectIdentity(accountId), IDENTITY_ACTION_TIMEOUT)).username }
+    try { return (await withTimeout(this.detectIdentity(accountId), IDENTITY_ACTION_TIMEOUT)).username }
     catch (error) { this.reveal(accountId); throw error }
   }
 
   async bindAccount(accountId: string, expectedUsername: string): Promise<Account> {
     try {
-      const identity = await withIdentityTimeout(this.detectIdentity(accountId), IDENTITY_ACTION_TIMEOUT)
+      const identity = await withTimeout(this.detectIdentity(accountId), IDENTITY_ACTION_TIMEOUT)
       if (identity.username.toLowerCase() !== expectedUsername.toLowerCase()) throw new Error('The signed-in Instagram account changed. Check it again before connecting.')
       const account = this.db.connectAccount(accountId, identity.id, identity.username)
       this.changed(accountId)
@@ -169,6 +192,7 @@ export class InstagramService {
     const win = this.windows.get(accountId)
     if (win && !win.isDestroyed()) win.destroy()
     this.windows.delete(accountId)
+    this.likesRequests.delete(accountId)
     await session.fromPartition(account.partition).clearData()
   }
 
@@ -185,30 +209,56 @@ export class InstagramService {
     this.changed(accountId)
   }
 
+  private async captureLikesRequest(accountId: string, win: BrowserWindow): Promise<LikesRequest> {
+    const cached = this.likesRequests.get(accountId)
+    if (cached) return cached
+    const ses = win.webContents.session
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const captured = new Promise<LikesRequest>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Instagram did not load the Likes page in time.')), INSTAGRAM_PAGE_TIMEOUT)
+      ses.webRequest.onBeforeRequest({ urls: ['https://www.instagram.com/async/wbloks/fetch/*'] }, (details, callback) => {
+        callback({})
+        if (details.webContentsId !== win.webContents.id || details.method !== 'POST' || !details.url.includes('com.instagram.privacy.activity_center.liked_refresh')) return
+        const body = Buffer.concat((details.uploadData ?? []).map((part) => part.bytes).filter(Boolean)).toString()
+        if (!body.includes('params=')) return
+        resolve({ url: details.url, body })
+      })
+    })
+    try {
+      const navigation = withTimeout(win.loadURL(LIKES_URL), INSTAGRAM_PAGE_TIMEOUT, 'Instagram did not open the Likes page in time.')
+      const [request] = await Promise.all([captured, navigation])
+      this.likesRequests.set(accountId, request)
+      return request
+    } finally {
+      if (timer) clearTimeout(timer)
+      ses.webRequest.onBeforeRequest(null)
+    }
+  }
+
   async scanPage(accountId: string, cursor: string | null): Promise<ReturnType<typeof normalizeInstagramPage>> {
     const { account, win } = await this.ensureReady(accountId)
     if (!(await this.hasSession(account))) throw Object.assign(new Error('Instagram needs you to sign in again.'), { kind: 'needs_auth' })
-    if (!instagramUrl(win.webContents.getURL())) await win.loadURL(HOME_URL)
-    const result = await win.webContents.executeJavaScript(`(async () => {
+    if (!cursor) this.likesRequests.delete(accountId)
+    const request = buildInstagramLikesRequest(await this.captureLikesRequest(accountId, win), cursor)
+    const result = await withTimeout(win.webContents.executeJavaScript(`(async () => {
       try {
-        const query = ${JSON.stringify({ count: '50', cursor })}
-        if (!query.cursor) delete query.cursor
-        const api = window.require?.('PolarisInstapi')
-        if (api?.apiGet) {
-          const response = await api.apiGet('/api/v1/feed/liked/', { query: { count: query.count, max_id: query.cursor } })
-          return { ok: true, data: response?.data ?? response }
-        }
-        const url = new URL('/api/v1/feed/liked/', location.origin)
-        url.searchParams.set('count', query.count)
-        if (query.cursor) url.searchParams.set('max_id', query.cursor)
-        const response = await fetch(url, { credentials: 'include', headers: { 'x-requested-with': 'XMLHttpRequest', 'x-ig-app-id': '936619743392459' } })
+        const request = ${JSON.stringify(request)}
+        const csrf = document.cookie.match(/(?:^|; )csrftoken=([^;]*)/)?.[1]
+        const headers = { accept: '*/*', 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8', 'x-asbd-id': '359341', 'x-ig-app-id': '936619743392459', 'x-requested-with': 'XMLHttpRequest' }
+        if (csrf) headers['x-csrftoken'] = decodeURIComponent(csrf)
+        const response = await fetch(request.url, { method: 'POST', body: request.body, credentials: 'include', headers, signal: AbortSignal.timeout(${INSTAGRAM_PAGE_TIMEOUT}) })
         if (response.redirected && response.url.includes('/accounts/login')) return { ok: false, status: 401, message: 'login required' }
-        let data = null; try { data = await response.json() } catch {}
+        const text = await response.text()
+        let data = null
+        try { data = JSON.parse(text.trim().replace(/^for \\(;;\\);/, '')) }
+        catch { return { ok: false, status: response.status, message: 'Instagram returned an unreadable Likes response. Vanish needs an update.' } }
         return { ok: response.ok, status: response.status, data, message: data?.message, retryAfter: Number(response.headers.get('retry-after')) || undefined }
       } catch (error) { return { ok: false, status: Number(error?.status ?? error?.response?.status) || undefined, message: String(error) } }
-    })()`, true) as RemoteResult
+    })()`, true), INSTAGRAM_PAGE_TIMEOUT + 1_000, 'Instagram did not return Likes data in time.') as RemoteResult
     if (!result.ok) throw Object.assign(new Error(classifyRemote(result).message), classifyRemote(result))
-    return normalizeInstagramPage(result.data)
+    const page = normalizeInstagramPage(result.data)
+    if (page.cursor) page.cursor = addInstagramRequestToken(page.cursor, request.requestToken)
+    return page
   }
 
   async unlike(accountId: string, mediaId: string): Promise<InstagramResult> {

@@ -7,6 +7,12 @@ export interface InstagramIdentity {
   username: string
 }
 
+export interface InstagramLikesRequest {
+  url: string
+  body: string
+  requestToken: string
+}
+
 const identityError = 'Instagram did not expose the signed-in account. Reload Instagram, confirm your profile appears, and try again.'
 
 const text = (value: unknown): string => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
@@ -62,12 +68,12 @@ export function extractInstagramBootstrapIdentity(html: string, expectedId?: str
   return null
 }
 
-export async function withIdentityTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+export async function withTimeout<T>(work: Promise<T>, timeoutMs: number, errorMessage = identityError): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
       work,
-      new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(identityError)), timeoutMs) }),
+      new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(errorMessage)), timeoutMs) }),
     ])
   } finally {
     if (timer) clearTimeout(timer)
@@ -81,12 +87,12 @@ export async function resolveInstagramIdentity(
   expectedId?: string,
 ): Promise<InstagramIdentity> {
   let viewer: unknown = null
-  try { viewer = await withIdentityTimeout(readViewer(), timeoutMs) } catch { viewer = null }
+  try { viewer = await withTimeout(readViewer(), timeoutMs) } catch { viewer = null }
   const immediate = normalizeInstagramIdentity(viewer, expectedId)
   if (immediate) return immediate
   let fallback: unknown
   try {
-    fallback = await withIdentityTimeout(readFallback(), timeoutMs)
+    fallback = await withTimeout(readFallback(), timeoutMs)
   } catch { throw new Error(identityError) }
   const identity = normalizeInstagramIdentity(fallback, expectedId)
   if (identity) return identity
@@ -140,10 +146,95 @@ function normalizeItem(raw: UnknownRecord, discoveredAt: string): Omit<ActivityI
   }
 }
 
+function normalizeActivityCenterPage(payload: unknown, discoveredAt: string): InstagramPage {
+  const root = (payload && typeof payload === 'object' ? payload : {}) as UnknownRecord
+  const tree = root.payload?.layout?.bloks_payload?.tree
+  if (!tree) throw new Error('Instagram returned an unsupported Likes response. Vanish needs an update before scanning can continue.')
+  const strings: string[] = []
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') strings.push(value)
+    else if (Array.isArray(value)) value.forEach(visit)
+    else if (value && typeof value === 'object') Object.values(value).forEach(visit)
+  }
+  visit(tree)
+  const items: Omit<ActivityItem, 'id'>[] = []
+  const seen = new Set<string>()
+  const media = /\(bk\.action\.map\.Make,\s*\(bk\.action\.array\.Make,\s*"media_id",\s*"media_code",\s*"media_product_type",\s*"media_type",\s*"media_image_url",\s*"location_name",\s*"icon",\s*"margin_right"\),\s*\(bk\.action\.array\.Make,\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*\(bk\.action\.i32\.Const,\s*(\d+)\),\s*"((?:\\.|[^"\\])*)",\s*"((?:\\.|[^"\\])*)",\s*"([^"]*)",\s*"([^"]*)"\)\)/g
+  for (const value of strings) {
+    for (let match = media.exec(value); match; match = media.exec(value)) {
+      const mediaId = match[1]
+      const shortcode = match[2]
+      if (!mediaId || !shortcode || seen.has(mediaId)) continue
+      seen.add(mediaId)
+      const mediaType: ActivityItem['mediaType'] = Number(match[4]) === 8 ? 'carousel' : match[3] === 'clips' || match[6] === 'reels' ? 'reel' : 'post'
+      items.push({
+        mediaId,
+        shortcode,
+        ownerUsername: '',
+        caption: '',
+        mediaType,
+        thumbnailUrl: unescapeBloksValue(match[5] ?? ''),
+        permalink: `https://www.instagram.com/${mediaType === 'reel' ? 'reel' : 'p'}/${encodeURIComponent(shortcode)}/`,
+        likedAt: null,
+        discoveredAt,
+      })
+    }
+  }
+  const cursor = strings.map(extractActivityCenterCursor).find(Boolean) ?? null
+  return { items, cursor, hasMore: Boolean(cursor) }
+}
+
+function extractActivityCenterCursor(value: string): string | null {
+  if (!value.includes('AsyncActionWithDataManifest, "com.instagram.privacy.activity_center.liked_next"')) return null
+  const match = value.match(/\(bk\.action\.array\.Make,\s*"page_size",\s*"activity_center_params",\s*"cursor",\s*"container_id",\s*"element_id"\),\s*\(bk\.action\.array\.Make,\s*"([^"\\]*(?:\\.[^"\\]*)*)",\s*"([^"\\]*(?:\\.[^"\\]*)*)",\s*"([^"\\]*(?:\\.[^"\\]*)*)",\s*"([^"\\]*(?:\\.[^"\\]*)*)",\s*"([^"\\]*(?:\\.[^"\\]*)*)"\)/)
+  if (!match) return null
+  const [pageSize, activityCenterParams, cursor, containerId, elementId] = match.slice(1).map(unescapeBloksValue)
+  if (!pageSize || !activityCenterParams || !cursor || !/^\d+$/.test(containerId ?? '') || !/^\d+$/.test(elementId ?? '')) return null
+  return JSON.stringify({ pageSize, activityCenterParams, cursor, containerId, elementId })
+}
+
+function unescapeBloksValue(input: string): string {
+  try { return JSON.parse(`"${input}"`) as string } catch { return input }
+}
+
+function incrementRequestToken(value: string): string {
+  const parsed = Number.parseInt(value || '0', 36)
+  return Number.isSafeInteger(parsed) ? (parsed + 1).toString(36) : value
+}
+
+export function buildInstagramLikesRequest(template: { url: string; body: string }, cursor: string | null): InstagramLikesRequest {
+  const url = new URL(template.url)
+  const body = new URLSearchParams(template.body)
+  let previousToken = body.get('__req') ?? '0'
+  if (cursor) {
+    const state = JSON.parse(cursor) as Record<string, unknown>
+    const pageSize = text(state.pageSize)
+    const activityCenterParams = text(state.activityCenterParams)
+    const nextCursor = text(state.cursor)
+    const containerId = text(state.containerId)
+    const elementId = text(state.elementId)
+    previousToken = text(state.requestToken) || previousToken
+    if (!pageSize || !activityCenterParams || !nextCursor || !/^\d+$/.test(containerId) || !/^\d+$/.test(elementId)) throw new Error('Instagram returned an invalid Likes cursor.')
+    url.searchParams.set('appid', 'com.instagram.privacy.activity_center.liked_next')
+    let activityState: UnknownRecord
+    try { activityState = JSON.parse(activityCenterParams) as UnknownRecord } catch { throw new Error('Instagram returned an invalid Likes cursor.') }
+    activityState.initial_cursor = nextCursor
+    body.set('params', JSON.stringify({ page_size: pageSize, activity_center_params: JSON.stringify(activityState), cursor: nextCursor, container_id: containerId, element_id: elementId }))
+  }
+  const requestToken = incrementRequestToken(previousToken)
+  body.set('__req', requestToken)
+  return { url: url.toString(), body: body.toString(), requestToken }
+}
+
+export function addInstagramRequestToken(cursor: string, requestToken: string): string {
+  return JSON.stringify({ ...(JSON.parse(cursor) as UnknownRecord), requestToken })
+}
+
 export function normalizeInstagramPage(payload: unknown, discoveredAt = new Date().toISOString()): InstagramPage {
   const root = (payload && typeof payload === 'object' ? payload : {}) as UnknownRecord
   const body = (root.data && typeof root.data === 'object' ? root.data : root) as UnknownRecord
   const rawItems = [body.items, body.liked_items, body.media].find(Array.isArray) as UnknownRecord[] | undefined
+  if (!rawItems) return normalizeActivityCenterPage(payload, discoveredAt)
   const items: Omit<ActivityItem, 'id'>[] = []
   const seen = new Set<string>()
   for (const raw of rawItems ?? []) {
