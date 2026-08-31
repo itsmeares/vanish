@@ -7,18 +7,49 @@ export interface InstagramIdentity {
   username: string
 }
 
-const identityError = 'Vanish could not confirm the Instagram account. Keep Instagram open, choose the account, and try again.'
+const identityError = 'Instagram did not expose the signed-in account. Reload Instagram, confirm your profile appears, and try again.'
 
 const text = (value: unknown): string => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
 
-export function normalizeInstagramIdentity(payload: unknown): InstagramIdentity | null {
+export function normalizeInstagramIdentity(payload: unknown, expectedId?: string): InstagramIdentity | null {
   const root = (payload && typeof payload === 'object' ? payload : {}) as UnknownRecord
-  const viewer = (root.viewer && typeof root.viewer === 'object' ? root.viewer : {}) as UnknownRecord
-  const current = (root.currentUser && typeof root.currentUser === 'object' ? root.currentUser : {}) as UnknownRecord
+  const viewer = ((root.viewer ?? root.data) && typeof (root.viewer ?? root.data) === 'object' ? root.viewer ?? root.data : {}) as UnknownRecord
+  const current = (root.currentUser && typeof root.currentUser === 'object' ? root.currentUser : root) as UnknownRecord
   const user = (current.user && typeof current.user === 'object' ? current.user : current) as UnknownRecord
-  const id = text(root.viewerId) || text(viewer.id) || text(viewer.pk) || text(user.pk) || text(user.id)
-  const username = text(viewer.username) || text(user.username)
+  const ids = [...new Set([root.viewerId, root.id, viewer.id, viewer.pk, user.pk, user.id].map(text).filter((id) => /^\d+$/.test(id)))]
+  if (expectedId && (!/^\d+$/.test(expectedId) || ids.some((id) => id !== expectedId))) return null
+  const id = expectedId || ids[0] || ''
+  const username = text(root.username) || text(viewer.username) || text(user.username)
   return /^\d+$/.test(id) && /^[A-Za-z0-9._]{1,30}$/.test(username) ? { id, username } : null
+}
+
+export function extractInstagramBootstrapIdentity(html: string, expectedId?: string): InstagramIdentity | null {
+  const marker = /"PolarisViewer"\s*,\s*\[\]\s*,/g
+  for (let match = marker.exec(html); match; match = marker.exec(html)) {
+    let start = match.index + match[0].length
+    while (/\s/.test(html[start] ?? '')) start += 1
+    if (html[start] !== '{') continue
+    let depth = 0
+    let quoted = false
+    let escaped = false
+    for (let index = start; index < html.length; index += 1) {
+      const character = html[index]
+      if (quoted) {
+        if (escaped) escaped = false
+        else if (character === '\\') escaped = true
+        else if (character === '"') quoted = false
+      } else if (character === '"') quoted = true
+      else if (character === '{') depth += 1
+      else if (character === '}' && --depth === 0) {
+        try {
+          const identity = normalizeInstagramIdentity(JSON.parse(html.slice(start, index + 1)), expectedId)
+          if (identity) return identity
+        } catch { break }
+        break
+      }
+    }
+  }
+  return null
 }
 
 export async function withIdentityTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
@@ -37,17 +68,17 @@ export async function resolveInstagramIdentity(
   readViewer: () => Promise<unknown>,
   readFallback: () => Promise<unknown>,
   timeoutMs: number,
+  expectedId?: string,
 ): Promise<InstagramIdentity> {
   let viewer: unknown = null
   try { viewer = await withIdentityTimeout(readViewer(), timeoutMs) } catch { viewer = null }
-  const immediate = normalizeInstagramIdentity(viewer)
+  const immediate = normalizeInstagramIdentity(viewer, expectedId)
   if (immediate) return immediate
-  let currentUser: unknown
+  let fallback: unknown
   try {
-    currentUser = await withIdentityTimeout(readFallback(), timeoutMs)
+    fallback = await withIdentityTimeout(readFallback(), timeoutMs)
   } catch { throw new Error(identityError) }
-  const root = viewer && typeof viewer === 'object' ? viewer as UnknownRecord : {}
-  const identity = normalizeInstagramIdentity({ ...root, currentUser })
+  const identity = normalizeInstagramIdentity(fallback, expectedId)
   if (identity) return identity
   throw new Error(identityError)
 }

@@ -1,7 +1,7 @@
 import { BrowserWindow, session, shell } from 'electron'
 import type { Account, InstagramResult, ReconcileResult } from '../shared/types'
 import { VanishDatabase } from './database'
-import { normalizeInstagramPage, resolveInstagramIdentity, withIdentityTimeout, type InstagramIdentity } from './instagram-normalize'
+import { extractInstagramBootstrapIdentity, normalizeInstagramPage, resolveInstagramIdentity, withIdentityTimeout, type InstagramIdentity } from './instagram-normalize'
 
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/'
 const HOME_URL = 'https://www.instagram.com/'
@@ -100,11 +100,13 @@ export class InstagramService {
   }
 
   private async detectIdentity(accountId: string): Promise<InstagramIdentity> {
-    const { account, win } = await this.ensureReady(accountId)
-    if (!(await this.hasSession(account))) {
+    const { win } = await this.ensureReady(accountId)
+    const cookies = await win.webContents.session.cookies.get({ url: HOME_URL })
+    if (!cookies.some((cookie) => cookie.name === 'sessionid' && cookie.value)) {
       this.reveal(accountId)
       throw new Error('Finish signing in on Instagram, then check the account again.')
     }
+    const sessionUserId = cookies.find((cookie) => cookie.name === 'ds_user_id' && /^\d+$/.test(cookie.value))?.value
     if (!instagramUrl(win.webContents.getURL())) await win.loadURL(HOME_URL)
     try {
       return await resolveInstagramIdentity(
@@ -118,16 +120,17 @@ export class InstagramService {
             }
           } catch { return null }
         })()`, true),
-        () => win.webContents.executeJavaScript(`(async () => {
-          const response = await fetch('/api/v1/accounts/current_user/?edit=true', {
+        async () => {
+          const response = await win.webContents.session.fetch(HOME_URL, {
             credentials: 'include',
-            headers: { 'x-requested-with': 'XMLHttpRequest' },
-            signal: AbortSignal.timeout(${IDENTITY_SOURCE_TIMEOUT}),
+            headers: { accept: 'text/html' },
+            signal: AbortSignal.timeout(IDENTITY_SOURCE_TIMEOUT),
           })
           if (!response.ok) throw new Error('Instagram account lookup failed.')
-          return response.json()
-        })()`, true),
+          return extractInstagramBootstrapIdentity(await response.text(), sessionUserId)
+        },
         IDENTITY_SOURCE_TIMEOUT,
+        sessionUserId,
       )
     } catch (error) {
       this.reveal(accountId)

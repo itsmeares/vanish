@@ -8,7 +8,7 @@ const number = new Intl.NumberFormat()
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
 
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, '')
 }
 
 function useRefresh(): [number, () => void] {

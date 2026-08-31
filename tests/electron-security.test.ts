@@ -29,10 +29,13 @@ describe('privileged Electron boundaries', () => {
     expect(instagram).not.toContain('/api/v1/web/likes/')
   })
 
-  it('uses the current viewer identity and clears only the selected account partition', () => {
+  it('uses authenticated viewer data and clears only the selected account partition', () => {
     const instagram = readFileSync(new URL('../src/main/instagram.ts', import.meta.url), 'utf8')
     expect(instagram).toContain("window.require?.('PolarisViewer')")
-    expect(instagram).not.toContain('ds_user_id')
+    expect(instagram).toContain("cookie.name === 'ds_user_id'")
+    expect(instagram).toContain('win.webContents.session.fetch(HOME_URL')
+    expect(instagram).not.toContain('/api/v1/accounts/current_user/')
+    expect(instagram).not.toContain('account-${')
     expect(instagram).toContain('session.fromPartition(account.partition).clearData()')
     expect(instagram).not.toContain('defaultSession.clearData')
   })
@@ -48,5 +51,10 @@ describe('privileged Electron boundaries', () => {
     const connectionScreen = app.slice(app.indexOf("if (account.state !== 'connected')"), app.indexOf('return <section className="library">'))
     expect(connectionScreen).not.toContain('account.message')
     expect(connectionScreen).toContain('Sign in to @${account.username} on Instagram')
+  })
+
+  it('does not show Electron IPC plumbing in product errors', () => {
+    const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+    expect(app).toContain("replace(/^Error invoking remote method '[^']+': Error: /, '')")
   })
 })

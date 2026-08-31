@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
+import { extractInstagramBootstrapIdentity, normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
 
 describe('normalizeInstagramPage', () => {
   it('normalizes current native media shapes and removes duplicate media ids', () => {
@@ -34,6 +34,17 @@ describe('normalizeInstagramIdentity', () => {
     expect(normalizeInstagramIdentity({ currentUser: { user: { pk: '456', username: 'fallback_name' } } })).toEqual({ id: '456', username: 'fallback_name' })
   })
 
+  it('uses the session user id only when it agrees with the viewer', () => {
+    expect(normalizeInstagramIdentity({ viewer: { username: 'real.user' } }, '123')).toEqual({ id: '123', username: 'real.user' })
+    expect(normalizeInstagramIdentity({ viewer: { id: '456', username: 'wrong.user' } }, '123')).toBeNull()
+  })
+
+  it('reads the current viewer from Instagram bootstrap data', () => {
+    const html = '<script>handle([["PolarisViewer", [], {"data":{"id":"123","username":"real.user","biography":"a } brace"},"id":"123"}, 7365]])</script>'
+    expect(extractInstagramBootstrapIdentity(html, '123')).toEqual({ id: '123', username: 'real.user' })
+    expect(extractInstagramBootstrapIdentity(html, '999')).toBeNull()
+  })
+
   it('returns an available viewer identity without starting the fallback request', async () => {
     const fallback = vi.fn<() => Promise<unknown>>()
     await expect(resolveInstagramIdentity(
@@ -51,7 +62,7 @@ describe('normalizeInstagramIdentity', () => {
         async () => ({ viewerId: '123' }),
         () => new Promise(() => undefined),
         20,
-      )).rejects.toThrow('Keep Instagram open')
+      )).rejects.toThrow('Reload Instagram')
       await vi.advanceTimersByTimeAsync(20)
       await result
     } finally { vi.useRealTimers() }
@@ -77,6 +88,6 @@ describe('normalizeInstagramIdentity', () => {
       async () => ({ viewerId: '123' }),
       async () => ({ user: { pk: '456' } }),
       20,
-    )).rejects.toThrow('Vanish could not confirm the Instagram account')
+    )).rejects.toThrow('Instagram did not expose the signed-in account')
   })
 })
