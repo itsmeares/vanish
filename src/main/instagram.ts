@@ -1,7 +1,7 @@
 import { BrowserWindow, session, shell } from 'electron'
 import type { Account, InstagramResult, ReconcileResult } from '../shared/types'
 import { VanishDatabase } from './database'
-import { extractInstagramBootstrapIdentity, normalizeInstagramPage, resolveInstagramIdentity, withIdentityTimeout, type InstagramIdentity } from './instagram-normalize'
+import { extractInstagramBootstrapIdentity, identityFromOwnProfile, normalizeInstagramPage, resolveInstagramIdentity, withIdentityTimeout, type InstagramIdentity } from './instagram-normalize'
 
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/'
 const HOME_URL = 'https://www.instagram.com/'
@@ -109,6 +109,12 @@ export class InstagramService {
     const sessionUserId = cookies.find((cookie) => cookie.name === 'ds_user_id' && /^\d+$/.test(cookie.value))?.value
     if (!instagramUrl(win.webContents.getURL())) await win.loadURL(HOME_URL)
     try {
+      const profile = await withIdentityTimeout(win.webContents.executeJavaScript(`({
+        url: location.href,
+        ownsProfile: Boolean(document.querySelector('[href*="/accounts/edit"], [href^="/archive/"]')),
+      })`, true), IDENTITY_SOURCE_TIMEOUT).catch(() => null) as { url?: string; ownsProfile?: boolean } | null
+      const profileIdentity = identityFromOwnProfile(profile?.url ?? '', profile?.ownsProfile === true, sessionUserId)
+      if (profileIdentity) return profileIdentity
       return await resolveInstagramIdentity(
         () => win.webContents.executeJavaScript(`(() => {
           try {

@@ -23,6 +23,16 @@ export function normalizeInstagramIdentity(payload: unknown, expectedId?: string
   return /^\d+$/.test(id) && /^[A-Za-z0-9._]{1,30}$/.test(username) ? { id, username } : null
 }
 
+export function identityFromOwnProfile(url: string, ownsProfile: boolean, sessionUserId: string | undefined): InstagramIdentity | null {
+  if (!ownsProfile || !sessionUserId) return null
+  try {
+    const parsed = new URL(url)
+    const username = /^\/([A-Za-z0-9._]{1,30})\/?$/.exec(parsed.pathname)?.[1]
+    if (parsed.protocol !== 'https:' || !['instagram.com', 'www.instagram.com'].includes(parsed.hostname) || !username) return null
+    return normalizeInstagramIdentity({ id: sessionUserId, username }, sessionUserId)
+  } catch { return null }
+}
+
 export function extractInstagramBootstrapIdentity(html: string, expectedId?: string): InstagramIdentity | null {
   const marker = /"PolarisViewer"\s*,\s*\[\]\s*,/g
   for (let match = marker.exec(html); match; match = marker.exec(html)) {

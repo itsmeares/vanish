@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { extractInstagramBootstrapIdentity, normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
+import { extractInstagramBootstrapIdentity, identityFromOwnProfile, normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
 
 describe('normalizeInstagramPage', () => {
   it('normalizes current native media shapes and removes duplicate media ids', () => {
@@ -37,6 +37,12 @@ describe('normalizeInstagramIdentity', () => {
   it('uses the session user id only when it agrees with the viewer', () => {
     expect(normalizeInstagramIdentity({ viewer: { username: 'real.user' } }, '123')).toEqual({ id: '123', username: 'real.user' })
     expect(normalizeInstagramIdentity({ viewer: { id: '456', username: 'wrong.user' } }, '123')).toBeNull()
+  })
+
+  it('uses a proven own-profile URL but not an unproven or non-Instagram page', () => {
+    expect(identityFromOwnProfile('https://www.instagram.com/zerunostar/', true, '123')).toEqual({ id: '123', username: 'zerunostar' })
+    expect(identityFromOwnProfile('https://www.instagram.com/someone_else/', false, '123')).toBeNull()
+    expect(identityFromOwnProfile('https://example.com/zerunostar/', true, '123')).toBeNull()
   })
 
   it('reads the current viewer from Instagram bootstrap data', () => {
