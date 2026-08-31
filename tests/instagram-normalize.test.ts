@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { normalizeInstagramIdentity, normalizeInstagramPage } from '../src/main/instagram-normalize'
+import { describe, expect, it, vi } from 'vitest'
+import { normalizeInstagramIdentity, normalizeInstagramPage, resolveInstagramIdentity } from '../src/main/instagram-normalize'
 
 describe('normalizeInstagramPage', () => {
   it('normalizes current native media shapes and removes duplicate media ids', () => {
@@ -32,5 +32,51 @@ describe('normalizeInstagramIdentity', () => {
     expect(normalizeInstagramIdentity({ viewerId: '123', viewer: { username: 'real.user' } })).toEqual({ id: '123', username: 'real.user' })
     expect(normalizeInstagramIdentity({ viewerId: '123', ds_user_id: '123' })).toBeNull()
     expect(normalizeInstagramIdentity({ currentUser: { user: { pk: '456', username: 'fallback_name' } } })).toEqual({ id: '456', username: 'fallback_name' })
+  })
+
+  it('returns an available viewer identity without starting the fallback request', async () => {
+    const fallback = vi.fn<() => Promise<unknown>>()
+    await expect(resolveInstagramIdentity(
+      async () => ({ viewerId: '123', viewer: { username: 'real.user' } }),
+      fallback,
+      10,
+    )).resolves.toEqual({ id: '123', username: 'real.user' })
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it('bounds a hanging identity fallback', async () => {
+    vi.useFakeTimers()
+    try {
+      const result = expect(resolveInstagramIdentity(
+        async () => ({ viewerId: '123' }),
+        () => new Promise(() => undefined),
+        20,
+      )).rejects.toThrow('Keep Instagram open')
+      await vi.advanceTimersByTimeAsync(20)
+      await result
+    } finally { vi.useRealTimers() }
+  })
+
+  it('uses the fallback after a viewer read hangs', async () => {
+    vi.useFakeTimers()
+    try {
+      const fallback = vi.fn(async () => ({ user: { pk: '456', username: 'fallback_name' } }))
+      const result = expect(resolveInstagramIdentity(
+        () => new Promise(() => undefined),
+        fallback,
+        20,
+      )).resolves.toEqual({ id: '456', username: 'fallback_name' })
+      await vi.advanceTimersByTimeAsync(20)
+      await result
+      expect(fallback).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('returns an error when neither source contains a complete identity', async () => {
+    await expect(resolveInstagramIdentity(
+      async () => ({ viewerId: '123' }),
+      async () => ({ user: { pk: '456' } }),
+      20,
+    )).rejects.toThrow('Vanish could not confirm the Instagram account')
   })
 })

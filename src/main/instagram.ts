@@ -1,10 +1,12 @@
 import { BrowserWindow, session, shell } from 'electron'
 import type { Account, InstagramResult, ReconcileResult } from '../shared/types'
 import { VanishDatabase } from './database'
-import { normalizeInstagramIdentity, normalizeInstagramPage, type InstagramIdentity } from './instagram-normalize'
+import { normalizeInstagramPage, resolveInstagramIdentity, withIdentityTimeout, type InstagramIdentity } from './instagram-normalize'
 
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/'
 const HOME_URL = 'https://www.instagram.com/'
+const IDENTITY_SOURCE_TIMEOUT = 3_000
+const IDENTITY_ACTION_TIMEOUT = 8_000
 const allowedRemoteHost = (hostname: string): boolean => hostname === 'instagram.com' || hostname.endsWith('.instagram.com') || hostname === 'facebook.com' || hostname.endsWith('.facebook.com')
 const instagramUrl = (value: string): boolean => {
   try {
@@ -83,6 +85,14 @@ export class InstagramService {
     win.focus()
   }
 
+  private reveal(accountId: string): void {
+    const win = this.windows.get(accountId)
+    if (win && !win.isDestroyed()) {
+      win.show()
+      win.focus()
+    }
+  }
+
   private async hasSession(account: Account): Promise<boolean> {
     const win = await this.createWindow(account, false)
     const cookies = await win.webContents.session.cookies.get({ url: HOME_URL, name: 'sessionid' })
@@ -92,53 +102,54 @@ export class InstagramService {
   private async detectIdentity(accountId: string): Promise<InstagramIdentity> {
     const { account, win } = await this.ensureReady(accountId)
     if (!(await this.hasSession(account))) {
-      win.show()
-      win.focus()
+      this.reveal(accountId)
       throw new Error('Finish signing in on Instagram, then check the account again.')
     }
     if (!instagramUrl(win.webContents.getURL())) await win.loadURL(HOME_URL)
-    const response = await win.webContents.executeJavaScript(`(async () => {
-      let viewer = null
-      let viewerId = null
-      let currentUser = null
-      try {
-        const viewerModule = window.require?.('PolarisViewer')
-        const config = window.require?.('PolarisConfig')
-        viewer = viewerModule?.data ?? config?.getViewerData_DO_NOT_USE?.() ?? null
-        viewerId = viewerModule?.id ?? config?.getViewerId?.() ?? null
-      } catch {}
-      try {
-        const api = window.require?.('PolarisInstapi')
-        const result = api?.apiGet
-          ? await api.apiGet('/api/v1/accounts/current_user/', { query: { edit: 'true' } })
-          : await fetch('/api/v1/accounts/current_user/?edit=true', { credentials: 'include', headers: { 'x-requested-with': 'XMLHttpRequest' } }).then(async r => ({ status: r.status, data: await r.json() }))
-        currentUser = result?.data ?? result
-      } catch {}
-      return { viewer, viewerId, currentUser }
-    })()`, true)
-    const identity = normalizeInstagramIdentity(response)
-    if (!identity) {
-      win.show()
-      win.focus()
-      throw new Error('Vanish could not confirm the signed-in Instagram account. Choose the correct account in Instagram and try again.')
+    try {
+      return await resolveInstagramIdentity(
+        () => win.webContents.executeJavaScript(`(() => {
+          try {
+            const viewerModule = window.require?.('PolarisViewer')
+            const config = window.require?.('PolarisConfig')
+            return {
+              viewer: viewerModule?.data ?? config?.getViewerData_DO_NOT_USE?.() ?? null,
+              viewerId: viewerModule?.id ?? config?.getViewerId?.() ?? null,
+            }
+          } catch { return null }
+        })()`, true),
+        () => win.webContents.executeJavaScript(`(async () => {
+          const response = await fetch('/api/v1/accounts/current_user/?edit=true', {
+            credentials: 'include',
+            headers: { 'x-requested-with': 'XMLHttpRequest' },
+            signal: AbortSignal.timeout(${IDENTITY_SOURCE_TIMEOUT}),
+          })
+          if (!response.ok) throw new Error('Instagram account lookup failed.')
+          return response.json()
+        })()`, true),
+        IDENTITY_SOURCE_TIMEOUT,
+      )
+    } catch (error) {
+      this.reveal(accountId)
+      throw error
     }
-    return identity
   }
 
   async identifyAccount(accountId: string): Promise<string> {
-    return (await this.detectIdentity(accountId)).username
+    try { return (await withIdentityTimeout(this.detectIdentity(accountId), IDENTITY_ACTION_TIMEOUT)).username }
+    catch (error) { this.reveal(accountId); throw error }
   }
 
   async bindAccount(accountId: string, expectedUsername: string): Promise<Account> {
     try {
-      const identity = await this.detectIdentity(accountId)
+      const identity = await withIdentityTimeout(this.detectIdentity(accountId), IDENTITY_ACTION_TIMEOUT)
       if (identity.username.toLowerCase() !== expectedUsername.toLowerCase()) throw new Error('The signed-in Instagram account changed. Check it again before connecting.')
       const account = this.db.connectAccount(accountId, identity.id, identity.username)
       this.changed(accountId)
       this.hide(accountId)
       return account
     } catch (error) {
-      await this.showLogin(accountId)
+      this.reveal(accountId)
       throw error
     }
   }

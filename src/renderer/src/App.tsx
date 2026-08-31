@@ -223,7 +223,7 @@ function Library({ account, refresh, bump, onJob, onError }: {
       <div><p className="kicker">Instagram account</p><h1>Use @{identity}?</h1><p>Vanish will keep this browser session and local activity separate from your other accounts.</p></div>
       <div className="button-row"><button className="secondary" disabled={busy} onClick={() => void chooseDifferentAccount()}>Use a different account</button><button className="primary" disabled={busy} onClick={() => void bind()}>{busy ? 'Connecting...' : `Use @${identity}`}</button></div>
     </> : <>
-      <div><p className="kicker">Instagram</p><h1>{account.username ? `Reconnect @${account.username}` : 'Finish connecting your account'}</h1><p>{account.message ?? "Use Instagram's own sign-in page. Vanish never sees your password."}</p></div>
+      <div><p className="kicker">Instagram</p><h1>{account.username ? `Reconnect @${account.username}` : 'Finish connecting your account'}</h1><p>{account.username ? `Sign in to @${account.username} on Instagram, then check the account.` : "Use Instagram's own sign-in page. Vanish never sees your password."}</p></div>
       <div className="button-row"><button className="secondary" onClick={() => void window.vanish.accounts.showLogin(account.id)}>Open Instagram</button><button className="primary" disabled={busy} onClick={() => void identify()}>{busy ? 'Checking...' : 'Check signed-in account'}</button></div>
     </>}
   </section>

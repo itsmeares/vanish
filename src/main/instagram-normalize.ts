@@ -7,6 +7,8 @@ export interface InstagramIdentity {
   username: string
 }
 
+const identityError = 'Vanish could not confirm the Instagram account. Keep Instagram open, choose the account, and try again.'
+
 const text = (value: unknown): string => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
 
 export function normalizeInstagramIdentity(payload: unknown): InstagramIdentity | null {
@@ -17,6 +19,37 @@ export function normalizeInstagramIdentity(payload: unknown): InstagramIdentity 
   const id = text(root.viewerId) || text(viewer.id) || text(viewer.pk) || text(user.pk) || text(user.id)
   const username = text(viewer.username) || text(user.username)
   return /^\d+$/.test(id) && /^[A-Za-z0-9._]{1,30}$/.test(username) ? { id, username } : null
+}
+
+export async function withIdentityTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(identityError)), timeoutMs) }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+export async function resolveInstagramIdentity(
+  readViewer: () => Promise<unknown>,
+  readFallback: () => Promise<unknown>,
+  timeoutMs: number,
+): Promise<InstagramIdentity> {
+  let viewer: unknown = null
+  try { viewer = await withIdentityTimeout(readViewer(), timeoutMs) } catch { viewer = null }
+  const immediate = normalizeInstagramIdentity(viewer)
+  if (immediate) return immediate
+  let currentUser: unknown
+  try {
+    currentUser = await withIdentityTimeout(readFallback(), timeoutMs)
+  } catch { throw new Error(identityError) }
+  const root = viewer && typeof viewer === 'object' ? viewer as UnknownRecord : {}
+  const identity = normalizeInstagramIdentity({ ...root, currentUser })
+  if (identity) return identity
+  throw new Error(identityError)
 }
 
 function firstImage(item: UnknownRecord): string | null {

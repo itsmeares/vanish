@@ -42,4 +42,11 @@ describe('privileged Electron boundaries', () => {
     expect(pkg.scripts.predev).toBe('install-electron --no')
     expect(pkg.scripts.dev).toBe('electron-vite dev')
   })
+
+  it('does not use scan recovery messages as account connection copy', () => {
+    const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+    const connectionScreen = app.slice(app.indexOf("if (account.state !== 'connected')"), app.indexOf('return <section className="library">'))
+    expect(connectionScreen).not.toContain('account.message')
+    expect(connectionScreen).toContain('Sign in to @${account.username} on Instagram')
+  })
 })
