@@ -121,6 +121,7 @@ export class VanishDatabase {
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
         username TEXT,
+        instagram_id TEXT,
         partition TEXT NOT NULL UNIQUE,
         state TEXT NOT NULL DEFAULT 'disconnected',
         scan_state TEXT NOT NULL DEFAULT 'idle',
@@ -205,9 +206,12 @@ export class VanishDatabase {
         BEGIN SELECT RAISE(ABORT, 'confirmed cleanup targets are immutable'); END;
     `)
     const accountColumns = this.raw.pragma('table_info(accounts)') as Row[]
+    if (!accountColumns.some((column) => column.name === 'instagram_id')) this.raw.exec(`ALTER TABLE accounts ADD COLUMN instagram_id TEXT`)
     if (!accountColumns.some((column) => column.name === 'scan_is_full')) this.raw.exec(`ALTER TABLE accounts ADD COLUMN scan_is_full INTEGER NOT NULL DEFAULT 0 CHECK (scan_is_full IN (0, 1))`)
     const activityColumns = this.raw.pragma('table_info(activity)') as Row[]
     if (!activityColumns.some((column) => column.name === 'seen_in_scan')) this.raw.exec(`ALTER TABLE activity ADD COLUMN seen_in_scan INTEGER NOT NULL DEFAULT 0 CHECK (seen_in_scan IN (0, 1))`)
+    this.raw.prepare(`UPDATE accounts SET username = NULL, state = 'disconnected', message = 'Confirm your Instagram account again.' WHERE instagram_id IS NULL AND username GLOB 'account-[0-9]*' AND substr(username, 9) NOT GLOB '*[^0-9]*'`).run()
+    this.raw.prepare(`UPDATE accounts SET state = 'disconnected', message = COALESCE(message, 'Confirm your Instagram account again.') WHERE instagram_id IS NULL AND state = 'connected'`).run()
   }
 
   private recover(): void {
@@ -236,9 +240,37 @@ export class VanishDatabase {
     return accountFromRow(row)
   }
 
-  connectAccount(id: string, username: string): Account {
-    this.raw.prepare(`UPDATE accounts SET username = ?, state = 'connected', message = NULL, updated_at = ? WHERE id = ?`).run(username, now(), id)
+  connectAccount(id: string, instagramId: string, username: string): Account {
+    const row = this.raw.prepare(`SELECT instagram_id, username FROM accounts WHERE id = ?`).get(id) as Row | undefined
+    if (!row) throw new Error('Account not found.')
+    if (row.instagram_id !== null && String(row.instagram_id) !== instagramId) throw new Error('This Vanish account is bound to a different Instagram account.')
+    if (row.instagram_id === null && row.username !== null && String(row.username).toLowerCase() !== username.toLowerCase()) throw new Error(`This Vanish account belongs to @${String(row.username)}.`)
+    this.raw.prepare(`UPDATE accounts SET instagram_id = ?, username = ?, state = 'connected', message = NULL, updated_at = ? WHERE id = ?`).run(instagramId, username, now(), id)
     return this.getAccount(id)
+  }
+
+  assertAccountInactive(id: string): void {
+    const account = this.raw.prepare(`SELECT scan_state FROM accounts WHERE id = ?`).get(id) as Row | undefined
+    if (!account) throw new Error('Account not found.')
+    if (account.scan_state === 'scanning') throw new Error('Pause the scan first.')
+    if (this.raw.prepare(`SELECT 1 FROM jobs WHERE account_id = ? AND state = 'running' LIMIT 1`).get(id)) throw new Error('Pause cleanup first.')
+  }
+
+  signOutAccount(id: string): Account {
+    this.assertAccountInactive(id)
+    this.raw.prepare(`UPDATE accounts SET state = 'disconnected', scan_state = CASE WHEN scan_state = 'idle' THEN 'idle' ELSE 'paused' END, message = 'Signed out. Sign in to resume.', updated_at = ? WHERE id = ?`).run(now(), id)
+    return this.getAccount(id)
+  }
+
+  removeAccount(id: string): void {
+    this.assertAccountInactive(id)
+    this.raw.transaction(() => {
+      this.raw.prepare(`UPDATE jobs SET confirmed_at = NULL WHERE account_id = ?`).run(id)
+      this.raw.prepare(`DELETE FROM job_items WHERE job_id IN (SELECT id FROM jobs WHERE account_id = ?)`).run(id)
+      this.raw.prepare(`DELETE FROM jobs WHERE account_id = ?`).run(id)
+      this.raw.prepare(`DELETE FROM activity WHERE account_id = ?`).run(id)
+      this.raw.prepare(`DELETE FROM accounts WHERE id = ?`).run(id)
+    })()
   }
 
   updateAccountState(id: string, state: Account['state'], message: string | null): void {

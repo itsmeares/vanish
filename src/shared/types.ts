@@ -105,7 +105,10 @@ export interface VanishAPI {
     list(): Promise<Account[]>
     add(): Promise<Account>
     showLogin(accountId: string): Promise<void>
-    finishLogin(accountId: string): Promise<Account>
+    identify(accountId: string): Promise<string>
+    bind(accountId: string, username: string): Promise<Account>
+    signOut(accountId: string): Promise<Account>
+    remove(accountId: string): Promise<void>
     scan(accountId: string): Promise<void>
     pauseScan(accountId: string): Promise<void>
   }

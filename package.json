@@ -9,6 +9,7 @@
   "type": "module",
   "main": "dist/main/index.js",
   "scripts": {
+    "predev": "install-electron --no",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",

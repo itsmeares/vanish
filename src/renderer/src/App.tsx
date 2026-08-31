@@ -46,6 +46,25 @@ export function App(): React.JSX.Element {
     } catch (reason) { setError(message(reason)) }
   }
 
+  async function signOut(account: Account): Promise<void> {
+    setError('')
+    try {
+      await window.vanish.accounts.signOut(account.id)
+      if (activeJob?.accountId === account.id) setActiveJob(null)
+      bump()
+    } catch (reason) { setError(message(reason)) }
+  }
+
+  async function removeAccount(account: Account): Promise<void> {
+    if (account.username && !window.confirm(`Remove @${account.username} from Vanish? Its local activity and cleanup history will be deleted.`)) return
+    setError('')
+    try {
+      await window.vanish.accounts.remove(account.id)
+      if (activeJob?.accountId === account.id) setActiveJob(null)
+      bump()
+    } catch (reason) { setError(message(reason)) }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -53,11 +72,20 @@ export function App(): React.JSX.Element {
         <nav aria-label="Instagram accounts" className="accounts">
           <p className="nav-label">Instagram</p>
           {accounts.map((item) => (
-            <button className={`account-button ${item.id === accountId ? 'active' : ''}`} key={item.id} onClick={() => setAccountId(item.id)}>
-              <span className="avatar">{item.username?.slice(0, 1).toUpperCase() ?? '?'}</span>
-              <span className="account-copy"><strong>{item.username ? `@${item.username}` : 'Finish sign-in'}</strong><small>{item.scanCount ? `${number.format(item.scanCount)} likes` : item.state.replace('_', ' ')}</small></span>
-              <span className={`status-dot ${item.state}`} aria-label={item.state} />
-            </button>
+            <div className="account-entry" key={item.id}>
+              <button className={`account-button ${item.id === accountId ? 'active' : ''}`} onClick={() => setAccountId(item.id)}>
+                <span className="avatar">{item.username?.slice(0, 1).toUpperCase() ?? '?'}</span>
+                <span className="account-copy"><strong>{item.username ? `@${item.username}` : 'Finish sign-in'}</strong><small>{item.scanCount ? `${number.format(item.scanCount)} likes` : item.state.replace('_', ' ')}</small></span>
+                <span className={`status-dot ${item.state}`} aria-label={item.state} />
+              </button>
+              <details className="account-menu">
+                <summary aria-label={`Manage ${item.username ? `@${item.username}` : 'unfinished account'}`}>•••</summary>
+                <div className="account-menu-popover">
+                  {item.username && <button onClick={() => void signOut(item)}>Sign out</button>}
+                  <button className="menu-danger" onClick={() => void removeAccount(item)}>{item.username ? 'Remove from Vanish' : 'Cancel setup'}</button>
+                </div>
+              </details>
+            </div>
           ))}
           <button className="add-account" onClick={() => void addAccount()}>Add account</button>
         </nav>
@@ -100,6 +128,7 @@ function Library({ account, refresh, bump, onJob, onError }: {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [latestJob, setLatestJob] = useState<Job | null>(null)
+  const [identity, setIdentity] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({ count: total, getScrollElement: () => scrollRef.current, estimateSize: () => 82, overscan: 10 })
   const virtualItems = virtualizer.getVirtualItems()
@@ -107,6 +136,7 @@ function Library({ account, refresh, bump, onJob, onError }: {
   const neededKey = neededPages.join(',')
 
   useEffect(() => {
+    setIdentity(null)
     setPages({})
     setSelected(new Set())
     setExcluded(new Set())
@@ -140,10 +170,29 @@ function Library({ account, refresh, bump, onJob, onError }: {
   }
   const selectedCount = allMatching ? Math.max(0, total - excluded.size) : selected.size
 
-  async function finishLogin(): Promise<void> {
+  async function identify(): Promise<void> {
     setBusy(true)
-    try { await window.vanish.accounts.finishLogin(account.id); bump() }
+    try { setIdentity(await window.vanish.accounts.identify(account.id)) }
     catch (reason) { onError(message(reason)) }
+    finally { setBusy(false) }
+  }
+
+  async function bind(): Promise<void> {
+    if (!identity) return
+    setBusy(true)
+    try { await window.vanish.accounts.bind(account.id, identity); bump() }
+    catch (reason) { onError(message(reason)) }
+    finally { setBusy(false) }
+  }
+
+  async function chooseDifferentAccount(): Promise<void> {
+    setBusy(true)
+    try {
+      await window.vanish.accounts.signOut(account.id)
+      setIdentity(null)
+      await window.vanish.accounts.showLogin(account.id)
+      bump()
+    } catch (reason) { onError(message(reason)) }
     finally { setBusy(false) }
   }
 
@@ -170,8 +219,13 @@ function Library({ account, refresh, bump, onJob, onError }: {
 
   const scanning = account.scanState === 'scanning'
   if (account.state !== 'connected') return <section className="connection-screen">
-    <div><p className="kicker">Instagram</p><h1>Finish connecting your account</h1><p>Use Instagram's own sign-in page. Vanish never sees your password.</p></div>
-    <div className="button-row"><button className="secondary" onClick={() => void window.vanish.accounts.showLogin(account.id)}>Open Instagram</button><button className="primary" disabled={busy} onClick={() => void finishLogin()}>{busy ? 'Checking...' : "I'm signed in"}</button></div>
+    {identity ? <>
+      <div><p className="kicker">Instagram account</p><h1>Use @{identity}?</h1><p>Vanish will keep this browser session and local activity separate from your other accounts.</p></div>
+      <div className="button-row"><button className="secondary" disabled={busy} onClick={() => void chooseDifferentAccount()}>Use a different account</button><button className="primary" disabled={busy} onClick={() => void bind()}>{busy ? 'Connecting...' : `Use @${identity}`}</button></div>
+    </> : <>
+      <div><p className="kicker">Instagram</p><h1>{account.username ? `Reconnect @${account.username}` : 'Finish connecting your account'}</h1><p>{account.message ?? "Use Instagram's own sign-in page. Vanish never sees your password."}</p></div>
+      <div className="button-row"><button className="secondary" onClick={() => void window.vanish.accounts.showLogin(account.id)}>Open Instagram</button><button className="primary" disabled={busy} onClick={() => void identify()}>{busy ? 'Checking...' : 'Check signed-in account'}</button></div>
+    </>}
   </section>
 
   return <section className="library">

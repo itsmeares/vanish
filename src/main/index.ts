@@ -17,6 +17,11 @@ const identifier = (value: unknown): string => {
   return value
 }
 
+const username = (value: unknown): string => {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._]{1,30}$/.test(value)) throw new Error('Invalid Instagram username.')
+  return value
+}
+
 function cleanFilter(value: unknown): ActivityFilter {
   if (!value || typeof value !== 'object') throw new Error('Invalid filter.')
   const input = value as Record<string, unknown>
@@ -82,11 +87,10 @@ function registerIpc(): void {
     return account
   })
   handle('accounts:show-login', (_event, accountId) => instagram.showLogin(identifier(accountId)))
-  handle('accounts:finish-login', async (_event, accountId) => {
-    const account = await instagram.finishLogin(identifier(accountId))
-    emit({ type: 'accounts-changed' })
-    return account
-  })
+  handle('accounts:identify', (_event, accountId) => instagram.identifyAccount(identifier(accountId)))
+  handle('accounts:bind', (_event, accountId, expectedUsername) => instagram.bindAccount(identifier(accountId), username(expectedUsername)))
+  handle('accounts:sign-out', (_event, accountId) => instagram.signOut(identifier(accountId)))
+  handle('accounts:remove', (_event, accountId) => instagram.removeAccount(identifier(accountId)))
   handle('accounts:scan', (_event, accountId) => scanner.start(identifier(accountId)))
   handle('accounts:pause-scan', (_event, accountId) => scanner.pause(identifier(accountId)))
   handle('activity:page', (_event, accountId, filter, offset, limit) => db.activityPage(identifier(accountId), cleanFilter(filter), Number(offset), Number(limit)))

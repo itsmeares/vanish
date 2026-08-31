@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeInstagramPage } from '../src/main/instagram-normalize'
+import { normalizeInstagramIdentity, normalizeInstagramPage } from '../src/main/instagram-normalize'
 
 describe('normalizeInstagramPage', () => {
   it('normalizes current native media shapes and removes duplicate media ids', () => {
@@ -24,5 +24,13 @@ describe('normalizeInstagramPage', () => {
 
   it('accepts wrapped responses and ends without a cursor', () => {
     expect(normalizeInstagramPage({ data: { liked_items: [], more_available: true } })).toEqual({ items: [], cursor: null, hasMore: false })
+  })
+})
+
+describe('normalizeInstagramIdentity', () => {
+  it('requires a real username and never fabricates one from a numeric user id', () => {
+    expect(normalizeInstagramIdentity({ viewerId: '123', viewer: { username: 'real.user' } })).toEqual({ id: '123', username: 'real.user' })
+    expect(normalizeInstagramIdentity({ viewerId: '123', ds_user_id: '123' })).toBeNull()
+    expect(normalizeInstagramIdentity({ currentUser: { user: { pk: '456', username: 'fallback_name' } } })).toEqual({ id: '456', username: 'fallback_name' })
   })
 })

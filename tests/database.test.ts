@@ -41,6 +41,52 @@ describe('VanishDatabase', () => {
     db.close()
   })
 
+  it('removes an unfinished account setup', () => {
+    const db = new VanishDatabase(':memory:')
+    const account = db.createAccount()
+    db.removeAccount(account.id)
+    expect(db.listAccounts()).toEqual([])
+    db.close()
+  })
+
+  it('signs out one account without changing another account or local activity', () => {
+    const db = new VanishDatabase(':memory:')
+    const first = db.createAccount()
+    const second = db.createAccount()
+    db.connectAccount(first.id, '101', 'alice')
+    db.connectAccount(second.id, '202', 'bob')
+    db.saveScanPage(first.id, page(1, 2, 'alice'))
+    db.saveScanPage(second.id, page(20, 1, 'bob'))
+
+    expect(db.signOutAccount(first.id)).toMatchObject({ username: 'alice', state: 'disconnected' })
+    expect(db.getAccount(second.id)).toMatchObject({ username: 'bob', state: 'connected' })
+    expect(db.activityPage(first.id, all, 0, 20).total).toBe(2)
+    expect(db.activityPage(second.id, all, 0, 20).total).toBe(1)
+    db.close()
+  })
+
+  it('removes only the selected account and all of its local data', () => {
+    const db = new VanishDatabase(':memory:')
+    const first = db.createAccount()
+    const second = db.createAccount()
+    db.connectAccount(first.id, '101', 'alice')
+    db.connectAccount(second.id, '202', 'bob')
+    db.saveScanPage(first.id, page(1, 2, 'alice'))
+    db.saveScanPage(second.id, page(20, 1, 'bob'))
+    db.confirmSelection(first.id, { filter: all, allMatching: true, ids: [], excludedIds: [] })
+    const secondJob = db.confirmSelection(second.id, { filter: all, allMatching: true, ids: [], excludedIds: [] })
+
+    db.removeAccount(first.id)
+
+    expect(db.listAccounts().map((account) => account.id)).toEqual([second.id])
+    expect(db.activityPage(second.id, all, 0, 20).total).toBe(1)
+    expect(db.getJob(secondJob.id).total).toBe(1)
+    expect(db.raw.prepare(`SELECT count(*) count FROM activity WHERE account_id = ?`).get(first.id)).toMatchObject({ count: 0 })
+    expect(db.raw.prepare(`SELECT count(*) count FROM jobs WHERE account_id = ?`).get(first.id)).toMatchObject({ count: 0 })
+    expect(db.raw.prepare(`SELECT count(*) count FROM job_items WHERE job_id NOT IN (SELECT id FROM jobs)`).get()).toMatchObject({ count: 0 })
+    db.close()
+  })
+
   it('freezes exactly the confirmed set', () => {
     const db = new VanishDatabase(':memory:')
     const account = db.createAccount()

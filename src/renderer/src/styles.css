@@ -27,6 +27,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .brand-mark { width: 28px; height: 28px; }
 .nav-label, .kicker { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .accounts { flex: 1; }
+.account-entry { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: center; }
 .account-button { display: grid; grid-template-columns: 34px minmax(0, 1fr) 8px; align-items: center; gap: 9px; width: 100%; min-height: 52px; padding: 8px; border: 0; border-radius: var(--radius); background: transparent; color: var(--text); text-align: left; transition: background 160ms ease; }
 .account-button:hover, .account-button.active { background: var(--panel-2); }
 .account-button.active { box-shadow: inset 2px 0 var(--accent); }
@@ -35,6 +36,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .account-copy strong, .account-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-copy strong { font-size: 13px; }.account-copy small { color: var(--muted); font-size: 11px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #5d6570; }.status-dot.connected { background: var(--accent); }.status-dot.needs_auth { background: var(--danger); }
+.account-menu summary { display: grid; place-items: center; width: 34px; min-height: 44px; border-radius: 7px; color: var(--muted); cursor: pointer; list-style: none; }.account-menu summary::-webkit-details-marker { display: none; }.account-menu summary:hover, .account-menu[open] summary { background: var(--panel-2); color: var(--text); }
+.account-menu-popover { position: absolute; z-index: 30; top: 44px; right: 0; width: 174px; padding: 5px; border: 1px solid #3a414a; border-radius: 8px; background: #1a1e23; box-shadow: 0 14px 34px #000a; }.account-menu-popover button { width: 100%; min-height: 40px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; }.account-menu-popover button:hover { background: #252a31; }.account-menu-popover .menu-danger { color: #ff9a9a; }
 .add-account { width: 100%; min-height: 44px; margin-top: 10px; border: 1px dashed #383f48; border-radius: var(--radius); background: transparent; color: var(--muted); }.add-account:hover { color: var(--text); border-color: #59616d; }
 .local-note { margin: 18px 8px 0; color: #737b86; font-size: 11px; line-height: 1.45; }
 .main { position: relative; min-width: 0; height: 100%; overflow: hidden; }

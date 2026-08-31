@@ -2,7 +2,22 @@ import type { ActivityItem, InstagramPage } from '../shared/types'
 
 type UnknownRecord = Record<string, any>
 
+export interface InstagramIdentity {
+  id: string
+  username: string
+}
+
 const text = (value: unknown): string => typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+
+export function normalizeInstagramIdentity(payload: unknown): InstagramIdentity | null {
+  const root = (payload && typeof payload === 'object' ? payload : {}) as UnknownRecord
+  const viewer = (root.viewer && typeof root.viewer === 'object' ? root.viewer : {}) as UnknownRecord
+  const current = (root.currentUser && typeof root.currentUser === 'object' ? root.currentUser : {}) as UnknownRecord
+  const user = (current.user && typeof current.user === 'object' ? current.user : current) as UnknownRecord
+  const id = text(root.viewerId) || text(viewer.id) || text(viewer.pk) || text(user.pk) || text(user.id)
+  const username = text(viewer.username) || text(user.username)
+  return /^\d+$/.test(id) && /^[A-Za-z0-9._]{1,30}$/.test(username) ? { id, username } : null
+}
 
 function firstImage(item: UnknownRecord): string | null {
   const candidates = item.image_versions2?.candidates

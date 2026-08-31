@@ -28,4 +28,18 @@ describe('privileged Electron boundaries', () => {
     expect(instagram).toContain('clientUpdateRequired: true')
     expect(instagram).not.toContain('/api/v1/web/likes/')
   })
+
+  it('uses the current viewer identity and clears only the selected account partition', () => {
+    const instagram = readFileSync(new URL('../src/main/instagram.ts', import.meta.url), 'utf8')
+    expect(instagram).toContain("window.require?.('PolarisViewer')")
+    expect(instagram).not.toContain('ds_user_id')
+    expect(instagram).toContain('session.fromPartition(account.partition).clearData()')
+    expect(instagram).not.toContain('defaultSession.clearData')
+  })
+
+  it('installs the Electron binary before a fresh development launch', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts.predev).toBe('install-electron --no')
+    expect(pkg.scripts.dev).toBe('electron-vite dev')
+  })
 })

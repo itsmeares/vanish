@@ -1,7 +1,7 @@
-import { BrowserWindow, shell } from 'electron'
+import { BrowserWindow, session, shell } from 'electron'
 import type { Account, InstagramResult, ReconcileResult } from '../shared/types'
 import { VanishDatabase } from './database'
-import { normalizeInstagramPage } from './instagram-normalize'
+import { normalizeInstagramIdentity, normalizeInstagramPage, type InstagramIdentity } from './instagram-normalize'
 
 const LOGIN_URL = 'https://www.instagram.com/accounts/login/'
 const HOME_URL = 'https://www.instagram.com/'
@@ -65,7 +65,6 @@ export class InstagramService {
       } catch { event.preventDefault() }
     })
     win.on('closed', () => this.windows.delete(account.id))
-    win.webContents.on('did-finish-load', () => { void this.detectLogin(account.id) })
     this.windows.set(account.id, win)
     await win.loadURL(account.state === 'connected' ? HOME_URL : LOGIN_URL)
     return win
@@ -90,38 +89,80 @@ export class InstagramService {
     return cookies.some((cookie) => Boolean(cookie.value))
   }
 
-  private async detectLogin(accountId: string): Promise<Account> {
-    const account = this.db.getAccount(accountId)
-    if (!(await this.hasSession(account))) return account
-    const win = this.windows.get(accountId)
-    if (!win || win.isDestroyed()) return account
+  private async detectIdentity(accountId: string): Promise<InstagramIdentity> {
+    const { account, win } = await this.ensureReady(accountId)
+    if (!(await this.hasSession(account))) {
+      win.show()
+      win.focus()
+      throw new Error('Finish signing in on Instagram, then check the account again.')
+    }
+    if (!instagramUrl(win.webContents.getURL())) await win.loadURL(HOME_URL)
     const response = await win.webContents.executeJavaScript(`(async () => {
+      let viewer = null
+      let viewerId = null
+      let currentUser = null
+      try {
+        const viewerModule = window.require?.('PolarisViewer')
+        const config = window.require?.('PolarisConfig')
+        viewer = viewerModule?.data ?? config?.getViewerData_DO_NOT_USE?.() ?? null
+        viewerId = viewerModule?.id ?? config?.getViewerId?.() ?? null
+      } catch {}
       try {
         const api = window.require?.('PolarisInstapi')
         const result = api?.apiGet
           ? await api.apiGet('/api/v1/accounts/current_user/', { query: { edit: 'true' } })
           : await fetch('/api/v1/accounts/current_user/?edit=true', { credentials: 'include', headers: { 'x-requested-with': 'XMLHttpRequest' } }).then(async r => ({ status: r.status, data: await r.json() }))
-        const data = result?.data ?? result
-        return { username: data?.user?.username ?? data?.username ?? null }
-      } catch (error) { return { username: null, message: String(error) } }
-    })()`, true) as { username?: string | null }
-    const cookie = (await win.webContents.session.cookies.get({ url: HOME_URL, name: 'ds_user_id' }))[0]
-    const username = response.username || (cookie?.value ? `account-${cookie.value}` : null)
-    if (username) {
-      const connected = this.db.connectAccount(accountId, username)
-      this.changed(accountId)
-      return connected
+        currentUser = result?.data ?? result
+      } catch {}
+      return { viewer, viewerId, currentUser }
+    })()`, true)
+    const identity = normalizeInstagramIdentity(response)
+    if (!identity) {
+      win.show()
+      win.focus()
+      throw new Error('Vanish could not confirm the signed-in Instagram account. Choose the correct account in Instagram and try again.')
     }
+    return identity
+  }
+
+  async identifyAccount(accountId: string): Promise<string> {
+    return (await this.detectIdentity(accountId)).username
+  }
+
+  async bindAccount(accountId: string, expectedUsername: string): Promise<Account> {
+    try {
+      const identity = await this.detectIdentity(accountId)
+      if (identity.username.toLowerCase() !== expectedUsername.toLowerCase()) throw new Error('The signed-in Instagram account changed. Check it again before connecting.')
+      const account = this.db.connectAccount(accountId, identity.id, identity.username)
+      this.changed(accountId)
+      this.hide(accountId)
+      return account
+    } catch (error) {
+      await this.showLogin(accountId)
+      throw error
+    }
+  }
+
+  private async clearBrowserSession(accountId: string): Promise<void> {
+    this.db.assertAccountInactive(accountId)
+    const account = this.db.getAccount(accountId)
+    const win = this.windows.get(accountId)
+    if (win && !win.isDestroyed()) win.destroy()
+    this.windows.delete(accountId)
+    await session.fromPartition(account.partition).clearData()
+  }
+
+  async signOut(accountId: string): Promise<Account> {
+    await this.clearBrowserSession(accountId)
+    const account = this.db.signOutAccount(accountId)
+    this.changed(accountId)
     return account
   }
 
-  async finishLogin(accountId: string): Promise<Account> {
-    const account = await this.detectLogin(accountId)
-    if (account.state !== 'connected') {
-      await this.showLogin(accountId)
-      throw new Error('Finish signing in on Instagram, then try again.')
-    }
-    return account
+  async removeAccount(accountId: string): Promise<void> {
+    await this.clearBrowserSession(accountId)
+    this.db.removeAccount(accountId)
+    this.changed(accountId)
   }
 
   async scanPage(accountId: string, cursor: string | null): Promise<ReturnType<typeof normalizeInstagramPage>> {

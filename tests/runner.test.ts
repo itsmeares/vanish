@@ -10,7 +10,7 @@ const filter: ActivityFilter = { search: '', mediaType: '', from: '', to: '' }
 
 function seed(db: VanishDatabase): { accountId: string; jobId: string } {
   const account = db.createAccount()
-  db.connectAccount(account.id, 'tester')
+  db.connectAccount(account.id, '123', 'tester')
   db.saveScanPage(account.id, { cursor: null, hasMore: false, items: [{
     mediaId: '123', shortcode: 'POST123', ownerUsername: 'owner', caption: '', mediaType: 'post', thumbnailUrl: null,
     permalink: 'https://www.instagram.com/p/POST123/', likedAt: null, discoveredAt: '2026-01-01T00:00:00.000Z',
