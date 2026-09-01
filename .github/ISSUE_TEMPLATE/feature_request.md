@@ -22,31 +22,25 @@ assignees: ""
 
 ## Platform
 
-- [ ] Instagram Export
-- [ ] Reddit
-- [ ] X / Twitter
-- [ ] Local workspace / audit
-- [ ] TUI / UX
+- [ ] Instagram
+- [ ] Desktop UX
+- [ ] Local data
 - [ ] Docs
 - [ ] Other:
 
 ## Capability area
 
-- [ ] Scan / import
+- [ ] Account connection / scan
 - [ ] Review / filter / selection
-- [ ] Dry-run plan generation
-- [ ] Plan export / load
-- [ ] Apply / execution
-- [ ] Audit
-- [ ] Platform metadata / capabilities
+- [ ] Cleanup / recovery
 - [ ] Repo hygiene / CI
 
 ## Safety boundaries
 
-- [ ] No credential, cookie, token, session, or OAuth storage unless explicitly designed
-- [ ] No browser automation, scraping, private API usage, or anti-bot bypass
-- [ ] No apply/delete/execution behavior unless explicitly scoped
-- [ ] No raw private messages or sensitive export contents stored
+- [ ] No password collection, pasted sessions, remote session storage, CAPTCHA bypass, stealth, or rate-limit evasion
+- [ ] Remote pages stay sandboxed without Node or native privileges
+- [ ] Confirmed destructive targets stay immutable
+- [ ] Uncertain destructive results reconcile before retry
 - [ ] Local-first behavior is preserved
 
 ## Acceptance criteria

@@ -1,34 +1,26 @@
 ## Summary
 
-- 
-- 
-- 
-
-## Type of change
-
-- [ ] Feature
-- [ ] Fix
-- [ ] Docs
-- [ ] Refactor
-- [ ] Chore
+-
 
 ## Validation
 
-- [ ] `gofmt` on changed Go files
-- [ ] `go test ./...`
-- [ ] `go build ./cmd/vanish`
+- [ ] `npm run lint`
+- [ ] `npm run typecheck`
+- [ ] `npm test`
+- [ ] `npm run build`
+- [ ] `npm run package`
 - [ ] `git diff --check`
-- [ ] Safety grep: `rg -n '\b(net/http|http\.Get|http\.Post|NewRequest|chromedp|selenium|playwright|agouti|rod|webdriver)\b' --glob '*.go' --glob '!*_test.go'`
 
-## Safety / scope check
+## Privacy and destructive-action check
 
-- [ ] No network/API behavior added unless explicitly intended
-- [ ] No login/OAuth/token/cookie/session storage added unless explicitly intended
-- [ ] No browser automation, scraping, or private API usage added
-- [ ] No apply/delete/execution behavior added unless explicitly intended
-- [ ] No raw private messages or sensitive export contents committed
-- [ ] No local user exports, ZIPs, plans, or app data committed
+- [ ] No credentials, cookies, sessions, exports, or personal activity committed
+- [ ] Remote Instagram content has no Node or native privileges
+- [ ] IPC inputs and navigation targets are validated
+- [ ] Confirmed cleanup targets cannot change
+- [ ] Uncertain destructive results reconcile before retry
+- [ ] Rate limits, auth checks, network loss, pause, and restart keep untouched items pending
 
-## Notes
+## Live Instagram check
 
-- 
+- [ ] Completed `docs/instagram-smoke-test.md`
+- [ ] Recorded any unverified or changed Instagram behavior below

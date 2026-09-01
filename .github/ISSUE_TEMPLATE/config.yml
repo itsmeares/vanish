@@ -3,8 +3,8 @@ blank_issues_enabled: false
 contact_links:
   - name: Vanish safety model
     url: https://github.com/itsmeares/vanish/blob/main/docs/safety.md
-    about: Read the safety boundaries before requesting login, automation, apply, or deletion behavior.
+    about: Read how Vanish isolates Instagram and recovers destructive work.
 
-  - name: Platform support matrix
-    url: https://github.com/itsmeares/vanish/blob/main/docs/platforms.md
-    about: Check current prototype/planned platform support.
+  - name: Instagram smoke test
+    url: https://github.com/itsmeares/vanish/blob/main/docs/instagram-smoke-test.md
+    about: Check the real-account validation steps for Instagram compatibility.

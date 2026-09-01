@@ -13,9 +13,8 @@ assignees: ""
 ## Environment
 
 - OS:
-- Terminal:
+- Vanish build: development / packaged
 - Vanish version / commit:
-- Run command:
 
 ## Steps to reproduce
 
@@ -37,10 +36,10 @@ assignees: ""
 
 ## Scope / safety check
 
-- [ ] This does not include private Instagram/Reddit export contents
+- [ ] This does not include personal Instagram activity
 - [ ] This does not include credentials, cookies, tokens, sessions, or OAuth data
 - [ ] This does not include raw private messages
-- [ ] This does not request hidden network, scraping, browser automation, or account deletion behavior
+- [ ] Any destructive-result ambiguity is described without sharing private response data
 
 ## Notes
 
