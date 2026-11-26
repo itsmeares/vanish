@@ -4,7 +4,8 @@ name: Release
 # publishes them as the GitHub Release the app updates from.
 on:
   push:
-    tags: ["v*.*.*"]
+    # Stable versions only: the app updates from the latest release.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
   contents: read

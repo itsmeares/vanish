@@ -78,6 +78,7 @@ describe("runner", () => {
       "comments",
       DEFAULT_RULE,
       "overwrite-delete",
+      Date.now(),
     );
     await vi.waitFor(() => expect(db.run(runId)?.status).toBe("done"));
 
@@ -96,7 +97,13 @@ describe("runner", () => {
       ...DEFAULT_RULE,
       keep: [{ type: "community" as const, value: "buildapc" }],
     };
-    const runId = runner.start(accountId, "comments", rule, "delete");
+    const runId = runner.start(
+      accountId,
+      "comments",
+      rule,
+      "delete",
+      Date.now(),
+    );
     await vi.waitFor(() => expect(db.run(runId)?.status).toBe("done"));
     expect(db.items(accountId, "comments").map((row) => row.id)).toEqual(["c"]);
   });
@@ -108,6 +115,7 @@ describe("runner", () => {
       "comments",
       DEFAULT_RULE,
       "overwrite",
+      Date.now(),
     );
     await vi.waitFor(() => expect(db.run(runId)?.status).toBe("done"));
     const rows = db.items(accountId, "comments");
@@ -120,7 +128,13 @@ describe("runner", () => {
     const runner = setup(async (target) => {
       if (target.id === "b" && failing) throw new Error("Reddit answered 500");
     });
-    const runId = runner.start(accountId, "comments", DEFAULT_RULE, "delete");
+    const runId = runner.start(
+      accountId,
+      "comments",
+      DEFAULT_RULE,
+      "delete",
+      Date.now(),
+    );
     await settle();
     expect(db.run(runId)).toMatchObject({
       status: "paused",
@@ -140,7 +154,13 @@ describe("runner", () => {
       seen.push(target.id);
       if (seen.length === 1) runner.pause(db.activeRuns()[0].id);
     });
-    const runId = runner.start(accountId, "comments", DEFAULT_RULE, "delete");
+    const runId = runner.start(
+      accountId,
+      "comments",
+      DEFAULT_RULE,
+      "delete",
+      Date.now(),
+    );
     await settle();
     expect(seen).toHaveLength(1);
     expect(db.run(runId)?.status).toBe("paused");
@@ -151,15 +171,58 @@ describe("runner", () => {
 
   it("refuses a second run on the same account", () => {
     const runner = setup(() => new Promise(() => {}));
-    runner.start(accountId, "comments", DEFAULT_RULE, "delete");
+    runner.start(accountId, "comments", DEFAULT_RULE, "delete", Date.now());
     expect(() =>
-      runner.start(accountId, "comments", DEFAULT_RULE, "delete"),
+      runner.start(accountId, "comments", DEFAULT_RULE, "delete", Date.now()),
     ).toThrow(/already has a cleanup/);
+  });
+
+  it("keeps a stopped run stopped when its last request fails", async () => {
+    let fail: (error: Error) => void = () => {};
+    const runner = setup(
+      () => new Promise<void>((_, reject) => (fail = reject)),
+    );
+    const runId = runner.start(
+      accountId,
+      "comments",
+      DEFAULT_RULE,
+      "delete",
+      Date.now(),
+    );
+    await vi.waitFor(() => expect(fail).not.toBe(undefined));
+    runner.stop(runId);
+    expect(() =>
+      runner.start(accountId, "comments", DEFAULT_RULE, "delete", Date.now()),
+    ).toThrow(/already has a cleanup/);
+    fail(new Error("network went away"));
+    await vi.waitFor(() => expect(db.run(runId)?.failed).toBe(1));
+    expect(db.run(runId)?.status).toBe("stopped");
+  });
+
+  it("freezes the items that matched when the list was shown", () => {
+    const runner = setup(() => new Promise(() => {}));
+    const shownAt = Date.UTC(2020, 0, 2);
+    // Items are from 1 Jan 2020: not older than one day when the list was shown.
+    expect(() =>
+      runner.start(
+        accountId,
+        "comments",
+        { ...DEFAULT_RULE, age: { type: "older", days: 1 } },
+        "delete",
+        shownAt - 12 * 3_600_000,
+      ),
+    ).toThrow(/Nothing matches/);
   });
 
   it("pauses a run that was going when the app closed", () => {
     const runner = setup(() => new Promise(() => {}));
-    const runId = runner.start(accountId, "comments", DEFAULT_RULE, "delete");
+    const runId = runner.start(
+      accountId,
+      "comments",
+      DEFAULT_RULE,
+      "delete",
+      Date.now(),
+    );
     runner.recover();
     expect(db.run(runId)?.status).toBe("paused");
   });

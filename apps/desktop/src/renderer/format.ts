@@ -1,3 +1,6 @@
+import type { Mode } from "../shared/api";
+import { hasText, type Kind, type Platform } from "../shared/platforms";
+
 export const count = (value: number) => value.toLocaleString("en");
 
 export const compact = (value: number) =>
@@ -29,3 +32,9 @@ export const ago = (time: number, now = Date.now()) => {
 
 export const plural = (value: number, one: string, many: string) =>
   `${count(value)} ${value === 1 ? one : many}`;
+
+/** What a run did to each item: "overwritten" when it left the text up. */
+export const doneWord = (platform: Platform, kind: Kind, mode: Mode) =>
+  hasText(kind) && mode === "overwrite"
+    ? "overwritten"
+    : platform.kinds[kind].done;

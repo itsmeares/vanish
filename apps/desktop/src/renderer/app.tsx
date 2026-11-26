@@ -15,7 +15,7 @@ import {
   RemoveAccountDialog,
   SettingsDialog,
 } from "./dialogs";
-import { plural } from "./format";
+import { doneWord, plural } from "./format";
 import { Logo } from "./logo";
 import { attempt, notify } from "./notify";
 import { Sidebar } from "./sidebar";
@@ -59,12 +59,13 @@ const useRunEndings = (state: AppState | null) => {
       for (const run of history.filter((row) =>
         ended.some((end) => end.id === row.id),
       )) {
-        const names = PLATFORMS[run.platform].kinds[run.kind];
+        const platform = PLATFORMS[run.platform];
+        const names = platform.kinds[run.kind];
         notify(
           run.status === "done"
             ? `Cleanup finished for ${run.accountName}`
             : `Cleanup stopped for ${run.accountName}`,
-          `${plural(run.done, names.one, names.many)} ${names.done}.`,
+          `${plural(run.done, names.one, names.many)} ${doneWord(platform, run.kind, run.mode)}.`,
         );
       }
     });

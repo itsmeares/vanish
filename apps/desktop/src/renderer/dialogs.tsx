@@ -17,13 +17,13 @@ import {
 } from "@vanish/ui/components/field";
 import { Switch } from "@vanish/ui/components/switch";
 import { Textarea } from "@vanish/ui/components/textarea";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Account, AppState, Settings } from "../shared/api";
 import { PLATFORMS } from "../shared/platforms";
 import { DEFAULT_TEXT, replacementText } from "../shared/replacement";
 import { vanish } from "./bridge";
-import { day, plural } from "./format";
+import { day, doneWord, plural } from "./format";
 import { attempt, notify } from "./notify";
 
 type Open = { open: boolean; onOpenChange: (open: boolean) => void };
@@ -41,8 +41,12 @@ export const SettingsDialog = ({
 }) => {
   const [text, setText] = useState(settings.text);
   const [checking, setChecking] = useState(false);
+  // Load the saved text when the dialog opens, not when a save comes back,
+  // so typing after a save is never replaced.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (open) setText(settings.text);
+    if (open && !wasOpen.current) setText(settings.text);
+    wasOpen.current = open;
   }, [open, settings.text]);
   const preview = useMemo(
     () => replacementText({ text, randomWords: settings.randomWords }),
@@ -169,7 +173,8 @@ export const HistoryDialog = ({ open, onOpenChange }: Open) => {
                 >
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="font-medium">
-                      {plural(run.done, names.one, names.many)} {names.done}
+                      {plural(run.done, names.one, names.many)}{" "}
+                      {doneWord(PLATFORMS[run.platform], run.kind, run.mode)}
                     </span>
                     <span className="text-meta text-muted-foreground">
                       {run.accountName}, {day(run.createdAt)}

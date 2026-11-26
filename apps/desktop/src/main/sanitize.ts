@@ -75,20 +75,46 @@ const scrubJson = (value: unknown): unknown => {
   return value;
 };
 
-const scrubForm = (form: string) => {
-  const params = new URLSearchParams(form);
-  for (const key of Array.from(params.keys())) {
-    if (isSecretName(key)) params.set(key, REMOVED);
-    else params.set(key, scrubText(params.get(key) ?? ""));
-  }
-  return params.toString();
-};
+/** Cleans every value, keeping repeated keys and their order. */
+const scrubParams = (params: URLSearchParams) =>
+  new URLSearchParams(
+    Array.from(params, ([key, value]) => [
+      key,
+      isSecretName(key) ? REMOVED : scrubText(value),
+    ]),
+  ).toString();
 
 // Secrets inside HTML and scripts: `"token":"…"`, `token=…`, and
-// `<input name="csrf_token" value="…">` in either attribute order.
+// `<input name="csrf_token" value="…">` with attributes in any order.
 const QUOTED_PAIR = /(["'])([\w.-]+)\1(\s*:\s*)(["'])((?:\\.|(?!\4).)*)\4/g;
 const ASSIGNED = /\b([\w.-]+)=([^&\s"'<>;]+)/g;
 const INPUT = /<input\b[^>]*>/gi;
+// One HTML attribute: quoted, unquoted, or bare, with spaces around "=".
+const ATTRIBUTE =
+  /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
+const attributes = (tag: string) =>
+  new Map(
+    Array.from(tag.slice(6).matchAll(ATTRIBUTE), (match) => [
+      match[1].toLowerCase(),
+      match[2] ?? match[3] ?? match[4] ?? "",
+    ]),
+  );
+
+const scrubInput = (tag: string) => {
+  const found = attributes(tag);
+  const type = (found.get("type") ?? "").toLowerCase();
+  if (
+    !isSecretName(found.get("name") ?? "") &&
+    type !== "hidden" &&
+    type !== "password"
+  )
+    return tag;
+  return tag.replace(
+    /(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/i,
+    `$1"${REMOVED}"`,
+  );
+};
 
 const scrubMarkup = (text: string) =>
   scrubText(text)
@@ -100,17 +126,7 @@ const scrubMarkup = (text: string) =>
     .replace(ASSIGNED, (match, key) =>
       isSecretName(key) ? `${key}=${REMOVED}` : match,
     )
-    .replace(INPUT, (tag) => {
-      const name = /\bname=(["'])(.*?)\1/i.exec(tag)?.[2] ?? "";
-      const type = /\btype=(["'])(.*?)\1/i.exec(tag)?.[2] ?? "";
-      if (
-        !isSecretName(name) &&
-        type.toLowerCase() !== "hidden" &&
-        type.toLowerCase() !== "password"
-      )
-        return tag;
-      return tag.replace(/\bvalue=(["'])(.*?)\1/i, `value=$1${REMOVED}$1`);
-    });
+    .replace(INPUT, scrubInput);
 
 /** Cleans a request or response body, whatever its format. */
 export const scrubBody = (body: string, contentType = "") => {
@@ -123,7 +139,11 @@ export const scrubBody = (body: string, contentType = "") => {
     }
   }
   if (contentType.includes("application/x-www-form-urlencoded"))
-    return scrubForm(body);
+    return scrubParams(new URLSearchParams(body));
+  // Uploads and multipart forms are not needed to learn how a site works,
+  // and their fields are easy to miss.
+  if (contentType.includes("multipart/"))
+    return `[multipart body removed, ${body.length} characters]`;
   return scrubMarkup(body);
 };
 
@@ -144,9 +164,7 @@ export const scrubUrl = (raw: string) => {
   }
   url.username = "";
   url.password = "";
-  for (const key of Array.from(url.searchParams.keys())) {
-    if (isSecretName(key)) url.searchParams.set(key, REMOVED);
-  }
+  url.search = scrubParams(url.searchParams);
   url.hash = "";
   return scrubText(url.toString());
 };

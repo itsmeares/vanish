@@ -46,7 +46,7 @@ import type { Account, Mode, Run, Settings } from "../shared/api";
 import { hasText, type Kind, type Platform } from "../shared/platforms";
 import { judge, type Rule } from "../shared/rule";
 import { useItems, vanish } from "./bridge";
-import { count, plural } from "./format";
+import { count, doneWord, plural } from "./format";
 import { ItemList, type Row } from "./item-list";
 import { attempt, notify } from "./notify";
 import { ReadingPane } from "./reading-pane";
@@ -95,7 +95,8 @@ const RunBar = ({ platform, run }: { platform: Platform; run: Run }) => {
           </span>
           <span className="text-muted-foreground">
             {": "}
-            {count(run.done)} of {count(run.total)} {names.done}
+            {count(run.done)} of {count(run.total)}{" "}
+            {doneWord(platform, run.kind, run.mode)}
             {run.failed > 0 && `, ${count(run.failed)} failed`}
           </span>
         </p>
@@ -161,8 +162,9 @@ export const Cleanup = ({
   const names = platform.kinds[kind];
   const mode = hasText(kind) ? settings.mode : "delete";
 
-  const { rows, goes, kept } = useMemo(() => {
-    const verdict = judge(rule, Date.now(), platform.community.prefix);
+  const { rows, goes, kept, now } = useMemo(() => {
+    const judgedAt = Date.now();
+    const verdict = judge(rule, judgedAt, platform.community.prefix);
     const all: Row[] = [];
     let goesCount = 0;
     for (const item of items ?? []) {
@@ -171,7 +173,12 @@ export const Cleanup = ({
       if (result.type === "goes") goesCount++;
       all.push({ item, verdict: result });
     }
-    return { rows: all, goes: goesCount, kept: all.length - goesCount };
+    return {
+      rows: all,
+      goes: goesCount,
+      kept: all.length - goesCount,
+      now: judgedAt,
+    };
   }, [items, rule, platform]);
 
   const shown = useMemo(
@@ -223,7 +230,7 @@ export const Cleanup = ({
   const start = async () => {
     setBusy(true);
     const runId = await attempt(() =>
-      vanish.startRun({ accountId: account.id, kind, rule, mode }),
+      vanish.startRun({ accountId: account.id, kind, rule, mode, now }),
     );
     setBusy(false);
     setConfirming(false);
@@ -232,7 +239,7 @@ export const Cleanup = ({
 
   const backup = async () => {
     const result = await attempt(() =>
-      vanish.saveBackup({ accountId: account.id, kind, rule }),
+      vanish.saveBackup({ accountId: account.id, kind, rule, now }),
     );
     if (result?.saved)
       notify(
@@ -317,11 +324,7 @@ export const Cleanup = ({
                     <span className="font-semibold">
                       {plural(goes, names.one, names.many)}
                     </span>{" "}
-                    will be{" "}
-                    {hasText(kind) && mode === "overwrite"
-                      ? "overwritten"
-                      : names.done}
-                    .{" "}
+                    will be {doneWord(platform, kind, mode)}.{" "}
                     {kept > 0 && (
                       <span className="text-muted-foreground">
                         {count(kept)} kept by your rules and picks.

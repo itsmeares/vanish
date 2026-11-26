@@ -121,6 +121,24 @@ describe("scrubBody", () => {
     expect(clean).toContain("sort=new");
   });
 
+  it("finds input values however the attributes are written", () => {
+    const html = `<input type = "password" name = "password" value = "hunter2">
+      <input name=csrf_token value=abc123 type=hidden>
+      <input type=text name=q value=cats>`;
+    const clean = scrubBody(html, "text/html");
+    expect(clean).not.toContain("hunter2");
+    expect(clean).not.toContain("abc123");
+    expect(clean).toContain("value=cats");
+  });
+
+  it("drops multipart bodies, whose fields are easy to miss", () => {
+    const body =
+      '--x\r\nContent-Disposition: form-data; name="password"\r\n\r\nhunter2\r\n--x--';
+    expect(scrubBody(body, "multipart/form-data; boundary=x")).not.toContain(
+      "hunter2",
+    );
+  });
+
   it("cleans text that only looks like JSON", () => {
     expect(scrubBody(`{not json "token":"abc"}`)).toBe(
       `{not json "token":"${REMOVED}"}`,
@@ -129,6 +147,14 @@ describe("scrubBody", () => {
 });
 
 describe("scrubUrl", () => {
+  it("cleans encoded values and keeps repeated keys", () => {
+    expect(
+      scrubUrl("https://www.reddit.com/search?q=someone%40example.com&t=a&t=b"),
+    ).toBe(
+      `https://www.reddit.com/search?q=${encodeURIComponent(REMOVED)}&t=a&t=b`,
+    );
+  });
+
   it("removes secret query values, sign-in parts and the fragment", () => {
     const clean = scrubUrl(
       "https://user:pw@www.reddit.com/api/v1/me?raw_json=1&access_token=abc#token=xyz",

@@ -3,6 +3,7 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@vanish/ui/components/toggle-group";
+import { Input } from "@vanish/ui/components/input";
 import { useMemo, useRef, useState } from "react";
 
 import { AGE_PRESETS, ageLabel, type Item, type Rule } from "../shared/rule";
@@ -17,6 +18,11 @@ const monthStart = (time: number) => {
 const nextMonth = (time: number) => {
   const date = new Date(time);
   return new Date(date.getFullYear(), date.getMonth() + 1, 1).getTime();
+};
+
+const monthValue = (time: number) => {
+  const date = new Date(time);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 };
 
 const HEIGHT = 96;
@@ -82,6 +88,21 @@ export const TimeChart = ({
         ? [-Infinity, now - shown.days * 86_400_000]
         : [shown.from, shown.to];
   const [from, to] = range(shownAge);
+  /** Sets one end of the period from a "YYYY-MM" field, keeping the other. */
+  const pickMonths = (value: string, end: "from" | "to") => {
+    const [year, monthIndex] = value.split("-").map(Number);
+    if (!year || !monthIndex) return;
+    const start = new Date(year, monthIndex - 1, 1).getTime();
+    const current =
+      age.type === "between"
+        ? { from: age.from, to: age.to }
+        : { from: months[0]?.start ?? start, to: nextMonth(Date.now()) };
+    const next =
+      end === "from"
+        ? { from: start, to: Math.max(current.to, nextMonth(start)) }
+        : { from: Math.min(current.from, start), to: nextMonth(start) };
+    onAge({ type: "between", ...next });
+  };
   // A month is drawn as picked when it starts inside the period.
   const inside = (start: number) => start >= from && start < to;
   const picked = items.filter(
@@ -118,11 +139,8 @@ export const TimeChart = ({
         <div>
           <div
             ref={chart}
-            role="slider"
-            aria-label="Pick a period by dragging across the months"
-            aria-valuetext={ageLabel(age)}
-            aria-valuenow={picked}
-            tabIndex={0}
+            // A pointer shortcut; the month fields below do the same by keyboard.
+            aria-hidden="true"
             className="flex cursor-col-resize touch-none items-end gap-px rounded-md select-none"
             style={{ height: HEIGHT }}
             onPointerDown={(event) => {
@@ -167,9 +185,29 @@ export const TimeChart = ({
           </div>
         </div>
       )}
+      <div className="flex items-center gap-2 text-meta text-muted-foreground">
+        From
+        <Input
+          type="month"
+          size="sm"
+          aria-label="First month"
+          className="w-40"
+          value={age.type === "between" ? monthValue(age.from) : ""}
+          onChange={(event) => pickMonths(event.target.value, "from")}
+        />
+        to
+        <Input
+          type="month"
+          size="sm"
+          aria-label="Last month"
+          className="w-40"
+          value={age.type === "between" ? monthValue(age.to - 1) : ""}
+          onChange={(event) => pickMonths(event.target.value, "to")}
+        />
+      </div>
       <p className="text-meta text-muted-foreground">
         <span className="font-medium text-foreground">{count(picked)}</span>{" "}
-        {ageLabel(shownAge)}. Drag across the chart to pick a period.
+        {ageLabel(shownAge)}. Drag across the chart, or pick the months.
       </p>
     </div>
   );

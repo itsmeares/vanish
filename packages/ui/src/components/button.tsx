@@ -49,7 +49,7 @@ export const buttonVariants = cva(
           "border-transparent bg-primary/9 font-medium text-primary-ink hover:bg-primary/15 data-popup-open:bg-primary/15 *:data-[slot=button-loading-indicator]:text-primary-ink",
         // Vanish: quiet toolbar and sidebar buttons.
         "ghost-muted":
-          "border-transparent text-muted-foreground hover:bg-hover hover:text-foreground aria-[current=page]:selected-pill aria-[current=page]:text-foreground data-popup-open:bg-hover data-popup-open:text-foreground data-pressed:bg-pressed",
+          "border-transparent text-muted-foreground hover:bg-hover hover:text-foreground aria-[current=page]:selected-pill aria-[current=page]:text-foreground data-popup-open:bg-hover data-popup-open:text-foreground data-pressed:bg-pressed *:data-[slot=button-loading-indicator]:text-muted-foreground",
         secondary:
           "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/90 data-pressed:bg-secondary/90 *:data-[slot=button-loading-indicator]:text-secondary-foreground [:active,[data-pressed]]:bg-secondary/80",
       },

@@ -52,6 +52,7 @@ export function EmptyHeader({
 export function EmptyMedia({
   className,
   variant = "default",
+  children,
   ...props
 }: React.ComponentProps<"div"> &
   VariantProps<typeof emptyMediaVariants>): React.ReactElement {
@@ -80,10 +81,9 @@ export function EmptyMedia({
           />
         </>
       )}
-      <div
-        className={cn(emptyMediaVariants({ className, variant }))}
-        {...props}
-      />
+      <div className={cn(emptyMediaVariants({ className, variant }))}>
+        {children}
+      </div>
     </div>
   );
 }

@@ -46,6 +46,8 @@ CREATE TABLE run_items (
   done_at INTEGER,
   PRIMARY KEY (run_id, item_id)
 );
+-- The runner asks for the next queued item after every item.
+CREATE INDEX run_items_queue ON run_items (run_id, state, position);
 -- The list you confirmed is the list that runs: nothing joins it later.
 CREATE TRIGGER run_items_frozen BEFORE INSERT ON run_items
 WHEN (SELECT frozen FROM runs WHERE id = NEW.run_id) = 1

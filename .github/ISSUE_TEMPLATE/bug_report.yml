@@ -60,7 +60,6 @@ body:
     id: logs
     attributes:
       label: Screenshots or error text
-      render: shell
     validations:
       required: false
 

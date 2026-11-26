@@ -47,7 +47,13 @@ export type AppState = {
 
 const id = z.number().int().positive();
 const kind = z.enum(KINDS);
-const job = z.object({ accountId: id, kind, rule: ruleSchema });
+// `now` is when the window judged the rule, so the list it showed is the list that runs.
+const job = z.object({
+  accountId: id,
+  kind,
+  rule: ruleSchema,
+  now: z.number().int().positive(),
+});
 
 /** Every call the window can make, with the arguments the main process accepts. */
 export const inputs = {

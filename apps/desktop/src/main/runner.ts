@@ -18,13 +18,23 @@ const actionFor = (kind: Kind, mode: Mode, text: () => string): Action => {
   return { overwrite: text(), remove: mode === "overwrite-delete" };
 };
 
-/** The items a rule puts on the delete list, computed here rather than trusted from the window. */
-export const matching = (db: Db, accountId: number, kind: Kind, rule: Rule) => {
+/**
+ * The items a rule puts on the delete list, computed here rather than trusted
+ * from the window. `now` is the moment the list was shown, so an "older than"
+ * rule freezes exactly the items the person confirmed.
+ */
+export const matching = (
+  db: Db,
+  accountId: number,
+  kind: Kind,
+  rule: Rule,
+  now: number,
+) => {
   const account = db.accounts().find((row) => row.id === accountId);
   if (!account) throw new Error("That account no longer exists.");
   const verdict = judge(
     rule,
-    Date.now(),
+    Math.min(now, Date.now()),
     PLATFORMS[account.platform].community.prefix,
   );
   return db
@@ -45,6 +55,8 @@ export const createRunner = ({
   onChange: (change: { accountId: number; kind: Kind }) => void;
 }) => {
   const looping = new Set<number>();
+  // Accounts with a request on its way to the site, which Stop cannot recall.
+  const inFlight = new Set<number>();
 
   const loop = async (runId: number) => {
     if (looping.has(runId)) return;
@@ -77,6 +89,7 @@ export const createRunner = ({
         const action = actionFor(run.kind, run.mode, () =>
           replacementText({ text, randomWords }),
         );
+        inFlight.add(run.accountId);
         try {
           await site.remove(item, action);
         } catch (error) {
@@ -85,8 +98,12 @@ export const createRunner = ({
           const message =
             error instanceof Error ? error.message : String(error);
           db.finishItem(runId, itemId, message);
-          db.setRunStatus(runId, "paused", message);
+          // A run stopped while the request was out stays stopped.
+          if (db.run(runId)?.status !== "stopped")
+            db.setRunStatus(runId, "paused", message);
           return onChange(run);
+        } finally {
+          inFlight.delete(run.accountId);
         }
         if (action.remove) db.deleteItem(run.accountId, run.kind, itemId);
         else if (action.overwrite !== null)
@@ -110,12 +127,21 @@ export const createRunner = ({
   };
 
   return {
-    start: (accountId: number, kind: Kind, rule: Rule, mode: Mode) => {
-      if (db.activeRuns().some((run) => run.accountId === accountId))
+    start: (
+      accountId: number,
+      kind: Kind,
+      rule: Rule,
+      mode: Mode,
+      now: number,
+    ) => {
+      if (
+        inFlight.has(accountId) ||
+        db.activeRuns().some((run) => run.accountId === accountId)
+      )
         throw new Error(
           "This account already has a cleanup running. Finish or stop it first.",
         );
-      const items = matching(db, accountId, kind, rule);
+      const items = matching(db, accountId, kind, rule, now);
       if (items.length === 0)
         throw new Error("Nothing matches, so there is nothing to remove.");
       const runId = db.createRun(

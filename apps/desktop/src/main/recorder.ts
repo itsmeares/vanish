@@ -80,25 +80,29 @@ export const createRecorder = (
 ) => {
   const entries: Entry[] = [];
   const startedAt = new Date().toISOString();
-  const attached = new Set<WebContents>();
+  // Each browser this recorder listens to, with its listener, so stopping
+  // removes exactly this recorder's listener from a reused browser.
+  const attached = new Map<WebContents, () => void>();
+  let stopped = false;
 
   const add = (entry: Entry) => {
+    // Requests still finishing when you stop are not part of the file.
+    if (stopped) return;
     entries.push(entry);
     onCount(entries.length);
   };
 
   const attach = (contents: WebContents) => {
-    if (attached.has(contents)) return;
+    if (stopped || attached.has(contents)) return;
     const cdp = contents.debugger;
     const pending = new Map<string, Pending>();
     cdp.attach("1.3");
-    attached.add(contents);
     contents.once("destroyed", () => attached.delete(contents));
 
     const command = <T>(method: string, params: object) =>
       cdp.sendCommand(method, params) as Promise<T>;
 
-    cdp.on("message", (_event, method, params) => {
+    const listener = (_event: unknown, method: string, params: unknown) => {
       void (async () => {
         if (method === "Network.requestWillBeSent") {
           const { requestId, request, type, redirectResponse } = params as {
@@ -177,6 +181,12 @@ export const createRecorder = (
           add(clean(request, null, errorText));
         }
       })();
+    };
+    cdp.on("message", listener);
+    attached.set(contents, () => {
+      cdp.off("message", listener);
+      pending.clear();
+      if (!contents.isDestroyed() && cdp.isAttached()) cdp.detach();
     });
 
     void command("Network.enable", { maxPostDataSize: MAX_BODY });
@@ -186,10 +196,8 @@ export const createRecorder = (
     attach,
     count: () => entries.length,
     stop: () => {
-      for (const contents of attached) {
-        if (!contents.isDestroyed() && contents.debugger.isAttached())
-          contents.debugger.detach();
-      }
+      stopped = true;
+      for (const detach of attached.values()) detach();
       attached.clear();
       return {
         format: "vanish-recording",

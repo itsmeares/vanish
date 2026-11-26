@@ -162,14 +162,14 @@ void app.whenReady().then(() => {
         throw new Error("Scanning is not built yet for this platform.");
       await scan();
     },
-    startRun: async ({ accountId, kind, rule, mode }) =>
-      runner.start(accountId, kind, rule, mode),
+    startRun: async ({ accountId, kind, rule, mode, now }) =>
+      runner.start(accountId, kind, rule, mode, now),
     pauseRun: async (runId) => runner.pause(runId),
     resumeRun: async (runId) => runner.resume(runId),
     stopRun: async (runId) => runner.stop(runId),
-    saveBackup: async ({ accountId, kind, rule }) => {
+    saveBackup: async ({ accountId, kind, rule, now }) => {
       const { platform, name } = account(accountId);
-      const items = matching(db, accountId, kind, rule);
+      const items = matching(db, accountId, kind, rule, now);
       const saved = await saveJson(
         `vanish-backup-${platform.id}-${kind}-${stamp()}.json`,
         {
