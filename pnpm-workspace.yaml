@@ -1,0 +1,18 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+overrides:
+  # Same vite-plus-core version that the vite-plus catalog version depends on.
+  vite@*: npm:@voidzero-dev/vite-plus-core@8.3.8001
+allowBuilds:
+  electron-winstaller: false
+catalog:
+  vitest: 5.1.1
+  vite-plus: 1.8.0
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"

@@ -1,0 +1,53 @@
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply bg-background font-sans text-foreground;
+    font-feature-settings: "tnum";
+  }
+
+  body {
+    @apply min-h-screen bg-background text-body text-foreground antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-heading tracking-tight;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    @apply font-mono;
+  }
+
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--ring) 62%, transparent);
+    outline-offset: 3px;
+  }
+}
+
+/* Unlayered, so it outranks every utility: with reduced motion, things
+   appear and move without animating. Spinners keep turning, slowly. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
+  }
+
+  .animate-spin {
+    animation-duration: 1.5s;
+    animation-iteration-count: infinite;
+  }
+}

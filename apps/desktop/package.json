@@ -1,0 +1,38 @@
+{
+  "name": "desktop",
+  "productName": "Vanish",
+  "version": "0.0.0",
+  "description": "Removes your social media footprint.",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "author": "Vanish contributors",
+  "homepage": "https://vanish.itsmeares.com",
+  "main": "dist/main/index.cjs",
+  "desktopName": "vanish.desktop",
+  "scripts": {
+    "build": "vp build && vp pack",
+    "test": "vp test run",
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "@tanstack/react-virtual": "^3.14.28",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vanish/ui": "workspace:*",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0",
+    "electron-updater": "^6.8.11",
+    "lucide-react": "^1.77.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite-plus": "catalog:",
+    "zod": "^4.6.7"
+  }
+}

@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a change with the problem spelled out.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or hard to do right now?
+      placeholder: I want to keep comments from one subreddit, but only if they have replies.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Reddit
+        - A new platform
+        - The app itself
+        - Website
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra_context
+    attributes:
+      label: Extra context or mockups
+    validations:
+      required: false

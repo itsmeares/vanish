@@ -1,0 +1,90 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds the installers on each system and
+# publishes them as the GitHub Release the app updates from.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    name: Create the draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+
+  installers:
+    name: Installers (${{ matrix.name }})
+    needs: draft
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+            build: --linux --x64
+          - name: Windows
+            runner: windows-2025
+            build: --win
+          # One universal app for Intel and Apple silicon.
+          - name: macOS
+            runner: macos-15
+            build: --mac
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.3
+      - name: Install pinned pnpm
+        run: corepack enable && corepack install
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Take the version from the tag
+        working-directory: apps/desktop
+        shell: bash
+        run: npm pkg set "version=${GITHUB_REF_NAME#v}"
+      - name: Build the app
+        run: pnpm --filter desktop build
+      - name: Build installers
+        working-directory: apps/desktop
+        run: pnpm exec electron-builder ${{ matrix.build }} --publish never
+      - name: Attach installers to the release
+        shell: bash
+        working-directory: apps/desktop/release
+        # Only this step gets the token; install and build run package code.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(Vanish-* latest*.yml)
+          if (( ${#files[@]} == 0 )); then
+            echo "No installers were built." >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+
+  publish:
+    name: Publish the release
+    needs: installers
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

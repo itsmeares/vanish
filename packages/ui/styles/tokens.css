@@ -1,0 +1,89 @@
+/*
+ * Design tokens. Raw values live here once per theme; styles/theme.css maps
+ * them to Tailwind utilities. The host sets the theme class (.dark) on <html>
+ * before paint.
+ *
+ * Palette "Signal": cool greys with one cobalt accent. Canvas is the window
+ * behind everything, sidebar the account column, card the content panel,
+ * popover menus and dialogs.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --background: #f3f5f8;
+  --foreground: #121a26;
+  --card: #ffffff;
+  --card-foreground: #121a26;
+  --popover: #ffffff;
+  --popover-foreground: #121a26;
+  --sidebar: #e9edf2;
+  --muted: #eef1f5;
+  --muted-foreground: #5b6676;
+  --accent: #e9edf2;
+  --accent-foreground: #121a26;
+  --secondary: #e9edf2;
+  --secondary-foreground: #121a26;
+
+  /* Action: cobalt */
+  --primary: #1d4ed8;
+  --primary-foreground: #ffffff;
+  --destructive: #c62a2a;
+
+  /* Lines and focus */
+  --border: #d8dee6;
+  --input: #c3ccd8;
+  --ring: #1d4ed8;
+
+  /* Status hues. The base color is for tinted fills, -foreground for text
+     and icons on those fills. */
+  --success: #15803d;
+  --success-foreground: #15803d;
+  --info: #1d4ed8;
+  --info-foreground: #1d4ed8;
+  --warning: #b45309;
+  --warning-foreground: #a24a07;
+  --destructive-foreground: #b42323;
+
+  /* Raised edges: a soft drop under controls, a hairline highlight on top */
+  --edge-drop: 0 1px 2px rgb(18 26 38 / 0.06);
+  --edge-highlight: inset 0 -1px rgb(18 26 38 / 0.04);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #0f141b;
+  --foreground: #e6ebf2;
+  --card: #151b24;
+  --card-foreground: #e6ebf2;
+  --popover: #1a212c;
+  --popover-foreground: #e6ebf2;
+  --sidebar: #121821;
+  --muted: #19202a;
+  --muted-foreground: #8d98a8;
+  --accent: #1e2631;
+  --accent-foreground: #e6ebf2;
+  --secondary: #1e2631;
+  --secondary-foreground: #e6ebf2;
+
+  --primary: #6b8cff;
+  --primary-foreground: #0b1020;
+  --destructive: #f0605d;
+
+  --border: #232c38;
+  --input: #334050;
+  --ring: #6b8cff;
+
+  --success: #4ade80;
+  --success-foreground: #4ade80;
+  --info: #8ea8ff;
+  --info-foreground: #8ea8ff;
+  --warning: #f5b955;
+  --warning-foreground: #f5b955;
+  --destructive-foreground: #f47b78;
+
+  --edge-drop: 0 1px 2px rgb(0 0 0 / 0.3);
+  --edge-highlight: inset 0 1px rgb(255 255 255 / 0.04);
+}
