@@ -1,0 +1,23 @@
+{
+  "name": "vanish",
+  "version": "0.0.0",
+  "description": "Open-source desktop app that removes your social media footprint.",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@12.23.0",
+  "scripts": {
+    "desktop:dev": "pnpm --filter desktop build && pnpm --filter desktop start",
+    "desktop:demo": "pnpm --filter desktop build && pnpm --filter desktop demo",
+    "site:dev": "pnpm --filter site dev",
+    "build": "vp run -r build",
+    "lint": "vp lint && node packages/ui/scripts/check-styles.mjs",
+    "test": "vp run -r test",
+    "format": "vp fmt .",
+    "format:check": "vp fmt --check .",
+    "prepare": "vp config"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite-plus": "catalog:"
+  }
+}

@@ -1,0 +1,199 @@
+---
+import { Image } from "astro:assets";
+import { buttonVariants } from "@vanish/ui/components/button";
+
+import appDark from "../assets/app-dark.png";
+import Page from "../layouts/Page.astro";
+
+const GITHUB = "https://github.com/itsmeares/vanish";
+const wrap = "mx-auto w-full max-w-[1180px] px-6";
+
+const steps = [
+  {
+    title: "Sign in inside Vanish",
+    text: "Each account gets its own browser window. You sign in to Reddit there, the way you always do. Vanish never stores your password.",
+  },
+  {
+    title: "Say what goes",
+    text: "Pick comments, posts, votes, saved or hidden items. Narrow it by subreddit, age, score or text, and keep anything worth keeping. The list shows exactly what will go.",
+  },
+  {
+    title: "Watch it go",
+    text: "Vanish overwrites each comment, then deletes it, one at a time with a pause between. Pause or stop whenever you like.",
+  },
+];
+
+const promises = [
+  {
+    title: "No account, no server, no tracking",
+    text: "Vanish talks to Reddit, and to GitHub to check for updates. Nothing else.",
+  },
+  {
+    title: "Open source",
+    text: "Every line is on GitHub under the AGPL-3.0 license. Anyone who ships a changed version has to share it too.",
+  },
+  {
+    title: "It forgets what it removes",
+    text: "After a cleanup, Vanish keeps a note of what it removed and when, never the text itself.",
+  },
+  {
+    title: "Backups only when you ask",
+    text: "One click saves everything on the list to a file on your computer before anything is deleted.",
+  },
+];
+
+const questions = [
+  {
+    q: "Is it really free?",
+    a: "Yes. There is no paid tier and nothing to sign up for. Vanish is open source, so it stays free.",
+  },
+  {
+    q: "Why overwrite before deleting?",
+    a: "Overwriting first means the last version Reddit holds is the replacement text, not your words. You can turn it off, or overwrite without deleting so the replacement stays visible.",
+  },
+  {
+    q: "Can it find my oldest comments?",
+    a: "Reddit only lists your newest thousand or so items in each list. Reading the data export you request from Reddit, which goes back to the start, is coming in the first release.",
+  },
+  {
+    q: "Will my account get banned?",
+    a: "No tool can promise that about someone else's rules. Vanish works slowly, one item at a time through your own signed-in session, and stops on any error it does not understand.",
+  },
+  {
+    q: "Mac says Vanish cannot be opened",
+    a: "Vanish is not signed with a paid Apple certificate. Open System Settings, go to Privacy & Security, and choose Open Anyway. You only do this once.",
+  },
+  {
+    q: "Windows says it protected my PC",
+    a: "Vanish is not code-signed on Windows yet. Choose More info, then Run anyway.",
+  },
+  {
+    q: "What about other sites?",
+    a: "Reddit comes first. More platforms follow one at a time, each tested on a real account before it ships.",
+  },
+];
+---
+
+<Page
+  title="Vanish: remove your Reddit history"
+  description="Vanish is a free, open-source desktop app that deletes your old Reddit comments, posts, votes and saved items. It runs on your computer and keeps nothing it removes."
+>
+  <header class:list={[wrap, "flex h-16 items-center gap-3"]}>
+    <a href="/" class="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
+      <svg viewBox="0 0 24 24" class="size-6 text-primary" aria-hidden="true" fill="currentColor">
+        <path d="M3.6 4.6 11 18.4" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" fill="none"></path>
+        <circle cx="13.9" cy="14.1" r="1.75"></circle>
+        <circle cx="16.4" cy="9.9" r="1.35"></circle>
+        <circle cx="18.5" cy="6.4" r="1"></circle>
+        <circle cx="20.2" cy="3.6" r="0.65"></circle>
+      </svg>
+      Vanish
+    </a>
+    <a href={GITHUB} class="ms-auto text-muted-foreground transition-colors hover:text-foreground">GitHub</a>
+  </header>
+
+  <main>
+    <section class:list={[wrap, "flex flex-col items-center pt-20 pb-16 text-center sm:pt-28"]}>
+      <h1 class="max-w-[15ch] text-display leading-[1.2] font-semibold tracking-[-0.04em] text-balance">
+        Delete my{" "}
+        <span class="rounded-[0.18em] bg-primary/14 px-[0.14em] text-primary-ink" data-cycle
+          >comments</span
+        >{" "}
+        older than{" "}
+        <span class="rounded-[0.18em] bg-primary/14 px-[0.14em] whitespace-nowrap text-primary-ink">a year</span>.
+      </h1>
+      <p class="mt-7 max-w-[36rem] text-lg text-muted-foreground text-pretty">
+        Vanish is a free, open-source desktop app that removes your old Reddit comments, posts, votes and saved
+        items. Say what goes in one sentence, check the list, and let it work.
+      </p>
+      <div class="mt-9 flex flex-col items-center gap-3">
+        <a href={GITHUB} class={buttonVariants({ size: "xl" })}>Follow the first release on GitHub</a>
+        <p class="text-meta text-muted-foreground">Coming soon for Windows, macOS and Linux.</p>
+      </div>
+    </section>
+
+    <div class:list={[wrap, "pb-28"]}>
+      <Image
+        src={appDark}
+        alt="The Vanish window. A sentence reads: Delete my comments in any subreddit older than 1 year with fewer than 500 points, except r/buildapc. Below it, 1,919 comments are on the list, and one is open in a reading pane."
+        widths={[1180, 2360]}
+        sizes="(min-width: 1180px) 1132px, 100vw"
+        class="w-full rounded-2xl border shadow-dialog"
+        loading="eager"
+      />
+    </div>
+
+    <section class:list={[wrap, "grid gap-12 border-t py-24 lg:grid-cols-[1fr_2fr]"]}>
+      <h2 class="text-3xl font-semibold tracking-tight">How it works</h2>
+      <ol class="grid gap-10 sm:grid-cols-3">
+        {
+          steps.map((step, index) => (
+            <li class="flex flex-col gap-3">
+              <span class="grid size-8 place-items-center rounded-full border text-meta font-medium text-muted-foreground">
+                {index + 1}
+              </span>
+              <h3 class="text-lg font-semibold">{step.title}</h3>
+              <p class="text-muted-foreground">{step.text}</p>
+            </li>
+          ))
+        }
+      </ol>
+    </section>
+
+    <section class:list={[wrap, "grid gap-12 border-t py-24 lg:grid-cols-[1fr_2fr]"]}>
+      <h2 class="text-3xl font-semibold tracking-tight">Runs on your computer, and only there</h2>
+      <ul class="grid gap-x-10 gap-y-9 sm:grid-cols-2">
+        {
+          promises.map((item) => (
+            <li class="flex flex-col gap-2">
+              <h3 class="font-semibold">{item.title}</h3>
+              <p class="text-muted-foreground">{item.text}</p>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    <section class:list={[wrap, "grid gap-12 border-t py-24 lg:grid-cols-[1fr_2fr]"]}>
+      <h2 class="text-3xl font-semibold tracking-tight">Questions</h2>
+      <div class="flex flex-col">
+        {
+          questions.map((item) => (
+            <details class="group border-b py-5 first:pt-0">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-6 font-medium [&::-webkit-details-marker]:hidden">
+                {item.q}
+                <span class="text-xl leading-none text-muted-foreground transition-transform group-open:rotate-45" aria-hidden="true">+</span>
+              </summary>
+              <p class="mt-3 max-w-[60ch] text-muted-foreground">{item.a}</p>
+            </details>
+          ))
+        }
+      </div>
+    </section>
+  </main>
+
+  <footer class:list={[wrap, "flex flex-wrap items-center gap-x-6 gap-y-2 border-t py-10 text-meta text-muted-foreground"]}>
+    <span>Vanish is open source under the AGPL-3.0 license.</span>
+    <a href={GITHUB} class="hover:text-foreground">Source on GitHub</a>
+    <a href={`${GITHUB}/issues`} class="hover:text-foreground">Report a problem</a>
+  </footer>
+
+  <script is:inline>
+    // Cycles the headline's first part once, unless motion is reduced.
+    (() => {
+      const part = document.querySelector("[data-cycle]");
+      if (!part || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const words = ["posts", "votes", "saved items", "comments"];
+      let index = 0;
+      const next = () => {
+        part.animate([{ opacity: 1 }, { opacity: 0, filter: "blur(6px)" }], { duration: 260, easing: "ease-in" }).finished.then(() => {
+          part.textContent = words[index];
+          part.animate([{ opacity: 0, filter: "blur(6px)" }, { opacity: 1 }], { duration: 320, easing: "ease-out" });
+          index += 1;
+          if (index < words.length) setTimeout(next, 1700);
+        });
+      };
+      setTimeout(next, 2200);
+    })();
+  </script>
+</Page>

@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a defect with enough detail to reproduce it.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include passwords, cookies, session tokens, or the text of posts you want removed. A recording file is already cleaned, but check it before attaching.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Short summary
+      description: One line on what is broken.
+      placeholder: A cleanup run stops after the first comment
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened, and what you expected
+      placeholder: The run says "Stopped" with no message. I expected it to delete the 40 comments I picked.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add a Reddit account
+        2. Scan comments
+        3. Pick comments older than 1 year
+        4. Start "Overwrite, then delete"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Reddit
+        - The app itself
+        - Website
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Vanish version and system
+      placeholder: Vanish 0.1.0 on Windows 11 x64
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Screenshots or error text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched the existing issues first.
+          required: true
+        - label: I removed passwords, cookies, tokens, and private text from this report.
+          required: true

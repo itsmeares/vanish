@@ -1,0 +1,24 @@
+import { defineConfig } from "vite-plus";
+
+export default defineConfig({
+  staged: {
+    "*.{js,jsx,ts,tsx,mjs,cjs,json,md,yml,yaml,css,astro}": "vp fmt",
+  },
+  lint: {
+    jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
+    rules: { "vite-plus/prefer-vite-plus-imports": "error" },
+    options: { typeAware: true, typeCheck: true },
+  },
+  fmt: {
+    semi: true,
+    singleQuote: false,
+    printWidth: 80,
+    sortPackageJson: false,
+    sortTailwindcss: {
+      stylesheet: "./packages/ui/styles.css",
+      functions: ["cn", "cva"],
+      preserveWhitespace: true,
+    },
+    ignorePatterns: ["pnpm-lock.yaml", "coverage/", "dist/", ".astro/"],
+  },
+});

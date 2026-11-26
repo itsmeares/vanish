@@ -1,0 +1,104 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "mergeConfidence:all-badges",
+    "security:minimumReleaseAgeNpm"
+  ],
+  "dependencyDashboard": {
+    "enabled": true
+  },
+  "timezone": "Europe/London",
+  "schedule": ["* 2-7 * * 1"],
+  "updateNotScheduled": false,
+  "automerge": false,
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 0,
+  "rangeStrategy": "bump",
+  "prCreation": "immediate",
+  "lockFileMaintenance": {
+    "enabled": false
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "addLabels": ["security"],
+    "groupName": null,
+    "schedule": [],
+    "dependencyDashboardApproval": false,
+    "minimumReleaseAge": null,
+    "minimumGroupSize": 1,
+    "prConcurrentLimit": 0,
+    "prCreation": "immediate",
+    "vulnerabilityFixStrategy": "lowest"
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["npm"],
+      "groupName": "App packages"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies", "packageManager"],
+      "groupName": "Development tools"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["pnpm-workspace.overrides"],
+      "groupName": "Workspace overrides"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "groupName": null,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "matchDepNames": ["node", "@types/node"],
+      "groupName": "Node.js",
+      "groupSlug": "node-js",
+      "allowedVersions": "/^24(?:[.-]|$)/"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "react",
+        "react-dom",
+        "@types/react",
+        "@types/react-dom"
+      ],
+      "groupName": "React"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["electron", "electron-builder", "electron-updater"],
+      "groupName": "Electron"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["tailwindcss", "@tailwindcss/vite"],
+      "groupName": "Tailwind CSS"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "vite-plus",
+        "@voidzero-dev/vite-plus-core",
+        "vitest"
+      ],
+      "groupName": "Vite and tests",
+      "minimumGroupSize": 3
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": [
+        "actions/upload-artifact",
+        "actions/download-artifact"
+      ],
+      "matchUpdateTypes": ["major"],
+      "groupName": "GitHub Artifact Actions"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+appId: com.itsmeares.vanish
+productName: Vanish
+copyright: Vanish contributors
+directories:
+  output: release
+  buildResources: resources
+files:
+  - dist/**
+  - package.json
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
+artifactName: Vanish-${version}-${os}-${arch}.${ext}
+publish:
+  provider: github
+  owner: itsmeares
+  repo: vanish
+mac:
+  icon: resources/icon.png
+  target:
+    - target: dmg
+      arch: universal
+    # electron-updater reads the zip, even though Mac updates are manual.
+    - target: zip
+      arch: universal
+  category: public.app-category.utilities
+  # Ad-hoc signed: Vanish has no paid Apple certificate.
+  identity: "-"
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+nsis:
+  oneClick: true
+  perMachine: false
+linux:
+  target: [AppImage, deb]
+  category: Utility
+  executableName: vanish
+  syncDesktopName: true
+  maintainer: Vanish <itsmeares@users.noreply.github.com>
+  synopsis: Removes your social media footprint
+toolsets:
+  # The static runtime needs no libfuse2, which new distributions dropped.
+  appimage: "1.0.3"
