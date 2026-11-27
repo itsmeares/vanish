@@ -245,6 +245,31 @@ describe("database", () => {
     }
   });
 
+  it("keeps known points and dates when a source without them is saved", () => {
+    db.saveItems(accountId, [item("a", { score: null, createdAt: null })]);
+    expect(db.item(accountId, "comments", "a")).toMatchObject({
+      score: 1,
+      createdAt: Date.UTC(2020, 0, 1),
+    });
+  });
+
+  it("does not bring back what a finished run removed", async () => {
+    const runner = setup(async () => {});
+    const runId = runner.start(
+      accountId,
+      "comments",
+      { ...DEFAULT_RULE, communities: ["buildapc"] },
+      "delete",
+      Date.now(),
+    );
+    await vi.waitFor(() => expect(db.run(runId)?.status).toBe("done"));
+    expect(db.saveItems(accountId, [item("a"), item("c")])).toBe(1);
+    expect(db.items(accountId, "comments").map((row) => row.id)).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
   it("forgets an account's items and runs when the account is removed", () => {
     db.createRun(accountId, "comments", "delete", ["a"]);
     db.removeAccount(accountId);

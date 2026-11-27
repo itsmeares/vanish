@@ -10,6 +10,7 @@ import {
 } from "@vanish/ui/components/dialog";
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
@@ -35,6 +36,7 @@ import {
 import {
   ChevronDownIcon,
   ExternalLinkIcon,
+  FileArchiveIcon,
   PauseIcon,
   PlayIcon,
   RefreshCwIcon,
@@ -142,6 +144,7 @@ export const Cleanup = ({
   onKind,
   onRule,
   onSettings,
+  onReadExport,
 }: {
   account: Account;
   platform: Platform;
@@ -152,6 +155,7 @@ export const Cleanup = ({
   onKind: (kind: Kind) => void;
   onRule: (rule: Rule) => void;
   onSettings: (change: Partial<Settings>) => void;
+  onReadExport: () => void;
 }) => {
   const items = useItems(account.id, kind);
   const [filter, setFilter] = useState<"goes" | "kept" | "all">("goes");
@@ -297,11 +301,27 @@ export const Cleanup = ({
             <EmptyHeader>
               <EmptyTitle>No {names.many} found yet</EmptyTitle>
               <EmptyDescription>
-                {account.canScan
-                  ? `Scan this account to find its ${names.many}.`
-                  : `Vanish cannot scan ${platform.name} yet. Scanning comes with ${platform.name} support in the first release.`}
+                {account.scannedAt
+                  ? `There are none in what Vanish has read so far.`
+                  : `Read your ${platform.name} data export to find all your ${names.many}, back to the first one.`}
               </EmptyDescription>
             </EmptyHeader>
+            <EmptyContent className="flex-row justify-center">
+              <Button onClick={onReadExport}>
+                <FileArchiveIcon />
+                Read data export
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void attempt(() =>
+                    vanish.openBrowser(account.id, platform.exportUrl),
+                  )
+                }
+              >
+                Ask {platform.name} for it
+              </Button>
+            </EmptyContent>
           </Empty>
         ) : (
           <>

@@ -50,8 +50,8 @@ export const ReadingPane = ({
       </TopRow>
       <div className="flex min-h-0 flex-1 scrollbar-thin flex-col gap-4 overflow-y-auto px-6 pb-6">
         <div className="flex flex-wrap items-center gap-3 text-meta text-muted-foreground">
-          <span>{day(item.createdAt)}</span>
-          <span>{points(item.score)}</span>
+          {item.createdAt !== null && <span>{day(item.createdAt)}</span>}
+          {item.score !== null && <span>{points(item.score)}</span>}
           {kept ? (
             <Badge variant="outline">Kept: {verdict.reason}</Badge>
           ) : (

@@ -2,6 +2,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { readFile } from "node:fs/promises";
+
 import { app, type BrowserWindow, dialog, ipcMain } from "electron";
 import type { z } from "zod";
 
@@ -14,12 +16,15 @@ import {
 } from "../shared/api";
 import {
   keepsHost,
+  KINDS,
   PLATFORMS,
   type Kind,
   type PlatformId,
 } from "../shared/platforms";
+import type { Item } from "../shared/rule";
 import { openDb } from "./db";
 import { demoRemover, seedDemo } from "./demo";
+import { readExport as readRedditExport } from "./reddit/export";
 import { createRecorder } from "./recorder";
 import { createRunner, matching, type Remover } from "./runner";
 import { startUpdates } from "./updates";
@@ -36,10 +41,18 @@ if (demo)
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
-/** Platform code by platform. Reddit's scanner and remover arrive with Reddit support. */
-const SITES: Partial<
-  Record<PlatformId, { remover: Remover; scan?: () => Promise<void> }>
-> = demo ? { reddit: { remover: demoRemover } } : {};
+/** Platform code by platform. */
+type Site = {
+  remover?: Remover;
+  scan?: () => Promise<void>;
+  readExport: (zip: Uint8Array) => { account: string | null; items: Item[] };
+};
+const SITES: Record<PlatformId, Site> = {
+  reddit: {
+    readExport: readRedditExport,
+    ...(demo ? { remover: demoRemover } : {}),
+  },
+};
 
 const PAUSE_MS = demo ? 250 : 1500;
 
@@ -156,6 +169,28 @@ void app.whenReady().then(() => {
       push();
     },
     openBrowser: async (accountId, url) => browse(accountId, url),
+    readExport: async (accountId) => {
+      if (!window) return null;
+      const { platform, name } = account(accountId);
+      const { canceled, filePaths } = await dialog.showOpenDialog(window, {
+        title: `Read a ${platform.name} data export`,
+        filters: [
+          { name: `${platform.name} data export`, extensions: ["zip"] },
+        ],
+        properties: ["openFile"],
+      });
+      if (canceled || filePaths.length === 0) return null;
+      const read = SITES[platform.id].readExport(await readFile(filePaths[0]));
+      const owner = read.account && `${platform.userPrefix}${read.account}`;
+      // An account is named after its owner once Vanish knows it, so an export
+      // from someone else cannot fill it.
+      if (owner && name.startsWith(platform.userPrefix) && name !== owner)
+        throw new Error(`This export is for ${owner}, not ${name}.`);
+      const added = db.saveItems(accountId, read.items);
+      if (owner) db.renameAccount(accountId, owner);
+      for (const kind of KINDS) itemsChanged({ accountId, kind });
+      return { found: read.items.length, added };
+    },
     scan: async (accountId) => {
       const scan = SITES[account(accountId).platform.id]?.scan;
       if (!scan)

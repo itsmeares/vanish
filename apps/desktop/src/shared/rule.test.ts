@@ -32,6 +32,19 @@ describe("judge", () => {
     expect(verdict({}, item())).toEqual({ type: "goes" });
   });
 
+  it("keeps items with an unknown date or score off limited lists", () => {
+    const undated = item({ createdAt: null, score: null });
+    expect(verdict({}, undated)).toEqual({ type: "goes" });
+    expect(verdict({ age: { type: "older", days: 30 } }, undated)).toEqual({
+      type: "out",
+    });
+    expect(verdict({ maxScore: 100 }, undated)).toEqual({ type: "out" });
+    expect(verdict({ keep: [{ type: "score", min: 500 }] }, undated)).toEqual({
+      type: "kept",
+      reason: "points unknown",
+    });
+  });
+
   it("filters by community, ignoring case", () => {
     expect(verdict({ communities: ["askreddit"] }, item())).toEqual({
       type: "goes",

@@ -1,7 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 
 import type { Mode, Run, RunStatus, Settings } from "../shared/api";
-import { KINDS, type Kind, type PlatformId } from "../shared/platforms";
+import {
+  hasText,
+  KINDS,
+  type Kind,
+  type PlatformId,
+} from "../shared/platforms";
 import { DEFAULT_TEXT } from "../shared/replacement";
 import type { Item } from "../shared/rule";
 
@@ -21,8 +26,8 @@ CREATE TABLE items (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   url TEXT NOT NULL,
-  score INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
+  score INTEGER,
+  created_at INTEGER,
   PRIMARY KEY (account_id, kind, id)
 );
 CREATE TABLE runs (
@@ -75,8 +80,8 @@ const toItem = (row: Row): Item => ({
   title: String(row.title),
   body: String(row.body),
   url: String(row.url),
-  score: Number(row.score),
-  createdAt: Number(row.created_at),
+  score: row.score === null ? null : Number(row.score),
+  createdAt: row.created_at === null ? null : Number(row.created_at),
 });
 
 const RUN_SELECT = `
@@ -128,7 +133,26 @@ export const openDb = (file: string) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (account_id, kind, id) DO UPDATE SET
       community = excluded.community, title = excluded.title, body = excluded.body,
-      url = excluded.url, score = excluded.score, created_at = excluded.created_at`);
+      url = excluded.url,
+      -- A source without points or dates, like the data export, keeps what a scan found.
+      score = coalesce(excluded.score, items.score),
+      created_at = coalesce(excluded.created_at, items.created_at)`);
+
+  /** Items a finished run removed, so an older source cannot bring them back. */
+  const removedIds = (accountId: number) => {
+    const rows = db
+      .prepare(
+        `SELECT runs.kind, runs.mode, run_items.item_id FROM run_items
+         JOIN runs ON runs.id = run_items.run_id
+         WHERE runs.account_id = ? AND run_items.state = 'done'`,
+      )
+      .all(accountId) as Row[];
+    return new Set(
+      rows
+        .filter((row) => !hasText(row.kind as Kind) || row.mode !== "overwrite")
+        .map((row) => `${row.kind}:${row.item_id}`),
+    );
+  };
 
   return {
     close: () => db.close(),
@@ -168,9 +192,14 @@ export const openDb = (file: string) => {
     removeAccount: (accountId: number) =>
       db.prepare("DELETE FROM accounts WHERE id = ?").run(accountId),
 
+    /** Saves what a scan or an export found. Returns how many were new or updated. */
     saveItems: (accountId: number, items: Item[]) =>
       transaction(() => {
-        for (const item of items) {
+        const removed = removedIds(accountId);
+        const kept = items.filter(
+          (item) => !removed.has(`${item.kind}:${item.id}`),
+        );
+        for (const item of kept) {
           insertItem.run(
             accountId,
             item.kind,
@@ -187,7 +216,13 @@ export const openDb = (file: string) => {
           Date.now(),
           accountId,
         );
+        return kept.length;
       }),
+
+    renameAccount: (accountId: number, name: string) =>
+      db
+        .prepare("UPDATE accounts SET name = ? WHERE id = ?")
+        .run(name, accountId),
 
     items: (accountId: number, kind: Kind) =>
       (

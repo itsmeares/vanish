@@ -110,6 +110,17 @@ const Shell = ({ state }: { state: AppState }) => {
 
   const platform = PLATFORMS[account.platform];
   const key = `${account.id}:${kind}`;
+  const readExport = () =>
+    void attempt(() => vanish.readExport(account.id)).then((result) => {
+      if (!result) return;
+      const skipped = result.found - result.added;
+      notify(
+        `Read ${plural(result.added, "item", "items")} from the export`,
+        skipped > 0
+          ? `${plural(skipped, "item was", "items were")} already removed by Vanish.`
+          : undefined,
+      );
+    });
   const run =
     state.runs.find(
       (row) => row.accountId === account.id && row.kind === kind,
@@ -130,6 +141,7 @@ const Shell = ({ state }: { state: AppState }) => {
         }
         onRemoveAccount={() => setDialog("remove")}
         onRecord={() => setDialog("record")}
+        onReadExport={readExport}
         onHistory={() => setDialog("history")}
         onSettings={() => setDialog("settings")}
       />
@@ -145,6 +157,7 @@ const Shell = ({ state }: { state: AppState }) => {
             onKind={setKind}
             onRule={(rule) => setRules((all) => ({ ...all, [key]: rule }))}
             onSettings={changeSettings}
+            onReadExport={readExport}
           />
         </div>
         {/* At the bottom, away from the window buttons in the top corner. */}

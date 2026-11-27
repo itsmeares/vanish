@@ -11,9 +11,10 @@ export type Item = {
   title: string;
   body: string;
   url: string;
-  score: number;
-  /** When it was posted, in milliseconds. */
-  createdAt: number;
+  /** Null when the source does not say, like Reddit's data export. */
+  score: number | null;
+  /** When it was posted, in milliseconds. Null when the source does not say. */
+  createdAt: number | null;
 };
 
 const DAY = 86_400_000;
@@ -80,8 +81,11 @@ const contains = (item: Item, text: string) => {
   );
 };
 
+// An unknown date or score never counts as matching a limit: when in doubt,
+// an item stays off the list.
 const inAge = (item: Item, age: Rule["age"], now: number) => {
   if (age.type === "any") return true;
+  if (item.createdAt === null) return false;
   if (age.type === "older") return item.createdAt < now - age.days * DAY;
   return item.createdAt >= age.from && item.createdAt < age.to;
 };
@@ -103,15 +107,21 @@ export const judge = (rule: Rule, now: number, prefix: string) => {
     if (communities.size > 0 && !communities.has(item.community.toLowerCase()))
       return { type: "out" };
     if (!inAge(item, rule.age, now)) return { type: "out" };
-    if (rule.maxScore !== null && item.score >= rule.maxScore)
+    if (
+      rule.maxScore !== null &&
+      (item.score === null || item.score >= rule.maxScore)
+    )
       return { type: "out" };
     if (rule.text && !contains(item, rule.text)) return { type: "out" };
     for (const keep of rule.keep) {
+      // A points rule protects items whose points are unknown.
+      if (keep.type === "score" && item.score === null)
+        return { type: "kept", reason: "points unknown" };
       const kept =
         keep.type === "community"
           ? item.community.toLowerCase() === keep.value.toLowerCase()
           : keep.type === "score"
-            ? item.score > keep.min
+            ? (item.score ?? 0) > keep.min
             : contains(item, keep.value);
       if (kept) return { type: "kept", reason: keepLabel(keep, prefix) };
     }

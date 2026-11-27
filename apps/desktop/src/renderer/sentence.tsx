@@ -140,10 +140,16 @@ const CommunityPicker = ({
 
 const SCORE_PRESETS = [10, 100, 500, 1000];
 
-const ScorePicker = ({ rule, onRule }: Pick<Props, "rule" | "onRule">) => (
+const ScorePicker = ({
+  rule,
+  onRule,
+  unscored,
+}: Pick<Props, "rule" | "onRule"> & { unscored: number }) => (
   <div className="flex flex-col gap-3">
     <p className="text-meta text-muted-foreground">
       Only items with fewer points than this go on the list.
+      {unscored > 0 &&
+        ` ${count(unscored)} have no points, so they only count with any score.`}
     </p>
     <Input
       type="number"
@@ -350,7 +356,11 @@ export const Sentence = (props: Props) => {
           }
           disabled={disabled}
         >
-          <ScorePicker rule={rule} onRule={onRule} />
+          <ScorePicker
+            rule={rule}
+            onRule={onRule}
+            unscored={items.filter((item) => item.score === null).length}
+          />
         </Part>{" "}
         and {/* Each period stays on the line of the part before it. */}
         <span className="whitespace-nowrap">

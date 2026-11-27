@@ -17,8 +17,8 @@
     "dist": "electron-builder --publish never"
   },
   "devDependencies": {
-    "@tanstack/react-virtual": "^3.14.28",
     "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/react-virtual": "^3.14.28",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -27,6 +27,7 @@
     "electron": "45.4.1",
     "electron-builder": "26.18.0",
     "electron-updater": "^6.8.11",
+    "fflate": "^0.8.3",
     "lucide-react": "^1.77.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",

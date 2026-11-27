@@ -63,6 +63,7 @@ export const inputs = {
   removeAccount: z.tuple([id]),
   openBrowser: z.tuple([id, z.string().url().max(2000).optional()]),
   scan: z.tuple([id, kind]),
+  readExport: z.tuple([id]),
   startRun: z.tuple([job.extend({ mode: z.enum(MODES) })]),
   pauseRun: z.tuple([id]),
   resumeRun: z.tuple([id]),
@@ -94,6 +95,8 @@ type Results = {
   removeAccount: void;
   openBrowser: void;
   scan: void;
+  /** Null when the person closed the file picker. */
+  readExport: { found: number; added: number } | null;
   startRun: number;
   pauseRun: void;
   resumeRun: void;

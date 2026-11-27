@@ -6,7 +6,11 @@ export type Platform = {
   name: string;
   /** What the platform calls a community, and how it writes one. */
   community: { noun: string; prefix: string };
+  /** How the platform writes a user name. */
+  userPrefix: string;
   loginUrl: string;
+  /** Where a person asks the platform for a copy of their data. */
+  exportUrl: string;
   homeUrl: string;
   /** Hosts the recording keeps. Everything else (ads, analytics) is dropped. */
   hosts: string[];
@@ -30,7 +34,9 @@ export const REDDIT: Platform = {
   id: "reddit",
   name: "Reddit",
   community: { noun: "subreddit", prefix: "r/" },
+  userPrefix: "u/",
   loginUrl: "https://www.reddit.com/login/",
+  exportUrl: "https://www.reddit.com/settings/data-request",
   homeUrl: "https://www.reddit.com/",
   hosts: ["reddit.com", "redd.it", "redditmedia.com"],
   noise: [

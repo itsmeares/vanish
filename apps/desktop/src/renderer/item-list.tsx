@@ -82,8 +82,10 @@ export const ItemList = ({
                     {platform.community.prefix}
                     {item.community}
                   </span>
-                  <span>{month(item.createdAt)}</span>
-                  <span>{points(item.score)}</span>
+                  {item.createdAt !== null && (
+                    <span>{month(item.createdAt)}</span>
+                  )}
+                  {item.score !== null && <span>{points(item.score)}</span>}
                   {kept && (
                     <Badge variant="outline" size="sm">
                       Kept: {verdict.reason}

@@ -16,6 +16,7 @@ import {
   CircleArrowDownIcon,
   CircleDotIcon,
   EyeOffIcon,
+  FileArchiveIcon,
   FileTextIcon,
   HistoryIcon,
   MessageSquareIcon,
@@ -56,6 +57,7 @@ export const Sidebar = ({
   onAddAccount,
   onRemoveAccount,
   onRecord,
+  onReadExport,
   onHistory,
   onSettings,
 }: {
@@ -67,6 +69,7 @@ export const Sidebar = ({
   onAddAccount: () => void;
   onRemoveAccount: () => void;
   onRecord: () => void;
+  onReadExport: () => void;
   onHistory: () => void;
   onSettings: () => void;
 }) => {
@@ -106,8 +109,8 @@ export const Sidebar = ({
               <span className="block truncate font-medium">{account.name}</span>
               <span className="block truncate text-meta text-muted-foreground">
                 {account.scannedAt
-                  ? `Scanned ${ago(account.scannedAt)}`
-                  : "Not scanned yet"}
+                  ? `Updated ${ago(account.scannedAt)}`
+                  : "Nothing found yet"}
               </span>
             </span>
             <ChevronsUpDownIcon className="size-4 text-muted-foreground" />
@@ -118,7 +121,11 @@ export const Sidebar = ({
               onValueChange={(value) => onAccount(Number(value))}
             >
               {state.accounts.map((option) => (
-                <MenuRadioItem key={option.id} value={String(option.id)}>
+                <MenuRadioItem
+                  key={option.id}
+                  value={String(option.id)}
+                  closeOnClick
+                >
                   <span className="flex-1 truncate">{option.name}</span>
                   <span className="ms-4 text-meta text-muted-foreground">
                     {PLATFORMS[option.platform].name}
@@ -130,6 +137,10 @@ export const Sidebar = ({
             <MenuItem onClick={onAddAccount}>
               <PlusIcon />
               Add a {platform.name} account
+            </MenuItem>
+            <MenuItem onClick={onReadExport}>
+              <FileArchiveIcon />
+              Read {platform.name} data export
             </MenuItem>
             <MenuItem disabled={state.recording !== null} onClick={onRecord}>
               <CircleDotIcon />

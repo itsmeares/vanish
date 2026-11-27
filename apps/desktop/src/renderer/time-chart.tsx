@@ -37,24 +37,31 @@ export const TimeChart = ({
   age: Age;
   onAge: (age: Age) => void;
 }) => {
+  // Votes and saves read from a data export have no date, so only dated items are drawn.
+  const dated = useMemo(
+    () =>
+      items.flatMap(({ createdAt }) => (createdAt === null ? [] : [createdAt])),
+    [items],
+  );
+  const undated = items.length - dated.length;
   const months = useMemo(() => {
-    if (items.length === 0) return [];
+    if (dated.length === 0) return [];
     let first = Infinity;
     let last = -Infinity;
-    for (const item of items) {
-      first = Math.min(first, item.createdAt);
-      last = Math.max(last, item.createdAt);
+    for (const createdAt of dated) {
+      first = Math.min(first, createdAt);
+      last = Math.max(last, createdAt);
     }
     const starts: number[] = [];
     for (let at = monthStart(first); at <= last; at = nextMonth(at))
       starts.push(at);
     const tally = new Map(starts.map((start) => [start, 0]));
-    for (const item of items) {
-      const start = monthStart(item.createdAt);
+    for (const createdAt of dated) {
+      const start = monthStart(createdAt);
       tally.set(start, (tally.get(start) ?? 0) + 1);
     }
     return starts.map((start) => ({ start, total: tally.get(start) ?? 0 }));
-  }, [items]);
+  }, [dated]);
 
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
   const chart = useRef<HTMLDivElement>(null);
@@ -105,9 +112,16 @@ export const TimeChart = ({
   };
   // A month is drawn as picked when it starts inside the period.
   const inside = (start: number) => start >= from && start < to;
-  const picked = items.filter(
-    (item) => item.createdAt >= from && item.createdAt < to,
-  ).length;
+  const picked =
+    dated.filter((createdAt) => createdAt >= from && createdAt < to).length +
+    (shownAge.type === "any" ? undated : 0);
+
+  if (dated.length === 0)
+    return (
+      <p className="text-meta text-muted-foreground">
+        None of these have a date, so they all count from any time.
+      </p>
+    );
 
   return (
     <div className="flex flex-col gap-4">
@@ -208,6 +222,8 @@ export const TimeChart = ({
       <p className="text-meta text-muted-foreground">
         <span className="font-medium text-foreground">{count(picked)}</span>{" "}
         {ageLabel(shownAge)}. Drag across the chart, or pick the months.
+        {undated > 0 &&
+          ` ${count(undated)} have no date, so they only count from any time.`}
       </p>
     </div>
   );
