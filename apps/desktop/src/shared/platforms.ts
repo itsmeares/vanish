@@ -10,6 +10,8 @@ export type Platform = {
   homeUrl: string;
   /** Hosts the recording keeps. Everything else (ads, analytics) is dropped. */
   hosts: string[];
+  /** The platform's own tracking and media, as a host or a host and path. */
+  noise: string[];
   /** `verb` starts the cleanup sentence; `done` names the finished action. */
   kinds: Record<
     Kind,
@@ -31,6 +33,14 @@ export const REDDIT: Platform = {
   loginUrl: "https://www.reddit.com/login/",
   homeUrl: "https://www.reddit.com/",
   hosts: ["reddit.com", "redd.it", "redditmedia.com"],
+  noise: [
+    "pi.reddit.com",
+    "error-tracking.reddit.com",
+    "w3-reporting.reddit.com",
+    "v.redd.it",
+    "www.reddit.com/svc/shreddit/events",
+    "www.reddit.com/svc/shreddit/client-errors",
+  ],
   kinds: {
     comments: {
       doing: "Deleting",
@@ -81,14 +91,30 @@ export type PlatformId = keyof typeof PLATFORMS;
 /** Kinds with text Vanish can overwrite before deleting. */
 export const hasText = (kind: Kind) => kind === "comments" || kind === "posts";
 
-export const keepsHost = (platform: Platform, url: string) => {
-  let host: string;
+const parse = (url: string) => {
   try {
-    host = new URL(url).hostname;
+    return new URL(url);
   } catch {
-    return false;
+    return null;
   }
-  return platform.hosts.some(
-    (kept) => host === kept || host.endsWith(`.${kept}`),
+};
+
+const onHost = (host: string, hosts: string[]) =>
+  hosts.some((kept) => host === kept || host.endsWith(`.${kept}`));
+
+export const keepsHost = (platform: Platform, url: string) => {
+  const parsed = parse(url);
+  return parsed !== null && onHost(parsed.hostname, platform.hosts);
+};
+
+/** Whether a recording keeps this request: the platform's own, minus its noise. */
+export const records = (platform: Platform, url: string) => {
+  const parsed = parse(url);
+  if (!parsed || !onHost(parsed.hostname, platform.hosts)) return false;
+  const where = parsed.hostname + parsed.pathname;
+  return !platform.noise.some((skip) =>
+    skip.includes("/")
+      ? where.startsWith(skip)
+      : onHost(parsed.hostname, [skip]),
   );
 };

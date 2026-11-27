@@ -99,17 +99,17 @@ void app.whenReady().then(() => {
     push();
   });
 
-  const browse = (accountId: number, url?: string) => {
+  const browse = async (accountId: number, url?: string) => {
     const { platform, name } = account(accountId);
     if (url && !keepsHost(platform, url))
       throw new Error(`Vanish only opens ${platform.name} here.`);
-    openAccountBrowser(
+    await openAccountBrowser(
       accountId,
       `${name} · ${platform.name}`,
       url ?? platform.homeUrl,
-      (opened) => {
+      async (contents) => {
         if (recording?.accountId === accountId)
-          recording.recorder.attach(opened.webContents);
+          await recording.recorder.attach(contents);
       },
     );
   };
@@ -142,7 +142,7 @@ void app.whenReady().then(() => {
         `${platform.name} account ${count + 1}`,
       );
       push();
-      browse(accountId, platform.loginUrl);
+      await browse(accountId, platform.loginUrl);
       return accountId;
     },
     removeAccount: async (accountId) => {
@@ -195,7 +195,7 @@ void app.whenReady().then(() => {
       const { platform } = account(accountId);
       recording = { accountId, recorder: createRecorder(platform, push) };
       push();
-      browse(accountId, platform.homeUrl);
+      await browse(accountId, platform.homeUrl);
     },
     stopRecording: async ({ save }) => {
       if (!recording) return { saved: false, count: 0 };

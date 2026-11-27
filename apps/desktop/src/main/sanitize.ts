@@ -4,6 +4,30 @@
 
 export const REMOVED = "[removed]";
 
+// A secret that equals a cookie is written as `[cookie:name]`, so a recording
+// shows where a token comes from without keeping it.
+const COOKIE_MARK = /^\[cookie:[^\]\s]+\]$/;
+const removed = (value: unknown) =>
+  typeof value === "string" && COOKIE_MARK.test(value) ? value : REMOVED;
+
+/** Replaces each cookie value in the text, plain or URL-encoded, with its name. */
+export const markCookies = (
+  text: string,
+  cookies: { name: string; value: string }[],
+) =>
+  cookies
+    // Short values like "1" or "true" would match ordinary text.
+    .filter(({ value }) => value.length >= 8)
+    .sort((a, b) => b.value.length - a.value.length)
+    .reduce(
+      (marked, { name, value }) =>
+        [value, encodeURIComponent(value)].reduce(
+          (inner, form) => inner.split(form).join(`[cookie:${name}]`),
+          marked,
+        ),
+      text,
+    );
+
 // Matched against the words of a name, so `access_token` and `x-csrf-token`
 // match but `author` does not.
 const SECRET_WORDS = new Set([
@@ -45,11 +69,17 @@ const JWT = /eyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]{4,}/g;
 const BEARER = /\b(Bearer|Basic)\s+[\w.~+/=-]+/gi;
 const EMAIL = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
 
+// `token=…` anywhere: in a query, a script, or a link inside JSON text.
+const ASSIGNED = /\b([\w.-]+)=([^&\s"'<>;]+)/g;
+
 const scrubText = (text: string) =>
   text
     .replace(JWT, REMOVED)
     .replace(BEARER, `$1 ${REMOVED}`)
-    .replace(EMAIL, REMOVED);
+    .replace(EMAIL, REMOVED)
+    .replace(ASSIGNED, (match, key: string, value: string) =>
+      isSecretName(key) ? `${key}=${removed(value)}` : match,
+    );
 
 /** Everything under a secret key goes, but the shape stays readable. */
 const removeAll = (value: unknown): unknown => {
@@ -58,7 +88,7 @@ const removeAll = (value: unknown): unknown => {
     return Object.fromEntries(
       Object.entries(value).map(([key, inner]) => [key, removeAll(inner)]),
     );
-  return value === null || typeof value === "boolean" ? value : REMOVED;
+  return value === null || typeof value === "boolean" ? value : removed(value);
 };
 
 const scrubJson = (value: unknown): unknown => {
@@ -80,14 +110,13 @@ const scrubParams = (params: URLSearchParams) =>
   new URLSearchParams(
     Array.from(params, ([key, value]) => [
       key,
-      isSecretName(key) ? REMOVED : scrubText(value),
+      isSecretName(key) ? removed(value) : scrubText(value),
     ]),
   ).toString();
 
-// Secrets inside HTML and scripts: `"token":"…"`, `token=…`, and
+// Secrets inside HTML and scripts: `"token":"…"` and
 // `<input name="csrf_token" value="…">` with attributes in any order.
 const QUOTED_PAIR = /(["'])([\w.-]+)\1(\s*:\s*)(["'])((?:\\.|(?!\4).)*)\4/g;
-const ASSIGNED = /\b([\w.-]+)=([^&\s"'<>;]+)/g;
 const INPUT = /<input\b[^>]*>/gi;
 // One HTML attribute: quoted, unquoted, or bare, with spaces around "=".
 const ATTRIBUTE =
@@ -111,20 +140,20 @@ const scrubInput = (tag: string) => {
   )
     return tag;
   return tag.replace(
-    /(\bvalue\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/i,
-    `$1"${REMOVED}"`,
+    /(\bvalue\s*=\s*)("[^"]*"|'[^']*'|[^\s"'=<>`]+)/i,
+    (_, start: string, value: string) =>
+      `${start}"${removed(value.replace(/^["']|["']$/g, ""))}"`,
   );
 };
 
 const scrubMarkup = (text: string) =>
   scrubText(text)
-    .replace(QUOTED_PAIR, (match, quote, key, colon, valueQuote) =>
-      isSecretName(key)
-        ? `${quote}${key}${quote}${colon}${valueQuote}${REMOVED}${valueQuote}`
-        : match,
-    )
-    .replace(ASSIGNED, (match, key) =>
-      isSecretName(key) ? `${key}=${REMOVED}` : match,
+    .replace(
+      QUOTED_PAIR,
+      (match, quote, key: string, colon, valueQuote, value: string) =>
+        isSecretName(key)
+          ? `${quote}${key}${quote}${colon}${valueQuote}${removed(value)}${valueQuote}`
+          : match,
     )
     .replace(INPUT, scrubInput);
 
@@ -147,12 +176,28 @@ export const scrubBody = (body: string, contentType = "") => {
   return scrubMarkup(body);
 };
 
+const cookieName = (pair: string) => `${pair.split("=")[0]}=${REMOVED}`;
+
+/** Keeps which cookies are sent or set, and how (HttpOnly, SameSite), but no value. */
+const scrubCookies = (name: string, value: string) =>
+  name === "cookie"
+    ? value.split(/;\s*/).map(cookieName).join("; ")
+    : value
+        .split("\n")
+        .map((line) => {
+          const [pair, ...attributes] = line.split(/;\s*/);
+          return [cookieName(pair), ...attributes.map(scrubText)].join("; ");
+        })
+        .join("\n");
+
 export const scrubHeaders = (headers: Record<string, string>) =>
   Object.fromEntries(
-    Object.entries(headers).map(([name, value]) => [
-      name,
-      isSecretName(name) ? REMOVED : scrubText(value),
-    ]),
+    Object.entries(headers).map(([name, value]) => {
+      const lower = name.toLowerCase();
+      if (lower === "cookie" || lower === "set-cookie")
+        return [name, scrubCookies(lower, value)];
+      return [name, isSecretName(name) ? removed(value) : scrubText(value)];
+    }),
   );
 
 export const scrubUrl = (raw: string) => {
@@ -162,9 +207,11 @@ export const scrubUrl = (raw: string) => {
   } catch {
     return scrubMarkup(raw);
   }
+  const search = scrubParams(url.searchParams);
   url.username = "";
   url.password = "";
-  url.search = scrubParams(url.searchParams);
+  url.search = "";
   url.hash = "";
-  return scrubText(url.toString());
+  // The query is already clean; only the rest of the address needs the text rules.
+  return scrubText(url.toString()) + (search ? `?${search}` : "");
 };

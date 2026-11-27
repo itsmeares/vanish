@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   isSecretName,
+  markCookies,
   REMOVED,
   scrubBody,
   scrubHeaders,
@@ -48,15 +49,16 @@ describe("scrubHeaders", () => {
     expect(
       scrubHeaders({
         Cookie: "reddit_session=abc; token_v2=xyz",
-        "set-cookie": "token_v2=xyz; Path=/",
+        "set-cookie":
+          "token_v2=xyz; Path=/; HttpOnly\ncsrf_token=def; SameSite=Strict",
         Authorization: "Bearer abc.def",
         "x-reddit-loid": "000000abc",
         "content-type": "application/json",
         "x-custom": `Bearer ${JWT}`,
       }),
     ).toEqual({
-      Cookie: REMOVED,
-      "set-cookie": REMOVED,
+      Cookie: `reddit_session=${REMOVED}; token_v2=${REMOVED}`,
+      "set-cookie": `token_v2=${REMOVED}; Path=/; HttpOnly\ncsrf_token=${REMOVED}; SameSite=Strict`,
       Authorization: REMOVED,
       "x-reddit-loid": REMOVED,
       "content-type": "application/json",
@@ -139,10 +141,47 @@ describe("scrubBody", () => {
     );
   });
 
+  it("removes tokens in links inside JSON text", () => {
+    const body = JSON.stringify({
+      referrer: { url: "https://www.reddit.com/login/?jsc_token=abc123&x=1" },
+    });
+    expect(JSON.parse(scrubBody(body)).referrer.url).toBe(
+      `https://www.reddit.com/login/?jsc_token=${REMOVED}&x=1`,
+    );
+  });
+
   it("cleans text that only looks like JSON", () => {
     expect(scrubBody(`{not json "token":"abc"}`)).toBe(
       `{not json "token":"${REMOVED}"}`,
     );
+  });
+});
+
+describe("markCookies", () => {
+  const cookies = [
+    { name: "csrf_token", value: "c5f1e2d3a4b5" },
+    { name: "theme", value: "1" },
+  ];
+
+  it("names the cookie a removed secret came from", () => {
+    const body = markCookies(
+      JSON.stringify({ operation: "DeletePost", csrf_token: "c5f1e2d3a4b5" }),
+      cookies,
+    );
+    expect(JSON.parse(scrubBody(body)).csrf_token).toBe("[cookie:csrf_token]");
+    expect(
+      scrubUrl(markCookies("https://x.test/?token=c5f1e2d3a4b5", cookies)),
+    ).toBe(
+      `https://x.test/?token=${encodeURIComponent("[cookie:csrf_token]")}`,
+    );
+  });
+
+  it("leaves short values alone and still removes unknown secrets", () => {
+    const body = markCookies(
+      JSON.stringify({ theme: "1", token: "zzz" }),
+      cookies,
+    );
+    expect(JSON.parse(scrubBody(body))).toEqual({ theme: "1", token: REMOVED });
   });
 });
 

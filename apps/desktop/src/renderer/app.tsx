@@ -134,7 +134,6 @@ const Shell = ({ state }: { state: AppState }) => {
         onSettings={() => setDialog("settings")}
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <RecordingBar state={state} />
         <div className="flex min-h-0 flex-1">
           <Cleanup
             account={account}
@@ -148,6 +147,8 @@ const Shell = ({ state }: { state: AppState }) => {
             onSettings={changeSettings}
           />
         </div>
+        {/* At the bottom, away from the window buttons in the top corner. */}
+        <RecordingBar state={state} />
       </div>
 
       <SettingsDialog

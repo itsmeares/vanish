@@ -1,11 +1,15 @@
 import type { WebContents } from "electron";
 
-import { keepsHost, type Platform } from "../shared/platforms";
-import { scrubBody, scrubHeaders, scrubUrl } from "./sanitize";
+import { records, type Platform } from "../shared/platforms";
+import { markCookies, scrubBody, scrubHeaders, scrubUrl } from "./sanitize";
 
 /** Only page loads and data requests. Images, fonts, styles and scripts say nothing about how the site works. */
 const KEPT_TYPES = new Set(["Document", "XHR", "Fetch", "EventSource"]);
 const MAX_BODY = 2_000_000;
+const BINARY = /^(image|video|audio|font)\/|octet-stream/;
+
+type Headers = Record<string, string>;
+type Cookie = { name: string; value: string };
 
 type Entry = {
   time: string;
@@ -13,9 +17,9 @@ type Entry = {
   method: string;
   url: string;
   status: number | null;
-  requestHeaders: Record<string, string>;
+  requestHeaders: Headers;
   requestBody: string | null;
-  responseHeaders: Record<string, string>;
+  responseHeaders: Headers;
   mimeType: string | null;
   responseBody: string | null;
   error?: string;
@@ -27,36 +31,65 @@ type Pending = {
   type: string;
   method: string;
   url: string;
-  headers: Record<string, string>;
+  headers: Headers;
   postData: string | null;
   hasPostData: boolean;
   status: number | null;
-  responseHeaders: Record<string, string>;
+  responseHeaders: Headers;
   mimeType: string | null;
+  // Some pages arrive as a stream that the page cuts short once it has what
+  // it needs, so the body is collected as it arrives, not asked for at the end.
+  chunks: Buffer[];
+  streaming: Promise<boolean> | null;
+};
+
+const header = (headers: Headers, name: string) =>
+  Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ??
+  "";
+
+const readable = (mimeType: string | null, text: string, bytes: number) =>
+  BINARY.test(mimeType ?? "")
+    ? `[binary, ${bytes} bytes]`
+    : text.length > MAX_BODY
+      ? `[too large, ${text.length} characters]`
+      : text;
+
+const collected = (pending: Pending) => {
+  const bytes = Buffer.concat(pending.chunks);
+  return readable(pending.mimeType, bytes.toString("utf8"), bytes.length);
 };
 
 const clean = (
   pending: Pending,
   body: string | null,
+  cookies: Cookie[],
   error?: string,
 ): Entry => {
-  const contentType =
-    pending.headers["Content-Type"] ?? pending.headers["content-type"] ?? "";
+  // Cookie values become `[cookie:name]` before cleaning, so the file shows
+  // where a token came from and never keeps the token.
+  const mark = (text: string) => markCookies(text, cookies);
+  const markAll = (headers: Headers) =>
+    Object.fromEntries(
+      Object.entries(headers).map(([name, value]) => [name, mark(value)]),
+    );
   return {
     time: pending.time,
     type: pending.type,
     method: pending.method,
-    url: scrubUrl(pending.url),
+    url: scrubUrl(mark(pending.url)),
     status: pending.status,
-    requestHeaders: scrubHeaders(pending.headers),
+    requestHeaders: scrubHeaders(markAll(pending.headers)),
     requestBody:
       pending.postData === null
         ? null
-        : scrubBody(pending.postData, contentType),
-    responseHeaders: scrubHeaders(pending.responseHeaders),
+        : scrubBody(
+            mark(pending.postData),
+            header(pending.headers, "content-type"),
+          ),
+    responseHeaders: scrubHeaders(markAll(pending.responseHeaders)),
     mimeType: pending.mimeType,
     responseBody:
-      body === null ? null : scrubBody(body, pending.mimeType ?? ""),
+      body === null ? null : scrubBody(mark(body), pending.mimeType ?? ""),
     ...(error ? { error } : {}),
   };
 };
@@ -64,13 +97,13 @@ const clean = (
 type CdpRequest = {
   url: string;
   method: string;
-  headers: Record<string, string>;
+  headers: Headers;
   postData?: string;
   hasPostData?: boolean;
 };
 type CdpResponse = {
   status: number;
-  headers: Record<string, string>;
+  headers: Headers;
   mimeType: string;
 };
 
@@ -92,15 +125,37 @@ export const createRecorder = (
     onCount(entries.length);
   };
 
-  const attach = (contents: WebContents) => {
+  /** Resolves once the browser reports its traffic, so a page loaded after it is seen whole. */
+  const attach = async (contents: WebContents) => {
     if (stopped || attached.has(contents)) return;
     const cdp = contents.debugger;
     const pending = new Map<string, Pending>();
+    // The headers Chromium really sent and received (with cookies, origin and
+    // fetch metadata) arrive in separate events, before or after the request.
+    const sentHeaders = new Map<string, Headers>();
+    const receivedHeaders = new Map<string, Headers>();
     cdp.attach("1.3");
     contents.once("destroyed", () => attached.delete(contents));
 
     const command = <T>(method: string, params: object) =>
       cdp.sendCommand(method, params) as Promise<T>;
+
+    const cookies = () =>
+      contents.session.cookies
+        .get({})
+        .then((list) => list.map(({ name, value }) => ({ name, value })))
+        .catch(() => []);
+
+    const finish = async (
+      requestId: string,
+      request: Pending,
+      body: string | null,
+      error?: string,
+    ) => {
+      sentHeaders.delete(requestId);
+      receivedHeaders.delete(requestId);
+      add(clean(request, body, await cookies(), error));
+    };
 
     const listener = (_event: unknown, method: string, params: unknown) => {
       void (async () => {
@@ -112,26 +167,46 @@ export const createRecorder = (
             redirectResponse?: CdpResponse;
           };
           const previous = pending.get(requestId);
+          pending.delete(requestId);
           if (previous && redirectResponse) {
             previous.status = redirectResponse.status;
-            previous.responseHeaders = redirectResponse.headers;
-            add(clean(previous, null));
+            previous.responseHeaders =
+              receivedHeaders.get(requestId) ?? redirectResponse.headers;
+            void finish(requestId, previous, null);
           }
-          pending.delete(requestId);
-          if (!KEPT_TYPES.has(type ?? "") || !keepsHost(platform, request.url))
+          if (!KEPT_TYPES.has(type ?? "") || !records(platform, request.url))
             return;
           pending.set(requestId, {
             time: new Date().toISOString(),
             type: type ?? "Other",
             method: request.method,
             url: request.url,
-            headers: request.headers,
+            headers: sentHeaders.get(requestId) ?? request.headers,
             postData: request.postData ?? null,
             hasPostData: Boolean(request.hasPostData),
             status: null,
             responseHeaders: {},
             mimeType: null,
+            chunks: [],
+            streaming: null,
           });
+        } else if (method === "Network.requestWillBeSentExtraInfo") {
+          const { requestId, headers } = params as {
+            requestId: string;
+            headers: Headers;
+          };
+          const request = pending.get(requestId);
+          if (request) request.headers = headers;
+          else sentHeaders.set(requestId, headers);
+        } else if (method === "Network.responseReceivedExtraInfo") {
+          const { requestId, headers } = params as {
+            requestId: string;
+            headers: Headers;
+          };
+          const request = pending.get(requestId);
+          if (request && request.status !== null)
+            request.responseHeaders = headers;
+          else receivedHeaders.set(requestId, headers);
         } else if (method === "Network.responseReceived") {
           const { requestId, response } = params as {
             requestId: string;
@@ -140,45 +215,75 @@ export const createRecorder = (
           const request = pending.get(requestId);
           if (!request) return;
           request.status = response.status;
-          request.responseHeaders = response.headers;
+          request.responseHeaders =
+            receivedHeaders.get(requestId) ?? response.headers;
           request.mimeType = response.mimeType;
+          if (BINARY.test(response.mimeType)) return;
+          request.streaming = command<{ bufferedData: string }>(
+            "Network.streamResourceContent",
+            { requestId },
+          )
+            .then(({ bufferedData }) => {
+              request.chunks.unshift(Buffer.from(bufferedData, "base64"));
+              return true;
+            })
+            // Already finished: the body is asked for at the end instead.
+            .catch(() => false);
+        } else if (method === "Network.dataReceived") {
+          const { requestId, data } = params as {
+            requestId: string;
+            data?: string;
+          };
+          if (data)
+            pending.get(requestId)?.chunks.push(Buffer.from(data, "base64"));
         } else if (method === "Network.loadingFinished") {
           const { requestId } = params as { requestId: string };
           const request = pending.get(requestId);
-          if (!request) return;
+          if (!request) {
+            sentHeaders.delete(requestId);
+            receivedHeaders.delete(requestId);
+            return;
+          }
           pending.delete(requestId);
           if (request.hasPostData && request.postData === null) {
             request.postData = await command<{ postData: string }>(
               "Network.getRequestPostData",
-              {
-                requestId,
-              },
+              { requestId },
             )
               .then((result) => result.postData)
               .catch(() => null);
           }
-          const body = await command<{ body: string; base64Encoded: boolean }>(
-            "Network.getResponseBody",
-            { requestId },
-          )
-            .then(({ body, base64Encoded }) =>
-              base64Encoded
-                ? `[binary, ${Math.round((body.length * 3) / 4)} bytes]`
-                : body.length > MAX_BODY
-                  ? `[too large, ${body.length} characters]`
-                  : body,
-            )
-            .catch(() => null);
-          add(clean(request, body));
+          const body = (await request.streaming)
+            ? collected(request)
+            : await command<{ body: string; base64Encoded: boolean }>(
+                "Network.getResponseBody",
+                { requestId },
+              )
+                .then(({ body, base64Encoded }) =>
+                  base64Encoded
+                    ? `[binary, ${Math.round((body.length * 3) / 4)} bytes]`
+                    : readable(request.mimeType, body, body.length),
+                )
+                .catch(() => null);
+          await finish(requestId, request, body);
         } else if (method === "Network.loadingFailed") {
           const { requestId, errorText } = params as {
             requestId: string;
             errorText: string;
           };
           const request = pending.get(requestId);
-          if (!request) return;
+          if (!request) {
+            sentHeaders.delete(requestId);
+            receivedHeaders.delete(requestId);
+            return;
+          }
           pending.delete(requestId);
-          add(clean(request, null, errorText));
+          // A page that stops a load early still got the part it read.
+          const body =
+            (await request.streaming) && request.chunks.length > 0
+              ? collected(request)
+              : null;
+          await finish(requestId, request, body, errorText);
         }
       })();
     };
@@ -186,10 +291,16 @@ export const createRecorder = (
     attached.set(contents, () => {
       cdp.off("message", listener);
       pending.clear();
+      sentHeaders.clear();
+      receivedHeaders.clear();
       if (!contents.isDestroyed() && cdp.isAttached()) cdp.detach();
     });
 
-    void command("Network.enable", { maxPostDataSize: MAX_BODY });
+    // Never hold up the account window for long, even if the browser is slow to answer.
+    await Promise.race([
+      command("Network.enable", { maxPostDataSize: MAX_BODY }),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
   };
 
   return {
@@ -201,7 +312,7 @@ export const createRecorder = (
       attached.clear();
       return {
         format: "vanish-recording",
-        version: 1,
+        version: 2,
         platform: platform.id,
         startedAt,
         stoppedAt: new Date().toISOString(),

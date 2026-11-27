@@ -1,6 +1,13 @@
 import path from "node:path";
 
-import { app, BrowserWindow, nativeTheme, session, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  nativeTheme,
+  session,
+  shell,
+  type WebContents,
+} from "electron";
 
 const PRELOAD = path.join(__dirname, "../preload/index.cjs");
 const PAGE = path.join(__dirname, "../renderer/index.html");
@@ -104,19 +111,23 @@ const accountSession = (accountId: number) => {
 
 const browsers = new Map<number, BrowserWindow>();
 
-/** A plain browser window signed in as one account, with no access to Vanish itself. */
-export const openAccountBrowser = (
+/**
+ * A plain browser window signed in as one account, with no access to Vanish
+ * itself. `onOpen` runs for it and for every pop-up it opens, before a page
+ * loads, so a recording can start in time to see the first page.
+ */
+export const openAccountBrowser = async (
   accountId: number,
   title: string,
   url: string,
-  onOpen: (window: BrowserWindow) => void,
+  onOpen: (contents: WebContents) => Promise<void> | void,
 ) => {
   const existing = browsers.get(accountId);
   if (existing && !existing.isDestroyed()) {
-    void existing.loadURL(url);
+    await onOpen(existing.webContents);
     existing.focus();
-    onOpen(existing);
-    return existing;
+    void existing.loadURL(url).catch(() => {});
+    return;
   }
   const browsing = accountSession(accountId);
   const webPreferences = {
@@ -142,11 +153,16 @@ export const openAccountBrowser = (
   window.on("page-title-updated", (event) => {
     event.preventDefault();
   });
+  window.webContents.on("did-create-window", (child) => {
+    void onOpen(child.webContents);
+  });
   window.on("closed", () => browsers.delete(accountId));
   browsers.set(accountId, window);
-  onOpen(window);
-  void window.loadURL(url);
-  return window;
+  // A window answers the recorder only once it shows a page.
+  await window.loadURL("about:blank");
+  await onOpen(window.webContents);
+  // A failed load shows Chromium's error page in the window; nothing to do here.
+  void window.loadURL(url).catch(() => {});
 };
 
 /** Signs the account out everywhere on this computer and forgets its browsing data. */

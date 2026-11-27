@@ -262,7 +262,7 @@ export const RecordingBar = ({ state }: { state: AppState }) => {
   };
   return (
     <div
-      className="flex items-center gap-3 border-b bg-destructive/8 px-8 py-2.5"
+      className="flex items-center gap-3 border-t bg-destructive/8 px-8 py-2.5"
       role="status"
     >
       <span className="size-2 animate-pulse rounded-full bg-destructive" />
